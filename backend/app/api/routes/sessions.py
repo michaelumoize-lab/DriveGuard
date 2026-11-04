@@ -2,7 +2,8 @@
 REST Endpoints for Monitoring Session Lifecycle.
 """
 
-from typing import Any, Dict, List
+import uuid
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -12,7 +13,7 @@ router = APIRouter(prefix="/sessions", tags=["Sessions"])
 
 
 class CreateSessionRequest(BaseModel):
-    session_id: str = Field(description="Unique session identifier")
+    session_id: Optional[str] = Field(default=None, description="Unique session identifier (generated if omitted)")
     driver_id: str = Field(default="driver_default", description="Driver identifier")
     experiment_mode: str = Field(
         default="EXPERIMENT_C_CONFIDENCE_GATED_CASCADE",
@@ -29,8 +30,9 @@ def list_sessions() -> List[Dict[str, Any]]:
 @router.post("", response_model=Dict[str, Any])
 async def create_session(request: CreateSessionRequest) -> Dict[str, Any]:
     """Initialize a new monitoring session for a driver."""
+    sess_id = request.session_id or f"sess_{uuid.uuid4().hex[:10]}"
     engine = await session_manager.get_or_create_session(
-        session_id=request.session_id,
+        session_id=sess_id,
         driver_id=request.driver_id,
         experiment_mode=request.experiment_mode,
     )
