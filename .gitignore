@@ -19,14 +19,16 @@ env/
 !.env.example
 
 # Large AI model weights & datasets
-backend/weights/*.task
-backend/weights/*.onnx
 backend/weights/*.pt
 backend/weights/*.pth
 backend/datasets/
+# Keep lightweight production inference weights (required for deployment on Render/cloud)
+!backend/weights/face_landmarker.task
+!backend/weights/mobilenetv3_eye.onnx
 
 # Live personal webcam session outputs (keep benchmark sample outputs)
 backend/research/outputs/live_*.json
+backend/research/outputs/profiles/*.json
 backend/research/outputs/*.mp4
 backend/research/outputs/*.avi
 

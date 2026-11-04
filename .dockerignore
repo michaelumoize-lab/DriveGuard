@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.git/
+.gitignore
+docs/
+backend/datasets/
+backend/research/outputs/*.mp4
+backend/research/outputs/*.avi
+backend/weights/*.pt
+backend/weights/*.pth
+.DS_Store
+Thumbs.db

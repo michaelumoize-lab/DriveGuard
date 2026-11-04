@@ -96,12 +96,17 @@ def run_preflight_checks() -> bool:
         import mediapipe
         import onnxruntime
         import cv2
-        import torch
         import psutil
-        print(f"Dependencies: FastAPI v{fastapi.__version__} | PyTorch v{torch.__version__} | MediaPipe v{mediapipe.__version__}")
+        extra_info = []
+        try:
+            import torch
+            extra_info.append(f"PyTorch v{torch.__version__}")
+        except ImportError:
+            extra_info.append("PyTorch (optional/offline)")
+        print(f"Dependencies: FastAPI v{fastapi.__version__} | MediaPipe v{mediapipe.__version__} | ONNXRuntime v{onnxruntime.__version__} | {' | '.join(extra_info)}")
     except ImportError as exc:
         print(f"\n[!] DEPENDENCY ERROR: Missing package: {exc}")
-        print("Please run: uv pip install -r backend/requirements.txt")
+        print("Please run: pip install -r backend/requirements.txt")
         return False
 
     print("Preflight:    All checks PASSED [OK]")
@@ -116,8 +121,8 @@ def main() -> None:
         description="DriveGuard FastAPI Backend & Telemetry Server Runner",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--host", type=str, default="127.0.0.1", help="Host interface to bind to")
-    parser.add_argument("--port", type=int, default=8000, help="Port to listen on")
+    parser.add_argument("--host", type=str, default=os.getenv("HOST", "0.0.0.0"), help="Host interface to bind to")
+    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "8000")), help="Port to listen on")
     parser.add_argument("--reload", action="store_true", help="Enable uvicorn hot-reload")
     parser.add_argument("--check-only", action="store_true", help="Run preflight checks and exit")
     args = parser.parse_args()
