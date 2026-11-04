@@ -4,6 +4,7 @@ Binary WebSocket Telemetry Endpoint for Real-Time Client Video Streaming.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Optional
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
@@ -50,7 +51,8 @@ async def websocket_session_stream(
             # Handle Binary Frame Stream (JPEG / PNG from webcam canvas)
             if "bytes" in message and message["bytes"]:
                 frame_bytes = message["bytes"]
-                telemetry_dto = engine.process_frame(frame_bytes)
+                # Run synchronous CPU-bound CV pipeline in thread pool to prevent blocking asyncio loop
+                telemetry_dto = await asyncio.to_thread(engine.process_frame, frame_bytes)
 
                 cal_status = engine.get_calibration_status()
                 response_payload = {
@@ -68,16 +70,21 @@ async def websocket_session_stream(
             elif "text" in message and message["text"]:
                 try:
                     cmd_data = json.loads(message["text"])
-                    action = cmd_data.get("action", "").upper()
+                    # Accept either "action" or "command"
+                    action = cmd_data.get("action", cmd_data.get("command", "")).upper()
 
-                    if action == "START_CALIBRATION":
+                    if action in ("START_CALIBRATION", "START_4ZONE_CALIBRATION"):
                         four_zone = bool(cmd_data.get("four_zone", True))
                         duration_sec = float(cmd_data.get("zone_duration_sec", 5.0))
                         cal_dto = engine.start_calibration(
                             four_zone_mode=four_zone, zone_duration_sec=duration_sec
                         )
                         await websocket.send_json(
-                            {"type": "CALIBRATION_STARTED", "calibration": cal_dto.model_dump()}
+                            {
+                                "type": "CALIBRATION_STARTED",
+                                "calibration": cal_dto.model_dump(),
+                                "phase": cal_dto.model_dump(),
+                            }
                         )
 
                     elif action == "CANCEL_CALIBRATION":
@@ -125,3 +132,4 @@ async def websocket_session_stream(
         except Exception:
             pass
         await session_manager.terminate_session(session_id)
+
