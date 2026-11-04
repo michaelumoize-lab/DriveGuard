@@ -76,6 +76,16 @@ async def websocket_session_stream(
                 # Run synchronous CPU-bound CV pipeline in thread pool to prevent blocking asyncio loop
                 telemetry_dto = await asyncio.to_thread(engine.process_frame, frame_bytes)
 
+                # Periodic terminal log every 15 frames (~1 sec)
+                if telemetry_dto.frame_index % 15 == 0 or telemetry_dto.frame_index == 1:
+                    print(
+                        f"[AI Telemetry] Frame #{telemetry_dto.frame_index}: "
+                        f"State={telemetry_dto.state.value} | "
+                        f"EAR={telemetry_dto.eye_metrics.ear_raw:.3f} | "
+                        f"Zone={telemetry_dto.pose_zone.value} | "
+                        f"Latency={telemetry_dto.inference_latency_ms:.1f}ms"
+                    )
+
                 cal_status = engine.get_calibration_status()
                 response_payload = {
                     "type": "TELEMETRY",

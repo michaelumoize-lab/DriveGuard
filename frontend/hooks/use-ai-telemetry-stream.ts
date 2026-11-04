@@ -26,7 +26,7 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
     onError,
   } = options;
 
-  // Stable session identifier that does NOT regenerate on every render
+  // Stable session identifier that does NOT regenerate on re-renders
   const stableSessionId = useMemo(
     () => initialSessionId || `dg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
     [initialSessionId]
@@ -49,6 +49,7 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
   const wsRef = useRef<WebSocket | null>(null);
   const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const loopActiveRef = useRef<boolean>(false);
+  const animationFrameRef = useRef<number | null>(null);
   const isFrameInFlightRef = useRef<boolean>(false);
   const lastSendTimeRef = useRef<number>(0);
   const reconnectAttemptsRef = useRef<number>(0);
@@ -66,16 +67,17 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
   }, [onError]);
 
   // Construct WebSocket target URL
-  const getWsUrl = useCallback(() => {
-    const base = backendType === "cloud" ? cloudWsBase : localWsBase;
-    return `${base}/ws/v1/session/${stableSessionId}?driver_id=${driverId}&experiment_mode=${experimentMode}`;
-  }, [backendType, cloudWsBase, stableSessionId, driverId, experimentMode]);
+  const getWsUrl = useCallback(
+    (customBackend?: "cloud" | "local") => {
+      const activeType = customBackend || backendType;
+      const base = activeType === "cloud" ? cloudWsBase : localWsBase;
+      return `${base}/ws/v1/session/${stableSessionId}?driver_id=${driverId}&experiment_mode=${experimentMode}`;
+    },
+    [backendType, cloudWsBase, stableSessionId, driverId, experimentMode]
+  );
 
-  // Clean disconnect
-  const disconnectWebSocket = useCallback(() => {
-    loopActiveRef.current = false;
-    isFrameInFlightRef.current = false;
-
+  // Internal disconnect socket without killing streaming loop
+  const closeSocket = useCallback(() => {
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
@@ -93,91 +95,99 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
     }
 
     setConnectionStatus("disconnected");
-    setTelemetry(null);
+    isFrameInFlightRef.current = false;
   }, []);
 
   // Connect WebSocket
-  const connectWebSocket = useCallback(() => {
-    disconnectWebSocket();
-    setConnectionStatus("connecting");
+  const connectWebSocket = useCallback(
+    (customBackend?: "cloud" | "local") => {
+      closeSocket();
+      setConnectionStatus("connecting");
 
-    const url = getWsUrl();
-    try {
-      const ws = new WebSocket(url);
-      ws.binaryType = "arraybuffer";
-      wsRef.current = ws;
+      const url = getWsUrl(customBackend);
+      console.log("[DriveGuard AI Stream] Connecting to:", url);
 
-      ws.onopen = () => {
-        setConnectionStatus("connected");
-        reconnectAttemptsRef.current = 0;
-        isFrameInFlightRef.current = false;
-      };
+      try {
+        const ws = new WebSocket(url);
+        ws.binaryType = "arraybuffer";
+        wsRef.current = ws;
 
-      ws.onmessage = (event) => {
-        try {
-          if (typeof event.data === "string") {
-            const msg: ServerTelemetryMessage = JSON.parse(event.data);
+        ws.onopen = () => {
+          console.log("[DriveGuard AI Stream] Connected to:", url);
+          setConnectionStatus("connected");
+          reconnectAttemptsRef.current = 0;
+          isFrameInFlightRef.current = false;
+        };
 
-            if (msg.type === "TELEMETRY" && msg.telemetry) {
-              const now = performance.now();
-              const rtt = Math.round(now - lastSendTimeRef.current);
-              setRoundtripLatencyMs(rtt);
+        ws.onmessage = (event) => {
+          try {
+            if (typeof event.data === "string") {
+              const msg: ServerTelemetryMessage = JSON.parse(event.data);
 
-              const enriched: FrameTelemetry = {
-                ...msg.telemetry,
-                network_roundtrip_ms: rtt,
-              };
+              if (msg.type === "TELEMETRY" && msg.telemetry) {
+                const now = performance.now();
+                const rtt = Math.round(now - lastSendTimeRef.current);
+                setRoundtripLatencyMs(rtt);
 
-              setTelemetry(enriched);
-              if (onTelemetryRef.current) {
-                onTelemetryRef.current(enriched);
+                const enriched: FrameTelemetry = {
+                  ...msg.telemetry,
+                  network_roundtrip_ms: rtt,
+                };
+
+                setTelemetry(enriched);
+                if (onTelemetryRef.current) {
+                  onTelemetryRef.current(enriched);
+                }
+
+                // Lock-step ping-pong: release lock so next frame can be grabbed
+                isFrameInFlightRef.current = false;
+              } else if (msg.type === "SESSION_READY") {
+                console.log("[DriveGuard AI Stream] Handshake verified: SESSION_READY");
+                setConnectionStatus("connected");
+                isFrameInFlightRef.current = false;
+              } else if (msg.type === "FATAL_ERROR") {
+                console.error("Backend AI fatal error:", msg.detail);
+                setConnectionStatus("error");
               }
-
-              // Lock-step ping-pong: release lock so next frame can be grabbed
-              isFrameInFlightRef.current = false;
-            } else if (msg.type === "SESSION_READY") {
-              setConnectionStatus("connected");
-              isFrameInFlightRef.current = false;
-            } else if (msg.type === "FATAL_ERROR") {
-              console.error("Backend AI fatal error:", msg.detail);
-              setConnectionStatus("error");
             }
+          } catch (parseErr) {
+            console.warn("Failed to parse server telemetry message:", parseErr);
+            isFrameInFlightRef.current = false;
           }
-        } catch (parseErr) {
-          console.warn("Failed to parse server telemetry message:", parseErr);
-          isFrameInFlightRef.current = false;
-        }
-      };
+        };
 
-      ws.onerror = (err) => {
-        console.warn("WebSocket telemetry error:", err);
+        ws.onerror = (err) => {
+          console.warn("[DriveGuard AI Stream] WebSocket error:", err);
+          setConnectionStatus("error");
+          isFrameInFlightRef.current = false;
+        };
+
+        ws.onclose = () => {
+          console.log("[DriveGuard AI Stream] WebSocket disconnected.");
+          isFrameInFlightRef.current = false;
+
+          if (loopActiveRef.current) {
+            setConnectionStatus("reconnecting");
+            const delay = Math.min(1000 * Math.pow(1.5, reconnectAttemptsRef.current), 5000);
+            reconnectAttemptsRef.current++;
+            reconnectTimeoutRef.current = setTimeout(() => {
+              if (loopActiveRef.current) {
+                connectWebSocket();
+              }
+            }, delay);
+          } else {
+            setConnectionStatus("disconnected");
+          }
+        };
+      } catch (wsInitErr) {
+        console.error("WebSocket init error:", wsInitErr);
         setConnectionStatus("error");
-        isFrameInFlightRef.current = false;
-      };
+      }
+    },
+    [closeSocket, getWsUrl]
+  );
 
-      ws.onclose = () => {
-        if (loopActiveRef.current) {
-          setConnectionStatus("reconnecting");
-          isFrameInFlightRef.current = false;
-
-          const delay = Math.min(1000 * Math.pow(1.5, reconnectAttemptsRef.current), 5000);
-          reconnectAttemptsRef.current++;
-          reconnectTimeoutRef.current = setTimeout(() => {
-            if (loopActiveRef.current) {
-              connectWebSocket();
-            }
-          }, delay);
-        } else {
-          setConnectionStatus("disconnected");
-        }
-      };
-    } catch (wsInitErr) {
-      console.error("WebSocket init error:", wsInitErr);
-      setConnectionStatus("error");
-    }
-  }, [disconnectWebSocket, getWsUrl]);
-
-  // Sends single frame to WebSocket with synchronous lock-step protection
+  // Sends single frame to WebSocket
   const sendFrameFromVideo = useCallback(
     (videoElement: HTMLVideoElement, isMirrored = true) => {
       const ws = wsRef.current;
@@ -193,7 +203,7 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
       }
       const canvas = offscreenCanvasRef.current;
 
-      // Maintain natural unwarped aspect ratio at 640px base width
+      // Maintain natural unwarped aspect ratio at 640px base width (matching client_webcam_test.py)
       const targetWidth = 640;
       const targetHeight = Math.round((vh / vw) * targetWidth);
 
@@ -220,15 +230,15 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
       // Encode to JPEG at high fidelity (quality 0.80)
       canvas.toBlob(
         async (blob) => {
-          if (!blob || !ws || ws.readyState !== WebSocket.OPEN) {
+          if (!blob || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
             isFrameInFlightRef.current = false;
             return;
           }
 
           try {
             const buffer = await blob.arrayBuffer();
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(buffer);
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+              wsRef.current.send(buffer);
             } else {
               isFrameInFlightRef.current = false;
             }
@@ -247,7 +257,16 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
   const startStreamingLoop = useCallback(
     (videoElement: HTMLVideoElement, isMirrored = true) => {
       loopActiveRef.current = true;
-      connectWebSocket();
+      isFrameInFlightRef.current = false;
+
+      // Ensure socket is open or connecting
+      if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
+        connectWebSocket();
+      }
+
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
 
       const frameIntervalMs = 1000 / targetFps;
       let lastAttempt = 0;
@@ -256,21 +275,28 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
         if (!loopActiveRef.current) return;
 
         const now = performance.now();
-        // Send next frame only if target interval elapsed AND previous frame returned
-        if (now - lastAttempt >= frameIntervalMs && !isFrameInFlightRef.current) {
+        const ws = wsRef.current;
+
+        // Send next frame only if WebSocket is OPEN, target interval elapsed, and previous frame returned
+        if (
+          ws &&
+          ws.readyState === WebSocket.OPEN &&
+          now - lastAttempt >= frameIntervalMs &&
+          !isFrameInFlightRef.current
+        ) {
           lastAttempt = now;
           sendFrameFromVideo(videoElement, isMirrored);
         }
 
-        // Heartbeat timeout: if a frame is stuck in flight for > 1500ms, unlock pipeline
+        // Heartbeat timeout: if a frame is stuck in flight for > 1500ms, unlock
         if (isFrameInFlightRef.current && now - lastSendTimeRef.current > 1500) {
           isFrameInFlightRef.current = false;
         }
 
-        requestAnimationFrame(pump);
+        animationFrameRef.current = requestAnimationFrame(pump);
       };
 
-      requestAnimationFrame(pump);
+      animationFrameRef.current = requestAnimationFrame(pump);
     },
     [connectWebSocket, sendFrameFromVideo, targetFps]
   );
@@ -278,8 +304,15 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
   // Stop streaming loop
   const stopStreamingLoop = useCallback(() => {
     loopActiveRef.current = false;
-    disconnectWebSocket();
-  }, [disconnectWebSocket]);
+    isFrameInFlightRef.current = false;
+
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+
+    closeSocket();
+  }, [closeSocket]);
 
   // Send control commands (switch experiment, calibration, save profile)
   const sendCommand = useCallback((cmd: Record<string, any>) => {
@@ -327,9 +360,7 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
   const switchBackend = useCallback(
     (type: "cloud" | "local") => {
       setBackendType(type);
-      if (loopActiveRef.current) {
-        setTimeout(connectWebSocket, 100);
-      }
+      connectWebSocket(type);
     },
     [connectWebSocket]
   );
@@ -338,9 +369,12 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
   useEffect(() => {
     return () => {
       loopActiveRef.current = false;
-      disconnectWebSocket();
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+      closeSocket();
     };
-  }, [disconnectWebSocket]);
+  }, [closeSocket]);
 
   return {
     isConnected: connectionStatus === "connected",
