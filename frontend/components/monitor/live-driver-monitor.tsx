@@ -916,7 +916,7 @@ export function LiveDriverMonitor() {
           <CardContent
             className={`p-0 relative bg-black flex-1 flex items-center justify-center overflow-hidden ${
               isFullscreen
-                ? "h-full w-full"
+                ? "h-full w-full min-h-[100dvh]"
                 : isPortraitMode
                 ? "aspect-[9/16] min-h-[480px] sm:min-h-[520px]"
                 : "aspect-video"
@@ -930,7 +930,7 @@ export function LiveDriverMonitor() {
               muted
               style={{ transform: `scaleX(-1) scale(${zoomScale})` }}
               className={`w-full h-full transition-transform duration-200 ${
-                framingMode === "cover" ? "object-cover" : "object-contain"
+                framingMode === "cover" ? "object-cover object-[center_35%]" : "object-contain"
               }`}
             />
             {/* Hidden canvas for JPEG frame grabbing */}

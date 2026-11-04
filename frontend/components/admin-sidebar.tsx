@@ -103,6 +103,11 @@ const mainNavItems: NavItem[] = [
     icon: Activity,
   },
   {
+    title: "Webcam Simulation",
+    href: "/dashboard/camera-simulation",
+    icon: Camera,
+  },
+  {
     title: "4-Zone Calibration",
     href: "/dashboard/calibration",
     icon: Eye,
