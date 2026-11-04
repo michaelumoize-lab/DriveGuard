@@ -39,7 +39,7 @@ export default async function SettingsLayout({
               <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
                 <SidebarTrigger className="text-muted-foreground hover:text-foreground cursor-pointer h-9 w-9 shrink-0" aria-label="Toggle Navigation Sidebar" />
                 <div className="hidden sm:flex items-center gap-2 text-xs font-mono text-muted-foreground truncate">
-                  <span className="text-muted-foreground/70">IntelliGuard</span>
+                  <span className="text-muted-foreground/70">DriveGuard</span>
                   <span className="text-border">/</span>
                   <span className="text-foreground font-medium">Settings</span>
                 </div>

@@ -86,7 +86,7 @@ export default async function AdminDashboardPage() {
           <div className="space-y-1.5">
             <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-primary/20 text-primary border border-primary/30">
               <Sparkles className="size-3" />
-              <span>IntelliGuard Active Driver Safety</span>
+              <span>DriveGuard Active Driver Safety</span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-foreground">
               Welcome back, {session?.user?.name || "Driver"}

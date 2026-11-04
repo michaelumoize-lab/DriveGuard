@@ -179,9 +179,9 @@ export function AdminSidebar({ user, className, ...props }: AdminSidebarProps) {
               <Link href="/dashboard" onClick={handleNavClick}>
                 <Logo className="size-8" />
                 <div className="grid flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-semibold">IntelliGuard</span>
+                  <span className="truncate font-semibold">DriveGuard</span>
                   <span className="truncate text-[10px] text-muted-foreground font-medium uppercase tracking-wider">
-                    Security System
+                    Driver Safety AI
                   </span>
                 </div>
               </Link>

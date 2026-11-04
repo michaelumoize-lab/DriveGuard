@@ -1,7 +1,7 @@
 import crypto from "crypto";
 
 /**
- * Canonical Business Identifier Prefixes for IntelliGuard Core Entities
+ * Canonical Business Identifier Prefixes for DriveGuard Core Entities
  *
  * Format: <PREFIX>-<6 NUMERIC DIGITS>
  * Examples:
@@ -144,7 +144,7 @@ export function isValidAlertCode(value: unknown): value is string {
 }
 
 /**
- * Validates whether a string is a well-formed IntelliGuard business identifier.
+ * Validates whether a string is a well-formed DriveGuard business identifier.
  * Optionally checks that it matches a specific entity prefix.
  */
 export function isValidBusinessIdentifier(

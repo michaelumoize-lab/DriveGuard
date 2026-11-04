@@ -32,6 +32,10 @@ import {
   CheckCircle2,
   Wifi,
   WifiOff,
+  Maximize2,
+  Minimize2,
+  Compass,
+  Zap,
 } from "lucide-react";
 
 export interface NormalizedTelemetry {
@@ -60,6 +64,7 @@ export interface NormalizedTelemetry {
 }
 
 export function LiveDriverMonitor() {
+  const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -78,13 +83,13 @@ export function LiveDriverMonitor() {
   const [selectedExperiment, setSelectedExperiment] = useState<"CASCADE" | "GEOMETRIC" | "CNN">("CASCADE");
   const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
   const [sessionDurationSec, setSessionDurationSec] = useState(0);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Backend target selector (default to Local if on localhost, or Cloud Render)
   const [backendType, setBackendType] = useState<"local" | "cloud">("local");
 
   const localWsUrl = "ws://127.0.0.1:8000";
   const cloudWsUrl = process.env.NEXT_PUBLIC_FASTAPI_WS_URL || "wss://driveguard-x048.onrender.com";
-
   const activeWsBase = backendType === "local" ? localWsUrl : cloudWsUrl;
 
   // Initialize preference from localStorage if available
@@ -94,12 +99,35 @@ export function LiveDriverMonitor() {
       if (saved) {
         setBackendType(saved);
       } else {
-        // Auto-detect: if on localhost, prefer local engine
         const isLocalHost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
         setBackendType(isLocalHost ? "local" : "cloud");
       }
     }
   }, []);
+
+  // Listen to browser fullscreen changes (e.g. Esc key pressed)
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  }, []);
+
+  const toggleFullscreen = async () => {
+    try {
+      if (!document.fullscreenElement) {
+        if (containerRef.current) {
+          await containerRef.current.requestFullscreen();
+        }
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch (err) {
+      console.error("Fullscreen error:", err);
+      toast.error("Fullscreen mode could not be activated by browser.");
+    }
+  };
 
   const changeBackendType = (type: "local" | "cloud") => {
     setBackendType(type);
@@ -205,19 +233,29 @@ export function LiveDriverMonitor() {
     toast.info(`Switched cascade mode to: ${mode}`);
   };
 
-  // Connect WebSocket to AI Engine
-  const connectWebSocket = useCallback((sessionId: string) => {
+  // Connect WebSocket to AI Engine with auto-fallback
+  const connectWebSocket = useCallback((sessionId: string, fallbackToLocal: boolean = true) => {
     setWsStatus("connecting");
     const wsUrl = `${activeWsBase}/ws/v1/session/${sessionId}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
+    // Safety timeout for cold cloud instances
+    const connectTimeout = setTimeout(() => {
+      if (ws.readyState !== WebSocket.OPEN && backendType === "cloud" && fallbackToLocal) {
+        console.warn("Cloud connection timed out, attempting local fallback...");
+        ws.close();
+        setBackendType("local");
+        toast.warning("Cloud backend unreachable. Auto-switching to Local AI Engine (127.0.0.1:8000) ⚡");
+      }
+    }, 4500);
+
     ws.onopen = () => {
+      clearTimeout(connectTimeout);
       setIsWsConnected(true);
       setWsStatus("connected");
       toast.success(`Connected to AI Engine (${backendType === "local" ? "127.0.0.1:8000" : "Render Cloud"})!`);
 
-      // Send initial experiment mode sync
       const modeKey =
         selectedExperiment === "GEOMETRIC"
           ? "EXPERIMENT_A_GEOMETRIC_ONLY"
@@ -238,17 +276,23 @@ export function LiveDriverMonitor() {
       } catch {
         // Non-JSON binary or malformed payload
       } finally {
-        // Mark in-flight frame resolved to unlock next frame transmission
         isFrameInFlightRef.current = false;
       }
     };
 
     ws.onerror = () => {
+      clearTimeout(connectTimeout);
       setWsStatus("error");
-      toast.error(`WebSocket connection error on ${activeWsBase}. Make sure the backend server is running.`);
+      if (backendType === "cloud" && fallbackToLocal) {
+        toast.warning("Cloud backend offline. Falling back to Local AI Engine (127.0.0.1:8000)...");
+        setBackendType("local");
+      } else {
+        toast.error(`WebSocket connection failed on ${activeWsBase}. Make sure Python server is running.`);
+      }
     };
 
     ws.onclose = () => {
+      clearTimeout(connectTimeout);
       setIsWsConnected(false);
       setWsStatus("disconnected");
       isFrameInFlightRef.current = false;
@@ -260,7 +304,6 @@ export function LiveDriverMonitor() {
   // Main Start Camera & Streaming Action
   const startStream = async () => {
     try {
-      // 1. Request Webcam Access
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 640 },
@@ -277,27 +320,19 @@ export function LiveDriverMonitor() {
         await videoRef.current.play();
       }
 
-      // 2. Mark camera as immediately active
       setIsCameraActive(true);
       setSessionStartTime(Date.now());
 
-      // 3. Establish WebSocket connection
       const sessionId = `web_${Date.now()}`;
       const ws = connectWebSocket(sessionId);
 
-      // 4. Setup Backpressure-Controlled Frame Grabber
       isFrameInFlightRef.current = false;
       lastFrameSentTimeRef.current = 0;
 
-      // Paced interval (every 40ms = ~25 max FPS) with backpressure gate
       frameIntervalRef.current = setInterval(() => {
         const now = Date.now();
-        // Prevent sending faster than 40ms or when previous frame is still in flight
         if (now - lastFrameSentTimeRef.current < 40) return;
-        if (isFrameInFlightRef.current && now - lastFrameSentTimeRef.current < 1500) {
-          // Frame is still being processed by backend, skip to prevent queue backlog
-          return;
-        }
+        if (isFrameInFlightRef.current && now - lastFrameSentTimeRef.current < 1500) return;
 
         if (
           !videoRef.current ||
@@ -344,15 +379,12 @@ export function LiveDriverMonitor() {
     }
   };
 
-  // Teardown everything cleanly
   const stopStream = () => {
-    // 1. Clear frame grabber interval
     if (frameIntervalRef.current) {
       clearInterval(frameIntervalRef.current);
       frameIntervalRef.current = null;
     }
 
-    // 2. Close WebSocket
     if (wsRef.current) {
       try {
         wsRef.current.close();
@@ -362,7 +394,6 @@ export function LiveDriverMonitor() {
       wsRef.current = null;
     }
 
-    // 3. Stop Hardware Camera Tracks
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
@@ -372,7 +403,6 @@ export function LiveDriverMonitor() {
       videoRef.current.srcObject = null;
     }
 
-    // 4. Reset UI States
     setIsCameraActive(false);
     setIsWsConnected(false);
     setWsStatus("disconnected");
@@ -382,7 +412,6 @@ export function LiveDriverMonitor() {
     toast.info("Driver monitoring session ended.");
   };
 
-  // Reconnect WebSocket while keeping camera stream intact
   const reconnectWebSocket = () => {
     if (!isCameraActive) return;
     if (wsRef.current) {
@@ -396,7 +425,6 @@ export function LiveDriverMonitor() {
     connectWebSocket(sessionId);
   };
 
-  // Teardown camera and websocket on component unmount
   useEffect(() => {
     return () => {
       if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
@@ -417,19 +445,36 @@ export function LiveDriverMonitor() {
       : "bg-emerald-600 text-white font-semibold";
 
   return (
-    <div className="space-y-6">
+    <div
+      ref={containerRef}
+      className={`space-y-6 transition-all ${
+        isFullscreen ? "fixed inset-0 z-50 bg-black p-4 flex flex-col justify-between overflow-hidden" : ""
+      }`}
+    >
       {/* Video & Real-time HUD Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className={`grid gap-6 ${isFullscreen ? "h-full grid-cols-1" : "grid-cols-1 lg:grid-cols-3"}`}>
         {/* Main Video Viewport */}
-        <Card className="lg:col-span-2 overflow-hidden border-border/80">
-          <CardHeader className="py-3 px-4 flex flex-row items-center justify-between border-b border-border">
+        <Card
+          className={`overflow-hidden border-border/80 flex flex-col ${
+            isFullscreen ? "border-0 rounded-none bg-black h-full" : "lg:col-span-2"
+          }`}
+        >
+          {/* Card / HUD Header */}
+          <CardHeader
+            className={`py-3 px-4 flex flex-row items-center justify-between border-b border-border ${
+              isFullscreen ? "bg-black/90 border-white/10 z-30" : ""
+            }`}
+          >
             <div className="flex items-center gap-2">
               <Camera className="size-4 text-primary" />
-              <CardTitle className="text-sm font-semibold">Webcam Cabin Feed</CardTitle>
+              <CardTitle className="text-sm font-semibold text-foreground">
+                {isFullscreen ? "DriveGuard Fullscreen Cockpit HUD" : "Webcam Cabin Feed"}
+              </CardTitle>
             </div>
 
             {/* Target AI Engine Toggle & Status */}
             <div className="flex items-center gap-2">
+              {/* Local vs Cloud Switcher */}
               <div className="flex items-center bg-muted/60 rounded-md p-0.5 text-[11px] font-mono border border-border">
                 <button
                   type="button"
@@ -457,6 +502,7 @@ export function LiveDriverMonitor() {
                 </button>
               </div>
 
+              {/* WS Live Indicator */}
               <Badge
                 variant="outline"
                 className={`text-[10px] font-mono flex items-center gap-1 ${
@@ -491,11 +537,23 @@ export function LiveDriverMonitor() {
                   {telemetry.latency_ms ? `${telemetry.latency_ms.toFixed(1)} ms` : "--"}
                 </span>
               )}
+
+              {/* Fullscreen Toggle Button */}
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={toggleFullscreen}
+                className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
+              >
+                {isFullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+              </Button>
             </div>
           </CardHeader>
 
-          <CardContent className="p-0 relative bg-black aspect-video flex items-center justify-center overflow-hidden">
-            {/* Native Video Element (Always stays mounted to preserve stream bindings) */}
+          {/* Video Viewport Content */}
+          <CardContent className="p-0 relative bg-black aspect-video flex-1 flex items-center justify-center overflow-hidden">
+            {/* Native Video Element */}
             <video
               ref={videoRef}
               autoPlay
@@ -533,7 +591,7 @@ export function LiveDriverMonitor() {
               </div>
             )}
 
-            {/* Disconnected Banner while Camera is running */}
+            {/* Disconnected Notice if camera is active but WS dropped */}
             {isCameraActive && !isWsConnected && (
               <div className="absolute top-3 left-3 right-3 flex items-center justify-between p-2 rounded-md bg-black/85 backdrop-blur-md border border-amber-500/40 text-amber-400 text-xs shadow-md z-20">
                 <div className="flex items-center gap-2">
@@ -542,23 +600,36 @@ export function LiveDriverMonitor() {
                     AI Backend offline ({activeWsBase}). Webcam feed running in local preview mode.
                   </span>
                 </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={reconnectWebSocket}
-                  className="h-7 text-xs border-amber-500/50 text-amber-300 hover:bg-amber-500/20"
-                >
-                  <RefreshCw className="size-3 mr-1" />
-                  Reconnect
-                </Button>
+                <div className="flex items-center gap-2">
+                  {backendType === "cloud" && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => changeBackendType("local")}
+                      className="h-7 text-xs border-primary/50 text-primary hover:bg-primary/20"
+                    >
+                      ⚡ Switch to Local
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={reconnectWebSocket}
+                    className="h-7 text-xs border-amber-500/50 text-amber-300 hover:bg-amber-500/20"
+                  >
+                    <RefreshCw className="size-3 mr-1" />
+                    Reconnect
+                  </Button>
+                </div>
               </div>
             )}
 
             {/* In-Video Heads-Up Overlay when Stream and Telemetry are active */}
             {isCameraActive && telemetry && (
               <>
+                {/* Top Status HUD */}
                 <div className="absolute top-3 left-3 right-3 flex items-start justify-between pointer-events-none z-10">
-                  <div className={`px-3 py-1.5 rounded-lg shadow-md text-xs uppercase tracking-wider ${stateColor}`}>
+                  <div className={`px-3 py-1.5 rounded-lg shadow-md text-xs uppercase tracking-wider font-bold ${stateColor}`}>
                     {telemetry.state}
                   </div>
                   <div className="flex flex-col items-end gap-1.5">
@@ -573,13 +644,43 @@ export function LiveDriverMonitor() {
                   </div>
                 </div>
 
+                {/* Fullscreen Floating Telemetry Cockpit Bar */}
+                {isFullscreen && (
+                  <div className="absolute bottom-16 left-4 right-4 p-3 rounded-xl bg-black/80 backdrop-blur-md border border-white/15 grid grid-cols-2 sm:grid-cols-4 gap-3 text-white pointer-events-none z-20">
+                    <div>
+                      <span className="text-[10px] text-white/60 font-mono block">EAR (Openness)</span>
+                      <span className="text-sm font-bold font-mono text-emerald-400">
+                        {telemetry.ear.toFixed(3)}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-white/60 font-mono block">PERCLOS (60s)</span>
+                      <span className={`text-sm font-bold font-mono ${telemetry.perclos_60s > 15 ? "text-rose-400" : "text-white"}`}>
+                        {telemetry.perclos_60s.toFixed(1)}%
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-white/60 font-mono block">Blink Frequency</span>
+                      <span className="text-sm font-bold font-mono text-white">
+                        {telemetry.blink_rate.toFixed(1)}/min
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-white/60 font-mono block">Head Orientation</span>
+                      <span className="text-sm font-bold font-mono text-white">
+                        P: {telemetry.pitch_deg.toFixed(0)}° / Y: {telemetry.yaw_deg.toFixed(0)}°
+                      </span>
+                    </div>
+                  </div>
+                )}
+
                 {/* Bottom Reason Tags Overlay */}
                 {telemetry.reason_codes.length > 0 && (
                   <div className="absolute bottom-3 left-3 right-3 flex flex-wrap gap-1.5 pointer-events-none z-10">
                     {telemetry.reason_codes.map((code) => (
                       <span
                         key={code}
-                        className="px-2 py-0.5 rounded text-[10px] font-mono bg-black/80 backdrop-blur-sm border border-amber-500/40 text-amber-300"
+                        className="px-2 py-0.5 rounded text-[10px] font-mono bg-black/85 backdrop-blur-sm border border-amber-500/50 text-amber-300 font-semibold"
                       >
                         {code}
                       </span>
@@ -590,6 +691,7 @@ export function LiveDriverMonitor() {
             )}
           </CardContent>
 
+          {/* Footer Controls */}
           <CardFooter className="py-3 px-4 flex items-center justify-between border-t border-border bg-muted/20">
             <div className="flex items-center gap-2">
               {isCameraActive ? (
@@ -613,6 +715,16 @@ export function LiveDriverMonitor() {
               >
                 {audioMuted ? <VolumeX className="size-4" /> : <Volume2 className="size-4 text-primary" />}
               </Button>
+
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={toggleFullscreen}
+                className="h-9 w-9 p-0 hidden sm:inline-flex"
+                title={isFullscreen ? "Exit Fullscreen" : "Fullscreen HUD"}
+              >
+                {isFullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+              </Button>
             </div>
 
             <div className="text-xs font-mono text-muted-foreground">
@@ -624,126 +736,144 @@ export function LiveDriverMonitor() {
           </CardFooter>
         </Card>
 
-        {/* Live Kinematics Telemetry Panel */}
-        <div className="space-y-4">
-          <Card className="border-border/80">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                <Eye className="size-4 text-primary" />
-                Eye & Kinematics Telemetry
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4 text-xs">
-              {/* EAR Bar */}
-              <div className="space-y-1.5">
-                <div className="flex justify-between font-mono">
-                  <span className="text-muted-foreground">Eye Aspect Ratio (EAR):</span>
-                  <span className="font-semibold text-foreground">
-                    {telemetry?.ear !== undefined ? telemetry.ear.toFixed(3) : "0.000"}
-                  </span>
+        {/* Live Kinematics Telemetry Panel (hidden in fullscreen) */}
+        {!isFullscreen && (
+          <div className="space-y-4">
+            <Card className="border-border/80">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-semibold flex items-center gap-2">
+                  <Eye className="size-4 text-primary" />
+                  Eye & Kinematics Telemetry
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4 text-xs">
+                {/* EAR Bar */}
+                <div className="space-y-1.5">
+                  <div className="flex justify-between font-mono">
+                    <span className="text-muted-foreground">Eye Aspect Ratio (EAR):</span>
+                    <span className="font-semibold text-foreground">
+                      {isWsConnected && telemetry?.ear !== undefined
+                        ? telemetry.ear.toFixed(3)
+                        : isCameraActive
+                        ? "-- (Waiting AI)"
+                        : "0.000"}
+                    </span>
+                  </div>
+                  <Progress
+                    value={isWsConnected && telemetry?.ear ? Math.min(100, (telemetry.ear / 0.40) * 100) : 0}
+                    className="h-2"
+                  />
+                  <div className="text-[10px] text-muted-foreground font-mono flex justify-between">
+                    <span>Closed (&lt;0.18)</span>
+                    <span>Cutoff ({telemetry?.ear_threshold?.toFixed(3) || "0.220"})</span>
+                    <span>Open (&gt;0.30)</span>
+                  </div>
                 </div>
-                <Progress
-                  value={telemetry?.ear ? Math.min(100, (telemetry.ear / 0.40) * 100) : 0}
-                  className="h-2"
-                />
-                <div className="text-[10px] text-muted-foreground font-mono flex justify-between">
-                  <span>Closed (&lt;0.18)</span>
-                  <span>Cutoff ({telemetry?.ear_threshold?.toFixed(3) || "0.220"})</span>
-                  <span>Open (&gt;0.30)</span>
-                </div>
-              </div>
 
-              {/* PERCLOS Bar */}
-              <div className="space-y-1.5">
-                <div className="flex justify-between font-mono">
-                  <span className="text-muted-foreground">PERCLOS (60s Window):</span>
-                  <span
-                    className={`font-semibold ${
-                      (telemetry?.perclos_60s || 0) > 15.0 ? "text-rose-500 font-bold" : "text-foreground"
+                {/* PERCLOS Bar */}
+                <div className="space-y-1.5">
+                  <div className="flex justify-between font-mono">
+                    <span className="text-muted-foreground">PERCLOS (60s Window):</span>
+                    <span
+                      className={`font-semibold ${
+                        (telemetry?.perclos_60s || 0) > 15.0 ? "text-rose-500 font-bold" : "text-foreground"
+                      }`}
+                    >
+                      {isWsConnected && telemetry?.perclos_60s !== undefined
+                        ? `${telemetry.perclos_60s.toFixed(1)}%`
+                        : "0.0%"}
+                    </span>
+                  </div>
+                  <Progress
+                    value={isWsConnected ? Math.min(100, ((telemetry?.perclos_60s || 0) / 40.0) * 100) : 0}
+                    className="h-2"
+                  />
+                  <div className="text-[10px] text-muted-foreground font-mono flex justify-between">
+                    <span>Alert (&lt;8%)</span>
+                    <span>Drowsy (15%)</span>
+                    <span>Critical (&gt;25%)</span>
+                  </div>
+                </div>
+
+                {/* Blink Stats */}
+                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-border">
+                  <div className="p-2 rounded bg-muted/40 font-mono">
+                    <span className="text-muted-foreground block text-[10px]">Blink Rate</span>
+                    <span className="font-semibold text-sm">
+                      {isWsConnected && telemetry?.blink_rate !== undefined
+                        ? `${telemetry.blink_rate.toFixed(1)}/min`
+                        : "--"}
+                    </span>
+                  </div>
+                  <div className="p-2 rounded bg-muted/40 font-mono">
+                    <span className="text-muted-foreground block text-[10px]">Recent Blink Dur</span>
+                    <span className="font-semibold text-sm">
+                      {isWsConnected && telemetry?.blink_duration_ms
+                        ? `${telemetry.blink_duration_ms.toFixed(0)} ms`
+                        : "N/A"}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Head Pose Deg */}
+                <div className="grid grid-cols-2 gap-2 font-mono text-[11px] text-muted-foreground">
+                  <div className="p-1.5 rounded bg-muted/30">
+                    Pitch:{" "}
+                    <span className="text-foreground font-semibold">
+                      {isWsConnected && telemetry ? `${telemetry.pitch_deg.toFixed(1)}°` : "0°"}
+                    </span>
+                  </div>
+                  <div className="p-1.5 rounded bg-muted/30">
+                    Yaw:{" "}
+                    <span className="text-foreground font-semibold">
+                      {isWsConnected && telemetry ? `${telemetry.yaw_deg.toFixed(1)}°` : "0°"}
+                    </span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Cascade Mode Controller */}
+            <Card className="border-border/80">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-semibold flex items-center gap-2">
+                  <Cpu className="size-4 text-primary" />
+                  Cascade Stage Arbitration
+                </CardTitle>
+                <CardDescription className="text-xs">
+                  Switch real-time cascade arbitration experiment modes
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {[
+                  { key: "CASCADE", title: "Exp C: Confidence Cascade", desc: "Adaptive Stage 2 gating (saves ~67% power)" },
+                  { key: "GEOMETRIC", title: "Exp A: Geometric Only", desc: "Fast EAR landmark mesh only (~2.5ms)" },
+                  { key: "CNN", title: "Exp B: CNN Always On", desc: "Continuous MobileNetV3 verifier" },
+                ].map((exp) => (
+                  <div
+                    key={exp.key}
+                    onClick={() => switchExperiment(exp.key as "CASCADE" | "GEOMETRIC" | "CNN")}
+                    className={`p-2.5 rounded-lg border cursor-pointer text-xs transition-colors ${
+                      selectedExperiment === exp.key
+                        ? "border-primary bg-primary/10 text-primary font-medium"
+                        : "border-border hover:bg-muted/30 text-muted-foreground"
                     }`}
                   >
-                    {telemetry?.perclos_60s !== undefined ? `${telemetry.perclos_60s.toFixed(1)}%` : "0.0%"}
-                  </span>
-                </div>
-                <Progress
-                  value={Math.min(100, ((telemetry?.perclos_60s || 0) / 40.0) * 100)}
-                  className="h-2"
-                />
-                <div className="text-[10px] text-muted-foreground font-mono flex justify-between">
-                  <span>Alert (&lt;8%)</span>
-                  <span>Drowsy (15%)</span>
-                  <span>Critical (&gt;25%)</span>
-                </div>
-              </div>
-
-              {/* Blink Stats */}
-              <div className="grid grid-cols-2 gap-2 pt-2 border-t border-border">
-                <div className="p-2 rounded bg-muted/40 font-mono">
-                  <span className="text-muted-foreground block text-[10px]">Blink Rate</span>
-                  <span className="font-semibold text-sm">
-                    {telemetry?.blink_rate !== undefined ? `${telemetry.blink_rate.toFixed(1)}/min` : "--"}
-                  </span>
-                </div>
-                <div className="p-2 rounded bg-muted/40 font-mono">
-                  <span className="text-muted-foreground block text-[10px]">Recent Blink Dur</span>
-                  <span className="font-semibold text-sm">
-                    {telemetry?.blink_duration_ms ? `${telemetry.blink_duration_ms.toFixed(0)} ms` : "N/A"}
-                  </span>
-                </div>
-              </div>
-
-              {/* Head Pose Deg */}
-              <div className="grid grid-cols-2 gap-2 font-mono text-[11px] text-muted-foreground">
-                <div className="p-1.5 rounded bg-muted/30">
-                  Pitch: <span className="text-foreground font-semibold">{telemetry?.pitch_deg?.toFixed(1) || 0}°</span>
-                </div>
-                <div className="p-1.5 rounded bg-muted/30">
-                  Yaw: <span className="text-foreground font-semibold">{telemetry?.yaw_deg?.toFixed(1) || 0}°</span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Cascade Mode Controller */}
-          <Card className="border-border/80">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                <Cpu className="size-4 text-primary" />
-                Cascade Stage Arbitration
-              </CardTitle>
-              <CardDescription className="text-xs">
-                Switch real-time cascade arbitration experiment modes
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {[
-                { key: "CASCADE", title: "Exp C: Confidence Cascade", desc: "Adaptive Stage 2 gating (saves power)" },
-                { key: "GEOMETRIC", title: "Exp A: Geometric Only", desc: "Fast EAR landmark mesh only" },
-                { key: "CNN", title: "Exp B: CNN Always On", desc: "Continuous MobileNetV3 verifier" },
-              ].map((exp) => (
-                <div
-                  key={exp.key}
-                  onClick={() => switchExperiment(exp.key as "CASCADE" | "GEOMETRIC" | "CNN")}
-                  className={`p-2.5 rounded-lg border cursor-pointer text-xs transition-colors ${
-                    selectedExperiment === exp.key
-                      ? "border-primary bg-primary/10 text-primary font-medium"
-                      : "border-border hover:bg-muted/30 text-muted-foreground"
-                  }`}
-                >
-                  <div className="font-semibold text-foreground flex items-center justify-between">
-                    <span>{exp.title}</span>
-                    {selectedExperiment === exp.key && (
-                      <Badge variant="outline" className="text-[9px] border-primary text-primary">
-                        ACTIVE
-                      </Badge>
-                    )}
+                    <div className="font-semibold text-foreground flex items-center justify-between">
+                      <span>{exp.title}</span>
+                      {selectedExperiment === exp.key && (
+                        <Badge variant="outline" className="text-[9px] border-primary text-primary">
+                          ACTIVE
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground">{exp.desc}</div>
                   </div>
-                  <div className="text-[11px] text-muted-foreground">{exp.desc}</div>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        </div>
+                ))}
+              </CardContent>
+            </Card>
+          </div>
+        )}
       </div>
     </div>
   );

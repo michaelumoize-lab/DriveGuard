@@ -11,23 +11,23 @@ const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
   title: {
-    default: "IntelliGuard - AI-Powered Access Control & Security Monitoring",
-    template: "%s | IntelliGuard",
+    default: "DriveGuard - Personalised AI Driver Drowsiness Detection System",
+    template: "%s | DriveGuard",
   },
   description:
-    "AI-powered intelligent access control and security monitoring system with real-time biometric verification and edge device management.",
+    "Personalised Adaptive AI Driver Drowsiness Detection & Early Warning System using Computer Vision, 4-Zone Pose-Conditioned Calibration, and Confidence-Gated Cascades.",
   keywords: [
-    "IntelliGuard",
-    "Access Control",
-    "Security Monitoring",
-    "Facial Recognition",
-    "ESP32-S3 CAM",
-    "Biometrics",
+    "DriveGuard",
+    "Driver Safety",
+    "Drowsiness Detection",
+    "Driver Monitoring System",
+    "Computer Vision",
+    "MediaPipe",
+    "MobileNetV3",
+    "Edge AI",
     "Next.js",
     "FastAPI",
     "PostgreSQL",
-    "Vector Search",
-    "IoT",
   ],
 };
 

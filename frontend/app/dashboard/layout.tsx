@@ -61,9 +61,9 @@ export default async function DashboardLayout({
                   <TooltipContent side="bottom">Toggle Sidebar</TooltipContent>
                 </Tooltip>
                 <div className="hidden sm:flex items-center gap-2 text-xs font-mono text-muted-foreground truncate">
-                  <span className="text-muted-foreground/70">IntelliGuard</span>
+                  <span className="text-muted-foreground/70">DriveGuard</span>
                   <span className="text-border">/</span>
-                  <span className="text-foreground font-medium">Admin System</span>
+                  <span className="text-foreground font-medium">Driver Safety Center</span>
                 </div>
               </div>
 

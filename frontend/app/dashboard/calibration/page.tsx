@@ -2,7 +2,7 @@ import React from "react";
 import { GuidedCalibrationWizard } from "@/components/calibration/guided-calibration-wizard";
 
 export const metadata = {
-  title: "4-Zone Calibration Wizard | IntelliGuard",
+  title: "4-Zone Calibration Wizard | DriveGuard",
   description: "Guided 4-Zone Personalised Baseline Calibration with real-time target-acquisition spatial gating.",
 };
 

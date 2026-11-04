@@ -35,7 +35,7 @@ export default async function Home() {
           <div className="flex items-center gap-3">
             <Logo className="size-9 rounded-xl" />
             <div>
-              <span className="font-bold tracking-tight text-base block text-foreground">IntelliGuard</span>
+              <span className="font-bold tracking-tight text-base block text-foreground">DriveGuard</span>
               <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider block">
                 Driver Safety System
               </span>
@@ -106,7 +106,7 @@ export default async function Home() {
                     <span className="w-3 h-3 rounded-full bg-amber-500/60 inline-block" />
                     <span className="w-3 h-3 rounded-full bg-emerald-500/60 inline-block" />
                     <span className="text-xs font-mono text-muted-foreground ml-2 hidden sm:inline">
-                      intelliguard://driver-telemetry
+                      driveguard://driver-telemetry
                     </span>
                   </div>
                   <div className="flex items-center gap-2 text-xs font-mono text-emerald-500">
@@ -161,7 +161,7 @@ export default async function Home() {
 
       {/* Footer */}
       <footer className="border-t border-border/60 py-6 text-center text-xs text-muted-foreground">
-        IntelliGuard &copy; {new Date().getFullYear()} — Computer Engineering Final-Year Project.
+        DriveGuard &copy; {new Date().getFullYear()} — Computer Engineering Final-Year Project.
       </footer>
     </div>
   );

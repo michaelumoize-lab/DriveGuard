@@ -31,7 +31,7 @@ export default async function OnboardingLayout({
           <div className="flex items-center gap-3">
             <Logo className="size-9 rounded-xl" />
             <div>
-              <span className="font-bold tracking-tight text-base block text-foreground">IntelliGuard</span>
+              <span className="font-bold tracking-tight text-base block text-foreground">DriveGuard</span>
               <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider block">
                 Driver Onboarding
               </span>

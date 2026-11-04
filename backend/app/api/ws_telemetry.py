@@ -91,6 +91,16 @@ async def websocket_session_stream(
                         engine.cancel_calibration()
                         await websocket.send_json({"type": "CALIBRATION_CANCELLED"})
 
+                    elif action in ("SKIP_CALIBRATION_STEP", "SKIP_ZONE"):
+                        cal_dto = engine.skip_calibration_step()
+                        await websocket.send_json(
+                            {
+                                "type": "CALIBRATION_PHASE",
+                                "calibration": cal_dto.model_dump() if cal_dto else None,
+                                "phase": cal_dto.model_dump() if cal_dto else None,
+                            }
+                        )
+
                     elif action == "SWITCH_EXPERIMENT":
                         target_mode = cmd_data.get("mode", "")
                         for em in ExperimentMode:

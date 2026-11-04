@@ -124,6 +124,16 @@ class SessionAIEngine:
         """Cancel an ongoing calibration session."""
         self.calibration_session = None
 
+    def skip_calibration_step(self, timestamp_ms: Optional[float] = None) -> Optional[CalibrationPhaseDTO]:
+        """Manually advance past the current zone if tracking is difficult or user wishes to proceed."""
+        if self.calibration_session is not None and self.calibration_session.is_running:
+            new_profile = self.calibration_session.skip_current_step(timestamp_ms=timestamp_ms)
+            if new_profile is not None:
+                self.set_profile(new_profile)
+                self._last_completed_calibration_dto = self._build_calibration_dto(timestamp_ms=timestamp_ms)
+            return self._build_calibration_dto(timestamp_ms=timestamp_ms)
+        return None
+
     @property
     def is_calibrating(self) -> bool:
         """Check whether the session is currently in active calibration mode."""

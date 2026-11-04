@@ -18,9 +18,9 @@ export async function Header() {
           <Link href="/" className="flex items-center gap-2.5 no-underline">
             <Logo />
             <div className="flex flex-col">
-              <span className="font-bold tracking-tight text-sm text-foreground">IntelliGuard</span>
+              <span className="font-bold tracking-tight text-sm text-foreground">DriveGuard</span>
               <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">
-                Security System
+                Driver Safety AI
               </span>
             </div>
           </Link>

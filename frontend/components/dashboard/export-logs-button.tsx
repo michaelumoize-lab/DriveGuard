@@ -62,7 +62,7 @@ export function ExportLogsButton({ logs }: ExportLogsButtonProps) {
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.setAttribute("href", url);
-      link.setAttribute("download", `intelliguard_access_logs_${Date.now()}.csv`);
+      link.setAttribute("download", `driveguard_sessions_${Date.now()}.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);

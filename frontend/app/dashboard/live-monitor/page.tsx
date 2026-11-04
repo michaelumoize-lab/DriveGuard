@@ -2,7 +2,7 @@ import React from "react";
 import { LiveDriverMonitor } from "@/components/monitor/live-driver-monitor";
 
 export const metadata = {
-  title: "Live Driver Telemetry Monitor | IntelliGuard",
+  title: "Live Driver Telemetry Monitor | DriveGuard",
   description: "Real-time webcam computer vision telemetry streaming via WebSocket to the DriveGuard Edge AI Cascade.",
 };
 

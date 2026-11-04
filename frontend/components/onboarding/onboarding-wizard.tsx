@@ -151,7 +151,7 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
       }
 
       if (isFinal) {
-        toast.success("Onboarding completed! Welcome to IntelliGuard.");
+        toast.success("Onboarding completed! Welcome to DriveGuard.");
         router.push("/dashboard");
         router.refresh();
       } else {
@@ -335,7 +335,7 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
             <div className="p-3 bg-muted/40 rounded-lg border border-border text-xs text-muted-foreground flex items-start gap-2">
               <Car className="size-4 text-primary shrink-0 mt-0.5" />
               <span>
-                Vehicle details help IntelliGuard tailor camera field-of-view perspective angles for mirror glances and dashboard instrumentation.
+                Vehicle details help DriveGuard tailor camera field-of-view perspective angles for mirror glances and dashboard instrumentation.
               </span>
             </div>
           </div>
@@ -431,7 +431,7 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
             <div className="p-4 bg-primary/5 border border-primary/20 rounded-xl space-y-3">
               <div className="flex items-center gap-2 text-primary font-semibold text-base">
                 <Sparkles className="size-5" />
-                Your IntelliGuard Profile is Configured!
+                Your DriveGuard Profile is Configured!
               </div>
               <p className="text-xs text-muted-foreground">
                 All profile parameters have been validated. You can launch live monitoring immediately, or run a guided 4-zone calibration to customize eye-aspect ratio thresholds to your facial anatomy.

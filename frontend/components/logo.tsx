@@ -18,7 +18,7 @@ export interface LogoProps extends React.HTMLAttributes<HTMLDivElement> {
 }
 
 /**
- * IntelliGuard Brand Logo Component
+ * DriveGuard Brand Logo Component
  *
  * Automatically renders brand logo assets based on the active theme:
  * - Light Mode: /logo-white-bg.png
@@ -34,7 +34,7 @@ export function Logo({
   variant = "theme",
   className = "size-8",
   imageClassName,
-  alt = "IntelliGuard Logo",
+  alt = "DriveGuard Logo",
   priority = true,
   ...props
 }: LogoProps) {

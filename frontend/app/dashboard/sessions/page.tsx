@@ -45,7 +45,7 @@ export default async function DrivingSessionsPage() {
       <Card className="border-border/80">
         <CardHeader>
           <CardTitle className="text-lg">Trip Log</CardTitle>
-          <CardDescription>All tracked driving sessions recorded by IntelliGuard.</CardDescription>
+          <CardDescription>All tracked driving sessions recorded by DriveGuard.</CardDescription>
         </CardHeader>
         <CardContent>
           {sessions.length === 0 ? (
