@@ -8,7 +8,7 @@ services:
     plan: free
     region: frankfurt
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    startCommand: python run.py
     healthCheckPath: /health
     autoDeploy: true
     envVars:
@@ -18,3 +18,5 @@ services:
         value: "false"
       - key: HOST
         value: 0.0.0.0
+      - key: PYTHONPATH
+        value: .
