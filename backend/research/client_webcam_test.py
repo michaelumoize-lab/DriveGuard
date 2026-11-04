@@ -30,8 +30,10 @@ import argparse
 import asyncio
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -71,6 +73,79 @@ import cv2
 import numpy as np
 
 
+class NonBlockingAudioAlarm:
+    """
+    Non-blocking background audio alarm synthesizer for real-time driver fatigue alerts.
+    Dispatches beeps in a daemon worker thread so webcam capture never blocks.
+    """
+
+    def __init__(self, enabled: bool = True) -> None:
+        self.enabled: bool = enabled
+        self._queue: queue.Queue = queue.Queue(maxsize=4)
+        self._thread: threading.Thread = threading.Thread(target=self._worker, daemon=True)
+        self._thread.start()
+        self._last_critical_time: float = 0.0
+        self._last_warning_time: float = 0.0
+
+    def play_critical(self) -> None:
+        """Trigger urgent 2-tone alarm (880Hz -> 660Hz) with cooldown."""
+        if not self.enabled:
+            return
+        now = time.time()
+        if (now - self._last_critical_time) < 1.3:
+            return
+        self._last_critical_time = now
+        try:
+            self._queue.put_nowait("CRITICAL")
+        except queue.Full:
+            pass
+
+    def play_warning(self) -> None:
+        """Trigger gentle advisory alert tone (520Hz) with cooldown."""
+        if not self.enabled:
+            return
+        now = time.time()
+        if (now - self._last_warning_time) < 2.5:
+            return
+        self._last_warning_time = now
+        try:
+            self._queue.put_nowait("WARNING")
+        except queue.Full:
+            pass
+
+    def play_chime(self, freq: int = 1100, dur_ms: int = 90) -> None:
+        """Short affirmative notification chime (e.g. mode change or profile saved)."""
+        if not self.enabled:
+            return
+        try:
+            self._queue.put_nowait(("CHIME", freq, dur_ms))
+        except queue.Full:
+            pass
+
+    def _worker(self) -> None:
+        while True:
+            item = self._queue.get()
+            try:
+                if os.name == "nt":
+                    import winsound
+
+                    if item == "CRITICAL":
+                        winsound.Beep(880, 160)
+                        time.sleep(0.04)
+                        winsound.Beep(660, 200)
+                    elif item == "WARNING":
+                        winsound.Beep(520, 150)
+                    elif isinstance(item, tuple) and item[0] == "CHIME":
+                        winsound.Beep(item[1], item[2])
+                else:
+                    sys.stdout.write("\a")
+                    sys.stdout.flush()
+            except Exception:
+                pass
+            finally:
+                self._queue.task_done()
+
+
 class LiveWebcamHUDClient:
     """Manages OpenCV webcam capture, WebSocket streaming, and HUD rendering."""
 
@@ -82,6 +157,7 @@ class LiveWebcamHUDClient:
         target_fps: int = 25,
         jpeg_quality: int = 70,
         synthetic: bool = False,
+        audio_enabled: bool = True,
     ) -> None:
         self.server_ws_url = server_ws_url
         self.session_id = session_id
@@ -89,6 +165,9 @@ class LiveWebcamHUDClient:
         self.target_fps = target_fps
         self.jpeg_quality = jpeg_quality
         self.synthetic = synthetic
+
+        # Non-blocking audio synthesizer
+        self.audio_alarm = NonBlockingAudioAlarm(enabled=audio_enabled)
 
         # State storage from server
         self.latest_telemetry: Optional[Dict[str, Any]] = None
@@ -134,40 +213,72 @@ class LiveWebcamHUDClient:
         h, w = frame.shape[:2]
         hud = frame.copy()
 
-        # Semi-transparent top dashboard bar
+        # 1. Semi-transparent top dashboard bar & bottom control bar
         overlay = hud.copy()
-        cv2.rectangle(overlay, (0, 0), (w, 80), (20, 20, 24), -1)
-        cv2.rectangle(overlay, (0, h - 35), (w, h), (20, 20, 24), -1)
-        cv2.addWeighted(overlay, 0.75, hud, 0.25, 0, hud)
+        cv2.rectangle(overlay, (0, 0), (w, 75), (14, 16, 20), -1)
+        cv2.rectangle(overlay, (0, h - 32), (w, h), (14, 16, 20), -1)
+        cv2.addWeighted(overlay, 0.80, hud, 0.20, 0, hud)
 
-        # Title Banner
+        # 2. Title Banner
         cv2.putText(
             hud,
-            "DRIVEGUARD | ADAPTIVE AI MONITORING",
-            (15, 25),
+            "DRIVEGUARD | COCKPIT HUD",
+            (14, 22),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
+            0.58,
             (255, 255, 255),
             2,
             cv2.LINE_AA,
         )
 
-        # Connection Status
-        conn_text = "WS: CONNECTED" if self.connected else "WS: CONNECTING..."
+        t = self.latest_telemetry
+        cal = self.latest_calibration
+
+        # 3. Audio Alarm Status Pill
+        audio_on = self.audio_alarm.enabled
+        aud_color = (0, 220, 100) if audio_on else (120, 120, 130)
+        aud_text = "VOL: ON" if audio_on else "VOL: OFF"
+        cv2.rectangle(hud, (240, 6), (315, 26), (28, 30, 38), -1)
+        cv2.rectangle(hud, (240, 6), (315, 26), aud_color, 1)
+        cv2.putText(
+            hud,
+            aud_text,
+            (248, 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.36,
+            aud_color,
+            1,
+            cv2.LINE_AA,
+        )
+
+        # 4. Connection & Latency Info
+        conn_text = "WS: 127.0.0.1:8000" if self.connected else "WS: CONNECTING..."
         conn_color = (0, 220, 0) if self.connected else (0, 165, 255)
         cv2.putText(
             hud,
             conn_text,
-            (w - 180, 25),
+            (w - 200, 22),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
+            0.40,
             conn_color,
             1,
             cv2.LINE_AA,
         )
 
-        t = self.latest_telemetry
-        cal = self.latest_calibration
+        # Subtle Central Driver Framing Reticle
+        cx, cy = w // 2, h // 2
+        reticle_col = (0, 220, 100) if (t and t.get("face_detected")) else (80, 80, 90)
+        ret_w, ret_h = 65, 75
+        cv2.line(hud, (cx - ret_w, cy - ret_h), (cx - ret_w + 14, cy - ret_h), reticle_col, 2)
+        cv2.line(hud, (cx - ret_w, cy - ret_h), (cx - ret_w, cy - ret_h + 14), reticle_col, 2)
+        cv2.line(hud, (cx + ret_w, cy - ret_h), (cx + ret_w - 14, cy - ret_h), reticle_col, 2)
+        cv2.line(hud, (cx + ret_w, cy - ret_h), (cx + ret_w, cy - ret_h + 14), reticle_col, 2)
+        cv2.line(hud, (cx - ret_w, cy + ret_h), (cx - ret_w + 14, cy + ret_h), reticle_col, 2)
+        cv2.line(hud, (cx - ret_w, cy + ret_h), (cx - ret_w, cy + ret_h - 14), reticle_col, 2)
+        cv2.line(hud, (cx + ret_w, cy + ret_h), (cx + ret_w - 14, cy + ret_h), reticle_col, 2)
+        cv2.line(hud, (cx + ret_w, cy + ret_h), (cx + ret_w, cy + ret_h - 14), reticle_col, 2)
+        cv2.line(hud, (cx - 6, cy), (cx + 6, cy), reticle_col, 1)
+        cv2.line(hud, (cx, cy - 6), (cx, cy + 6), reticle_col, 1)
 
         if t is not None:
             # 1. Alert State Badge
@@ -178,15 +289,15 @@ class LiveWebcamHUDClient:
                 "CRITICAL": (0, 0, 255),
                 "MONITORING_UNAVAILABLE": (128, 128, 128),
             }
-            color = state_colors.get(state, (0, 200, 0))
+            badge_color = state_colors.get(state, (0, 200, 0))
 
-            cv2.rectangle(hud, (15, 38), (170, 72), color, -1)
+            cv2.rectangle(hud, (14, 34), (145, 66), badge_color, -1)
             cv2.putText(
                 hud,
                 state,
-                (25, 62),
+                (20, 56),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.65,
+                0.55,
                 (0, 0, 0) if state in ("NORMAL", "WARNING") else (255, 255, 255),
                 2,
                 cv2.LINE_AA,
@@ -194,13 +305,15 @@ class LiveWebcamHUDClient:
 
             # 2. Gaze Zone Pill
             zone = t.get("pose_zone", "CENTER")
-            zone_color = (255, 180, 50) if zone != "CENTER" else (200, 200, 200)
+            zone_color = (255, 180, 50) if zone != "CENTER" else (220, 220, 220)
+            cv2.rectangle(hud, (155, 34), (320, 66), (24, 26, 33), -1)
+            cv2.rectangle(hud, (155, 34), (320, 66), (65, 70, 80), 1)
             cv2.putText(
                 hud,
-                f"Zone: {zone}",
-                (185, 60),
+                f"ZONE: {zone}",
+                (165, 55),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
+                0.46,
                 zone_color,
                 2,
                 cv2.LINE_AA,
@@ -209,25 +322,25 @@ class LiveWebcamHUDClient:
             # 3. Mirror Check Protection Status
             comp = t.get("comparison", {})
             if comp.get("is_mirror_check_suppressed", False):
-                cv2.rectangle(hud, (360, 38), (620, 72), (255, 140, 0), -1)
+                cv2.rectangle(hud, (330, 34), (495, 66), (255, 140, 0), -1)
                 cv2.putText(
                     hud,
-                    "MIRROR-CHECK PROTECTED",
-                    (370, 62),
+                    "MIRROR PROTECTED",
+                    (338, 55),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
+                    0.42,
                     (255, 255, 255),
                     2,
                     cv2.LINE_AA,
                 )
             elif comp.get("fixed_false_alarm", False):
-                cv2.rectangle(hud, (360, 38), (620, 72), (0, 0, 220), -1)
+                cv2.rectangle(hud, (330, 34), (495, 66), (0, 0, 220), -1)
                 cv2.putText(
                     hud,
-                    "STATIC METHOD: FALSE ALARM!",
-                    (370, 62),
+                    "STATIC: FALSE ALARM!",
+                    (336, 55),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.45,
+                    0.40,
                     (255, 255, 255),
                     1,
                     cv2.LINE_AA,
@@ -238,81 +351,138 @@ class LiveWebcamHUDClient:
             inf_ms = t.get("inference_latency_ms", 0.0)
             cv2.putText(
                 hud,
-                f"{fps:.1f} FPS | {inf_ms:.1f} ms",
-                (w - 180, 60),
+                f"{fps:.1f} FPS | {inf_ms:.1f}ms",
+                (w - 200, 50),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (180, 180, 180),
+                0.40,
+                (200, 200, 200),
+                1,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                hud,
+                f"RTT: {self.last_roundtrip_ms:.0f} ms",
+                (w - 200, 66),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.36,
+                (0, 220, 150) if self.last_roundtrip_ms < 35 else (0, 180, 255),
                 1,
                 cv2.LINE_AA,
             )
 
-            # 5. Side Telemetry Panel (Left Hand Side)
-            panel_x = 15
-            panel_y = 110
+            # -------------------------------------------------------------
+            # 5. LEFT COCKPIT PANEL (EYE & KINEMATICS)
+            # -------------------------------------------------------------
+            l_x, l_y = 12, 82
+            l_w, l_h = 205, 345
+            l_overlay = hud.copy()
+            cv2.rectangle(l_overlay, (l_x, l_y), (l_x + l_w, l_y + l_h), (12, 14, 18), -1)
+            cv2.addWeighted(l_overlay, 0.82, hud, 0.18, 0, hud)
+            cv2.rectangle(hud, (l_x, l_y), (l_x + l_w, l_y + l_h), (50, 55, 65), 1)
 
-            # Eye Metrics
+            cv2.putText(hud, "EYE & BLINK METRICS", (l_x + 10, l_y + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 225, 255), 1, cv2.LINE_AA)
+
             eye = t.get("eye_metrics", {})
             ear = eye.get("ear_raw", 0.0)
             thresh = eye.get("ear_closure_threshold", 0.22)
             perclos = eye.get("perclos_pct", 0.0)
             is_closed = eye.get("is_eye_closed", False)
 
-            # Background panel
-            panel_w = 260
-            panel_h = 240
-            cv2.rectangle(hud, (panel_x - 5, panel_y - 20), (panel_x + panel_w, panel_y + panel_h), (15, 15, 18), -1)
-            cv2.rectangle(hud, (panel_x - 5, panel_y - 20), (panel_x + panel_w, panel_y + panel_h), (60, 60, 70), 1)
-
-            cv2.putText(hud, "EYE & KINEMATICS", (panel_x, panel_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 220, 255), 1, cv2.LINE_AA)
-
-            # EAR Bar
-            cv2.putText(hud, f"EAR: {ear:.3f} (Thresh: {thresh:.3f})", (panel_x, panel_y + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (230, 230, 230), 1)
+            # EAR Section
+            cv2.putText(hud, f"EAR: {ear:.3f} (Thresh: {thresh:.3f})", (l_x + 10, l_y + 44), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (230, 230, 230), 1)
             bar_w = 180
             fill_w = int(np.clip(ear / 0.45, 0.0, 1.0) * bar_w)
-            cv2.rectangle(hud, (panel_x, panel_y + 32), (panel_x + bar_w, panel_y + 44), (40, 40, 50), -1)
-            ear_bar_color = (0, 0, 255) if is_closed else (0, 220, 0)
-            cv2.rectangle(hud, (panel_x, panel_y + 32), (panel_x + fill_w, panel_y + 44), ear_bar_color, -1)
-            # Threshold line
-            thresh_x = panel_x + int(np.clip(thresh / 0.45, 0.0, 1.0) * bar_w)
-            cv2.line(hud, (thresh_x, panel_y + 30), (thresh_x, panel_y + 46), (0, 255, 255), 2)
+            cv2.rectangle(hud, (l_x + 10, l_y + 50), (l_x + 10 + bar_w, l_y + 60), (35, 38, 45), -1)
+            ear_col = (0, 0, 255) if is_closed else (0, 220, 0)
+            cv2.rectangle(hud, (l_x + 10, l_y + 50), (l_x + 10 + fill_w, l_y + 60), ear_col, -1)
+            th_x = l_x + 10 + int(np.clip(thresh / 0.45, 0.0, 1.0) * bar_w)
+            cv2.line(hud, (th_x, l_y + 48), (th_x, l_y + 62), (0, 240, 255), 2)
 
-            # PERCLOS Bar
-            cv2.putText(hud, f"PERCLOS (60s): {perclos:.1f}%", (panel_x, panel_y + 68), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (230, 230, 230), 1)
+            # PERCLOS Section
+            cv2.putText(hud, f"PERCLOS (60s): {perclos:.1f}%", (l_x + 10, l_y + 82), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (230, 230, 230), 1)
             p_fill_w = int(np.clip(perclos / 100.0, 0.0, 1.0) * bar_w)
-            cv2.rectangle(hud, (panel_x, panel_y + 75), (panel_x + bar_w, panel_y + 87), (40, 40, 50), -1)
-            p_color = (0, 220, 0) if perclos < 15 else ((0, 215, 255) if perclos < 25 else (0, 0, 255))
-            cv2.rectangle(hud, (panel_x, panel_y + 75), (panel_x + p_fill_w, panel_y + 87), p_color, -1)
+            cv2.rectangle(hud, (l_x + 10, l_y + 88), (l_x + 10 + bar_w, l_y + 98), (35, 38, 45), -1)
+            p_col = (0, 220, 0) if perclos < 15 else ((0, 215, 255) if perclos < 25 else (0, 0, 255))
+            cv2.rectangle(hud, (l_x + 10, l_y + 88), (l_x + 10 + p_fill_w, l_y + 98), p_col, -1)
 
-            # Blink Kinematics
+            # Kinematics Detail
             blink_dur = eye.get("blink_duration_ms")
-            dur_str = f"{blink_dur:.0f} ms" if blink_dur else "N/A"
+            dur_str = f"{blink_dur:.0f} ms" if blink_dur else "--"
             rcr = eye.get("blink_rcr")
-            rcr_str = f"{rcr:.2f}" if rcr else "N/A"
+            rcr_str = f"{rcr:.2f}" if rcr else "--"
             rate = eye.get("blink_rate_per_min", 0.0)
 
-            cv2.putText(hud, f"Blink Dur:   {dur_str}", (panel_x, panel_y + 112), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 1)
-            cv2.putText(hud, f"Kinematic RCR: {rcr_str}", (panel_x, panel_y + 130), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 1)
-            cv2.putText(hud, f"Blink Rate:  {rate:.1f} /min", (panel_x, panel_y + 148), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 1)
+            cv2.putText(hud, f"Blink Duration: {dur_str}", (l_x + 10, l_y + 122), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (190, 190, 190), 1)
+            cv2.putText(hud, f"Kinematic RCR:  {rcr_str}", (l_x + 10, l_y + 142), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (190, 190, 190), 1)
+            cv2.putText(hud, f"Blink Freq:     {rate:.1f} /min", (l_x + 10, l_y + 162), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (190, 190, 190), 1)
 
-            # Cascade Decision
+            # Cascade Decision Section
+            cv2.line(hud, (l_x + 10, l_y + 180), (l_x + l_w - 10, l_y + 180), (40, 45, 55), 1)
             casc = t.get("cascade", {})
             cnn_on = casc.get("cnn_triggered", False)
-            winner = casc.get("arbitration_winner", "N/A")
+            winner = casc.get("arbitration_winner", "GEOMETRY")
             mode = casc.get("experiment_mode", "EXP_C")
 
-            cv2.putText(hud, "CASCADE ARBITRATION", (panel_x, panel_y + 175), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 220, 255), 1, cv2.LINE_AA)
-            cv2.putText(hud, f"Mode:   {mode.split('_')[-1]}", (panel_x, panel_y + 195), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 200, 200), 1)
-            cv2.putText(
-                hud,
-                f"CNN Gate: {'INVOKED' if cnn_on else 'BYPASS (Save Power)'}",
-                (panel_x, panel_y + 213),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.42,
-                (0, 220, 255) if cnn_on else (150, 150, 150),
-                1,
-            )
-            cv2.putText(hud, f"Decision: {winner}", (panel_x, panel_y + 231), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1)
+            cv2.putText(hud, "CASCADE GATE", (l_x + 10, l_y + 202), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 225, 255), 1, cv2.LINE_AA)
+            cv2.putText(hud, f"Mode: {mode.split('_')[-1]}", (l_x + 10, l_y + 224), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (200, 200, 200), 1)
+            gate_col = (0, 220, 255) if cnn_on else (140, 140, 140)
+            cv2.putText(hud, f"CNN: {'INVOKED' if cnn_on else 'BYPASS (Save Power)'}", (l_x + 10, l_y + 244), cv2.FONT_HERSHEY_SIMPLEX, 0.38, gate_col, 1)
+            cv2.putText(hud, f"Decision: {winner}", (l_x + 10, l_y + 264), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1)
+
+            # -------------------------------------------------------------
+            # 6. RIGHT COCKPIT PANEL (3D HEAD POSE & RISK)
+            # -------------------------------------------------------------
+            r_x, r_y = w - 217, 82
+            r_w, r_h = 205, 345
+            r_overlay = hud.copy()
+            cv2.rectangle(r_overlay, (r_x, r_y), (r_x + r_w, r_y + r_h), (12, 14, 18), -1)
+            cv2.addWeighted(r_overlay, 0.82, hud, 0.18, 0, hud)
+            cv2.rectangle(hud, (r_x, r_y), (r_x + r_w, r_y + r_h), (50, 55, 65), 1)
+
+            cv2.putText(hud, "3D HEAD POSE & GAZE", (r_x + 10, r_y + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 225, 255), 1, cv2.LINE_AA)
+
+            hp = t.get("head_pose", {})
+            pitch = hp.get("pitch_deg", 0.0)
+            yaw = hp.get("yaw_deg", 0.0)
+            roll = hp.get("roll_deg", 0.0)
+
+            pitch_status = "NOD" if pitch <= -12.0 else ("UP" if pitch >= 14.0 else "LEVEL")
+            yaw_status = "RIGHT" if yaw <= -12.0 else ("LEFT" if yaw >= 12.0 else "CTR")
+
+            cv2.putText(hud, f"Pitch (P): {pitch:+5.1f} deg [{pitch_status}]", (r_x + 10, r_y + 44), cv2.FONT_HERSHEY_SIMPLEX, 0.37, (220, 220, 220), 1)
+            cv2.putText(hud, f"Yaw   (Y): {yaw:+5.1f} deg [{yaw_status}]", (r_x + 10, r_y + 64), cv2.FONT_HERSHEY_SIMPLEX, 0.37, (220, 220, 220), 1)
+            cv2.putText(hud, f"Roll  (R): {roll:+5.1f} deg", (r_x + 10, r_y + 84), cv2.FONT_HERSHEY_SIMPLEX, 0.37, (200, 200, 200), 1)
+
+            # Horizontal Interactive Yaw Balance Meter
+            cv2.putText(hud, "L <--  ROTATION METER  --> R", (r_x + 10, r_y + 108), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (150, 150, 160), 1)
+            cv2.rectangle(hud, (r_x + 10, r_y + 114), (r_x + 10 + bar_w, r_y + 124), (35, 38, 45), -1)
+            # Center tick
+            cv2.line(hud, (r_x + 10 + bar_w // 2, r_y + 112), (r_x + 10 + bar_w // 2, r_y + 126), (120, 120, 120), 1)
+            # Yaw cursor position (-45 deg to +45 deg)
+            yaw_ratio = np.clip((-yaw + 45.0) / 90.0, 0.0, 1.0)
+            yaw_cursor_x = r_x + 10 + int(yaw_ratio * bar_w)
+            cursor_col = (0, 220, 255) if abs(yaw) < 12.0 else (255, 180, 50)
+            cv2.circle(hud, (yaw_cursor_x, r_y + 119), 5, cursor_col, -1)
+
+            # Fatigue Risk Score
+            cv2.line(hud, (r_x + 10, r_y + 140), (r_x + r_w - 10, r_y + 140), (40, 45, 55), 1)
+            risk = t.get("risk_score", 0.0)
+            cv2.putText(hud, "FATIGUE RISK SCORE", (r_x + 10, r_y + 162), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 225, 255), 1, cv2.LINE_AA)
+            cv2.putText(hud, f"Risk: {risk * 100:.0f}%", (r_x + 10, r_y + 184), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (240, 240, 240), 1)
+            r_fill_w = int(np.clip(risk, 0.0, 1.0) * bar_w)
+            cv2.rectangle(hud, (r_x + 10, r_y + 190), (r_x + 10 + bar_w, r_y + 200), (35, 38, 45), -1)
+            r_col = (0, 200, 0) if risk < 0.35 else ((0, 215, 255) if risk < 0.65 else (0, 0, 255))
+            cv2.rectangle(hud, (r_x + 10, r_y + 190), (r_x + 10 + r_fill_w, r_y + 200), r_col, -1)
+
+            # Active Reason Codes
+            reasons = t.get("reason_codes", [])
+            cv2.putText(hud, "Active Reason Codes:", (r_x + 10, r_y + 224), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (160, 160, 170), 1)
+            if reasons:
+                for idx, r_code in enumerate(reasons[:4]):
+                    short_r = r_code.replace("PROLONGED_", "").replace("SUSTAINED_", "").replace("_", " ")[:20]
+                    cv2.putText(hud, f"- {short_r}", (r_x + 10, r_y + 244 + idx * 18), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (0, 220, 255), 1)
+            else:
+                cv2.putText(hud, "- NORMAL (ALERT)", (r_x + 10, r_y + 244), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (0, 200, 0), 1)
 
         # 6. Guided Calibration Wizard Overlay (Centered if calibrating)
         is_calibrating = cal is not None and not cal.get("is_completed", False)
@@ -395,9 +565,9 @@ class LiveWebcamHUDClient:
             cv2.putText(
                 hud,
                 self.notification_msg,
-                (15, h - 12),
+                (15, h - 11),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.48,
+                0.44,
                 (0, 255, 255),
                 1,
                 cv2.LINE_AA,
@@ -406,11 +576,11 @@ class LiveWebcamHUDClient:
             # Controls helper
             cv2.putText(
                 hud,
-                "Keys: [c] Calibrate 4-Zones | [1,2,3] Exp A/B/C | [s] Save Profile | [q] Quit",
-                (15, h - 12),
+                "Keys: [c] Calibrate | [m] Toggle Audio | [1,2,3] Exp A/B/C | [s] Save Profile | [q] Quit",
+                (15, h - 11),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                (160, 160, 160),
+                0.38,
+                (160, 165, 175),
                 1,
                 cv2.LINE_AA,
             )
@@ -427,18 +597,29 @@ class LiveWebcamHUDClient:
             if cal is not None:
                 self.latest_calibration = cal
                 if cal.get("is_completed", False):
+                    self.audio_alarm.play_chime(1400, 140)
                     self.set_notification("Calibration complete! Personal baseline active.", duration_sec=4.0)
             elif self.latest_calibration and not self.latest_calibration.get("is_completed", False):
                 self.latest_calibration = None
                 self.set_notification("Calibration finished! Personal baseline active.", duration_sec=4.0)
 
+            # Trigger synthesized audio fatigue alerts
+            if self.latest_telemetry:
+                st = self.latest_telemetry.get("state")
+                if st == "CRITICAL":
+                    self.audio_alarm.play_critical()
+                elif st == "WARNING":
+                    self.audio_alarm.play_warning()
+
         elif msg_type == "CALIBRATION_STARTED":
+            self.audio_alarm.play_chime(1100, 90)
             self.latest_calibration = resp_data.get("calibration")
             self.set_notification("Calibration started! Follow target instructions in center of screen.", duration_sec=4.0)
         elif msg_type == "CALIBRATION_CANCELLED":
             self.latest_calibration = None
             self.set_notification("Calibration cancelled.", duration_sec=3.0)
         elif msg_type == "PROFILE_SAVED":
+            self.audio_alarm.play_chime(1500, 120)
             prof = resp_data.get("profile", {})
             is_cal = prof.get("is_calibrated", False)
             mode = prof.get("calibration_mode", "UNKNOWN")
@@ -448,6 +629,7 @@ class LiveWebcamHUDClient:
             else:
                 self.set_notification(f"Profile saved ({mode}). Press 'c' to run 4-zone calibration first!", duration_sec=5.0)
         elif msg_type == "EXPERIMENT_SWITCHED":
+            self.audio_alarm.play_chime(1200, 70)
             active_mode = resp_data.get("active_mode", "UNKNOWN")
             self.set_notification(f"Experiment mode switched: {active_mode.split('_')[-1]}", duration_sec=3.5)
 
@@ -533,8 +715,16 @@ class LiveWebcamHUDClient:
                         print("[Client] Quit requested by user.")
                         self.running = False
                         break
+                    elif key == ord("m"):
+                        self.audio_alarm.enabled = not self.audio_alarm.enabled
+                        aud_st = "ENABLED" if self.audio_alarm.enabled else "MUTED"
+                        print(f"[Client] Audio Alert Buzzer: {aud_st}")
+                        if self.audio_alarm.enabled:
+                            self.audio_alarm.play_chime(1200, 80)
+                        self.set_notification(f"Audio Buzzer: {aud_st}", duration_sec=2.5)
                     elif key == ord("c"):
                         print("[Client] Requesting 4-Zone Calibration...")
+                        self.audio_alarm.play_chime(1000, 80)
                         await self.send_control_command(
                             ws,
                             {
@@ -545,6 +735,7 @@ class LiveWebcamHUDClient:
                         )
                     elif key == ord("1"):
                         print("[Client] Switching to Experiment A (Geometric EAR Only)...")
+                        self.audio_alarm.play_chime(900, 70)
                         await self.send_control_command(
                             ws,
                             {
@@ -554,6 +745,7 @@ class LiveWebcamHUDClient:
                         )
                     elif key == ord("2"):
                         print("[Client] Switching to Experiment B (MobileNetV3 Always)...")
+                        self.audio_alarm.play_chime(950, 70)
                         await self.send_control_command(
                             ws,
                             {
@@ -563,6 +755,7 @@ class LiveWebcamHUDClient:
                         )
                     elif key == ord("3"):
                         print("[Client] Switching to Experiment C (Confidence-Gated Cascade)...")
+                        self.audio_alarm.play_chime(1000, 70)
                         await self.send_control_command(
                             ws,
                             {
@@ -572,6 +765,7 @@ class LiveWebcamHUDClient:
                         )
                     elif key == ord("s"):
                         print("[Client] Saving calibrated profile to backend...")
+                        self.audio_alarm.play_chime(1300, 100)
                         await self.send_control_command(
                             ws,
                             {
@@ -615,6 +809,7 @@ def main() -> None:
     parser.add_argument("--fps", type=int, default=25, help="Target capture FPS")
     parser.add_argument("--quality", type=int, default=70, help="JPEG compression quality (1-100)")
     parser.add_argument("--synthetic", action="store_true", help="Run with simulated synthetic driver frames (no webcam required)")
+    parser.add_argument("--mute", action="store_true", help="Start client with audio alerts muted")
     args = parser.parse_args()
 
     ws_url = args.url if args.url else f"ws://{args.host}:{args.port}/ws/v1/session/{args.session_id}"
@@ -626,6 +821,7 @@ def main() -> None:
         target_fps=args.fps,
         jpeg_quality=args.quality,
         synthetic=args.synthetic,
+        audio_enabled=not args.mute,
     )
 
     try:
