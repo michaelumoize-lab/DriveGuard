@@ -18,11 +18,12 @@ env/
 .env.*
 !.env.example
 
-# Large AI model weights (auto-downloaded at runtime)
+# Large AI model weights & datasets
 backend/weights/*.task
 backend/weights/*.onnx
 backend/weights/*.pt
 backend/weights/*.pth
+backend/datasets/
 
 # Live personal webcam session outputs (keep benchmark sample outputs)
 backend/research/outputs/live_*.json

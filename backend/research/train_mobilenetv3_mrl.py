@@ -136,7 +136,17 @@ def discover_mrl_dataset(data_dir: Path, max_samples: Optional[int] = None) -> L
 
     if max_samples is not None and len(samples) > max_samples:
         rng = random.Random(42)
-        samples = rng.sample(samples, max_samples)
+        # Stratified sampling across (subject_id, label_closed) so all 37 subjects & both classes stay balanced
+        buckets: Dict[Tuple[str, int], List[MRLEyeSample]] = {}
+        for s in samples:
+            buckets.setdefault((s.subject_id, s.label_closed), []).append(s)
+        total = len(samples)
+        stratified: List[MRLEyeSample] = []
+        for key in sorted(buckets.keys()):
+            group = buckets[key]
+            k = max(1, int(round(max_samples * (len(group) / total))))
+            stratified.extend(rng.sample(group, min(k, len(group))))
+        samples = stratified
 
     return samples
 
@@ -202,13 +212,34 @@ def create_synthetic_mrl_smoke_dataset(root_dir: Path, num_samples: int = 240) -
     return synth_dir
 
 
+def compute_roc_auc(y_true: List[int], y_prob_closed: List[float]) -> float:
+    """Compute exact ROC-AUC score in pure NumPy without requiring scikit-learn."""
+    if not y_true or len(set(y_true)) < 2:
+        return 1.0
+    y_arr = np.asarray(y_true, dtype=np.int32)
+    p_arr = np.asarray(y_prob_closed, dtype=np.float64)
+    pos = y_arr == 1
+    neg = y_arr == 0
+    n_pos = int(np.sum(pos))
+    n_neg = int(np.sum(neg))
+    if n_pos == 0 or n_neg == 0:
+        return 1.0
+    # Rank-based Mann-Whitney U statistic (equivalent to area under ROC curve)
+    order = np.argsort(p_arr)
+    ranks = np.empty_like(order, dtype=np.float64)
+    ranks[order] = np.arange(1, len(p_arr) + 1, dtype=np.float64)
+    auc = (np.sum(ranks[pos]) - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg)
+    return float(np.clip(auc, 0.0, 1.0))
+
+
 def run_training_pipeline(
     data_dir: Path,
     epochs_warmup: int = 3,
     epochs_finetune: int = 6,
     batch_size: int = 64,
     lr_warmup: float = 1e-3,
-    lr_finetune: float = 1.5e-4,
+    lr_finetune: float = 4e-4,
+    patience: int = 4,
     max_samples: Optional[int] = None,
 ) -> Dict[str, object]:
     """
@@ -229,13 +260,17 @@ def run_training_pipeline(
     class MRLEyeTorchDataset(Dataset):
         def __init__(self, items: List[MRLEyeSample], is_train: bool = False) -> None:
             self.items = items
+            self._cache: Dict[int, np.ndarray] = {}
             if is_train:
                 self.transform = transforms.Compose(
                     [
                         transforms.ToPILImage(),
-                        transforms.Resize((64, 64)),
-                        transforms.RandomHorizontalFlip(p=0.5),
+                        transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 0.3)),
                         transforms.ColorJitter(brightness=0.25, contrast=0.25),
+                        transforms.RandomHorizontalFlip(p=0.5),
+                        transforms.RandomRotation(degrees=15),
+                        # Convert to 3-channel luminance so IR MRL training transfers cleanly to RGB webcam crops
+                        transforms.Grayscale(num_output_channels=3),
                         transforms.ToTensor(),
                         transforms.Normalize(
                             mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
@@ -246,7 +281,7 @@ def run_training_pipeline(
                 self.transform = transforms.Compose(
                     [
                         transforms.ToPILImage(),
-                        transforms.Resize((64, 64)),
+                        transforms.Grayscale(num_output_channels=3),
                         transforms.ToTensor(),
                         transforms.Normalize(
                             mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
@@ -259,11 +294,15 @@ def run_training_pipeline(
 
         def __getitem__(self, index: int):
             sample = self.items[index]
-            img_bgr = cv2.imread(str(sample.path), cv2.IMREAD_COLOR)
-            if img_bgr is None:
-                img_rgb = np.zeros((64, 64, 3), dtype=np.uint8)
-            else:
-                img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+            img_rgb = self._cache.get(index)
+            if img_rgb is None:
+                img_bgr = cv2.imread(str(sample.path), cv2.IMREAD_COLOR)
+                if img_bgr is None:
+                    img_rgb = np.zeros((64, 64, 3), dtype=np.uint8)
+                else:
+                    resized = cv2.resize(img_bgr, (64, 64), interpolation=cv2.INTER_AREA)
+                    img_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+                self._cache[index] = img_rgb
             tensor = self.transform(img_rgb)
             return tensor, sample.label_closed, index
 
@@ -287,13 +326,17 @@ def run_training_pipeline(
         MRLEyeTorchDataset(test_items, is_train=False), batch_size=batch_size, shuffle=False
     )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda" if use_cuda else "cpu")
     print(f"Training MobileNetV3-Small on device: {device}")
 
     # Load pretrained MobileNetV3-Small and replace final classification layer (2 classes: 0=OPEN, 1=CLOSED)
     model = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.IMAGENET1K_V1)
     in_features = model.classifier[-1].in_features
-    model.classifier[-1] = nn.Linear(in_features, 2)
+    model.classifier[-1] = nn.Sequential(
+        nn.Dropout(p=0.3),
+        nn.Linear(in_features, 2),
+    )
     model = model.to(device)
 
     criterion = nn.CrossEntropyLoss()
@@ -301,14 +344,16 @@ def run_training_pipeline(
         "train_loss": [],
         "val_loss": [],
         "val_acc": [],
+        "val_auc": [],
     }
 
-    def evaluate_loader(loader) -> Tuple[float, float, List[int], List[int]]:
+    def evaluate_loader(loader) -> Tuple[float, float, float, List[int], List[int]]:
         model.eval()
         total_loss = 0.0
         correct = 0
         total = 0
         all_preds: List[int] = []
+        all_probs_closed: List[float] = []
         all_targets: List[int] = []
         with torch.no_grad():
             for x, y, _ in loader:
@@ -316,14 +361,18 @@ def run_training_pipeline(
                 logits = model(x)
                 loss = criterion(logits, y)
                 total_loss += float(loss.item()) * x.size(0)
-                preds = torch.argmax(logits, dim=1)
+                probs = torch.softmax(logits, dim=1)
+                preds = torch.argmax(probs, dim=1)
                 correct += int((preds == y).sum().item())
                 total += x.size(0)
                 all_preds.extend(preds.cpu().tolist())
+                all_probs_closed.extend(probs[:, 1].cpu().tolist())
                 all_targets.extend(y.cpu().tolist())
+        auc = compute_roc_auc(all_targets, all_probs_closed)
         return (
             total_loss / max(1, total),
             (correct / max(1, total)) * 100.0,
+            auc * 100.0,
             all_preds,
             all_targets,
         )
@@ -339,6 +388,7 @@ def run_training_pipeline(
     print(f"\n[Phase 1/2] Warmup Classifier Head ({epochs_warmup} epochs, backbone frozen)...")
     for epoch in range(1, epochs_warmup + 1):
         model.train()
+        model.features.eval()  # Keep frozen backbone BatchNorm statistics stable during head warmup
         running_loss = 0.0
         seen = 0
         for x, y, _ in train_loader:
@@ -352,28 +402,33 @@ def run_training_pipeline(
             seen += x.size(0)
 
         tr_loss = running_loss / max(1, seen)
-        val_loss, val_acc, _, _ = evaluate_loader(val_loader)
+        val_loss, val_acc, val_auc, _, _ = evaluate_loader(val_loader)
         history["train_loss"].append(tr_loss)
         history["val_loss"].append(val_loss)
         history["val_acc"].append(val_acc)
+        history["val_auc"].append(val_auc)
         print(
-            f"  Warmup Epoch {epoch}/{epochs_warmup} | Train Loss: {tr_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%"
+            f"  Warmup Epoch {epoch}/{epochs_warmup} | Train Loss: {tr_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}% | Val AUC: {val_auc:.2f}%"
         )
 
-    # --- Phase 2: Unfreeze Later Layers & Fine-Tune with Smaller Learning Rate ---
-    for block in model.features[-4:]:
-        for param in block.parameters():
-            param.requires_grad = True
+    # --- Phase 2: Unfreeze Backbone Layers & Fine-Tune with Smaller Learning Rate ---
+    for param in model.features.parameters():
+        param.requires_grad = True
 
     optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()), lr=lr_finetune, weight_decay=1e-4
+        [
+            {"params": model.features.parameters(), "lr": lr_finetune},
+            {"params": model.classifier.parameters(), "lr": lr_finetune * 2.0},
+        ],
+        weight_decay=1e-4,
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, epochs_finetune))
 
-    best_val_acc = -1.0
+    best_val_auc = -1.0
     best_state = None
+    no_improve_count = 0
 
-    print(f"\n[Phase 2/2] Fine-Tuning Later Backbone Layers ({epochs_finetune} epochs)...")
+    print(f"\n[Phase 2/2] Fine-Tuning Later Backbone Layers ({epochs_finetune} epochs, patience={patience})...")
     for epoch in range(1, epochs_finetune + 1):
         model.train()
         running_loss = 0.0
@@ -390,22 +445,29 @@ def run_training_pipeline(
         scheduler.step()
 
         tr_loss = running_loss / max(1, seen)
-        val_loss, val_acc, _, _ = evaluate_loader(val_loader)
+        val_loss, val_acc, val_auc, _, _ = evaluate_loader(val_loader)
         history["train_loss"].append(tr_loss)
         history["val_loss"].append(val_loss)
         history["val_acc"].append(val_acc)
-        if val_acc >= best_val_acc:
-            best_val_acc = val_acc
+        history["val_auc"].append(val_auc)
+        if val_auc >= best_val_auc:
+            best_val_auc = val_auc
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            no_improve_count = 0
+        else:
+            no_improve_count += 1
         print(
-            f"  Fine-Tune Epoch {epoch}/{epochs_finetune} | Train Loss: {tr_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%"
+            f"  Fine-Tune Epoch {epoch}/{epochs_finetune} | Train Loss: {tr_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}% | Val AUC: {val_auc:.2f}%"
         )
+        if no_improve_count >= patience:
+            print(f"  Early stopping triggered after {epoch} fine-tuning epochs.")
+            break
 
     if best_state is not None:
         model.load_state_dict(best_state)
 
     # --- Evaluate on Held-Out Unseen Test Subjects ---
-    test_loss, test_acc, preds, targets = evaluate_loader(test_loader)
+    test_loss, test_acc, test_auc, preds, targets = evaluate_loader(test_loader)
     tp = sum(1 for p, t in zip(preds, targets) if p == 1 and t == 1)
     fp = sum(1 for p, t in zip(preds, targets) if p == 1 and t == 0)
     tn = sum(1 for p, t in zip(preds, targets) if p == 0 and t == 0)
@@ -415,31 +477,63 @@ def run_training_pipeline(
     recall = (tp / max(1, tp + fn)) * 100.0
     f1 = (2 * precision * recall / max(1e-6, precision + recall))
 
-    # --- Export to ONNX for DriveGuard's ConfidenceGatedEyeCascade ---
+    # Subgroup accuracy across MRL metadata (Glasses, Glare Reflections, Lighting)
+    def subgroup_acc(filter_fn) -> Optional[float]:
+        matched = [
+            int(p == t)
+            for sample, p, t in zip(test_items, preds, targets)
+            if filter_fn(sample)
+        ]
+        return round((sum(matched) / len(matched)) * 100.0, 2) if matched else None
+
+    subgroups = {
+        "glasses_yes_acc_pct": subgroup_acc(lambda s: s.glasses == 1),
+        "glasses_no_acc_pct": subgroup_acc(lambda s: s.glasses == 0),
+        "glare_reflections_acc_pct": subgroup_acc(lambda s: s.reflections in (1, 2)),
+        "no_reflections_acc_pct": subgroup_acc(lambda s: s.reflections == 0),
+        "bad_lighting_acc_pct": subgroup_acc(lambda s: s.lighting == 0),
+        "good_lighting_acc_pct": subgroup_acc(lambda s: s.lighting == 1),
+    }
+
+    # --- Export to ONNX & PyTorch Checkpoint for DriveGuard's ConfidenceGatedEyeCascade ---
     weights_dir = Path(__file__).resolve().parents[1] / "weights"
     weights_dir.mkdir(parents=True, exist_ok=True)
     onnx_path = weights_dir / "mobilenetv3_eye.onnx"
+    pth_path = weights_dir / "mobilenetv3_eye.pth"
 
     model.eval()
     model.cpu()
+    torch.save(model.state_dict(), str(pth_path))
     dummy_input = torch.randn(1, 3, 64, 64, dtype=torch.float32)
-    torch.onnx.export(
-        model,
-        dummy_input,
-        str(onnx_path),
-        input_names=["eye_crop_rgb"],
-        output_names=["logits"],
-        dynamic_axes={"eye_crop_rgb": {0: "batch_size"}, "logits": {0: "batch_size"}},
-        opset_version=17,
-    )
+    try:
+        torch.onnx.export(
+            model,
+            dummy_input,
+            str(onnx_path),
+            input_names=["eye_crop_rgb"],
+            output_names=["logits"],
+            dynamic_axes={"eye_crop_rgb": {0: "batch_size"}, "logits": {0: "batch_size"}},
+            opset_version=17,
+            dynamo=False,
+        )
+    except TypeError:
+        torch.onnx.export(
+            model,
+            dummy_input,
+            str(onnx_path),
+            input_names=["eye_crop_rgb"],
+            output_names=["logits"],
+            dynamic_axes={"eye_crop_rgb": {0: "batch_size"}, "logits": {0: "batch_size"}},
+            opset_version=17,
+        )
     print(f"\nExported fine-tuned MobileNetV3-Small ONNX weights to: {onnx_path}")
 
-    # Save Training Curves Plot
+    # Save Training Curves & Confusion Matrix Plots
     out_dir = Path(__file__).resolve().parent / "outputs"
     fig_dir = out_dir / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.5))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11.5, 4.5))
     epochs_range = range(1, len(history["train_loss"]) + 1)
     ax1.plot(epochs_range, history["train_loss"], marker="o", label="Train Loss")
     ax1.plot(epochs_range, history["val_loss"], marker="s", label="Validation Loss")
@@ -450,33 +544,68 @@ def run_training_pipeline(
     ax1.legend()
 
     ax2.plot(epochs_range, history["val_acc"], marker="o", color="#059669", label="Validation Accuracy (%)")
+    ax2.plot(epochs_range, history["val_auc"], marker="^", color="#2563EB", label="Validation ROC-AUC (%)")
     ax2.axvline(epochs_warmup + 0.5, color="#DC2626", ls="--", label="Unfreeze Later Layers")
-    ax2.set_title(f"Unseen-Subject Validation Accuracy (Test F1 = {f1:.1f}%)")
+    ax2.set_title(f"Unseen-Subject Validation (Test AUC = {test_auc:.2f}%, F1 = {f1:.1f}%)")
     ax2.set_xlabel("Epoch")
-    ax2.set_ylabel("Accuracy (%)")
+    ax2.set_ylabel("Score (%)")
     ax2.legend()
     fig.tight_layout()
     fig.savefig(fig_dir / "fig5_mobilenetv3_mrl_training.png", dpi=300)
     plt.close(fig)
 
+    # Save Confusion Matrix Figure
+    cm = np.array([[tn, fp], [fn, tp]], dtype=np.int32)
+    fig_cm, ax_cm = plt.subplots(figsize=(5.5, 4.8))
+    im = ax_cm.imshow(cm, cmap="Blues")
+    ax_cm.set_xticks([0, 1])
+    ax_cm.set_yticks([0, 1])
+    ax_cm.set_xticklabels(["OPEN (Awake)", "CLOSED (Sleepy)"])
+    ax_cm.set_yticklabels(["OPEN (Awake)", "CLOSED (Sleepy)"])
+    ax_cm.set_xlabel("Predicted Class", fontweight="bold")
+    ax_cm.set_ylabel("True Class", fontweight="bold")
+    ax_cm.set_title(f"MobileNetV3-Small Confusion Matrix (AUC={test_auc:.2f}%)", fontweight="bold")
+    for r in range(2):
+        for c in range(2):
+            ax_cm.text(
+                c, r, f"{cm[r, c]:,}", ha="center", va="center",
+                color="white" if cm[r, c] > cm.max() / 2 else "#111827",
+                fontsize=12, fontweight="bold",
+            )
+    fig_cm.colorbar(im, ax=ax_cm, fraction=0.046, pad=0.04)
+    fig_cm.tight_layout()
+    fig_cm.savefig(fig_dir / "fig6_mobilenetv3_confusion_matrix.png", dpi=300)
+    plt.close(fig_cm)
+
     metrics = {
         "test_accuracy_pct": round(test_acc, 2),
+        "test_roc_auc_pct": round(test_auc, 2),
         "test_precision_pct": round(precision, 2),
         "test_recall_pct": round(recall, 2),
         "test_f1_pct": round(f1, 2),
         "confusion_matrix": {"tn_open": tn, "fp_closed": fp, "fn_open": fn, "tp_closed": tp},
+        "subgroup_accuracy": subgroups,
         "onnx_model_path": str(onnx_path),
     }
     (out_dir / "mobilenetv3_mrl_metrics.json").write_text(
         json.dumps(metrics, indent=2), encoding="utf-8"
     )
-    print(f"Unseen Test Metrics: Acc={test_acc:.2f}%, Prec={precision:.2f}%, Recall={recall:.2f}%, F1={f1:.2f}%")
+    print(
+        f"Unseen Test Metrics: Acc={test_acc:.2f}%, ROC-AUC={test_auc:.2f}%, Prec={precision:.2f}%, Recall={recall:.2f}%, F1={f1:.2f}%"
+    )
+    print(f"Subgroup Accuracy: {subgroups}")
     return metrics
 
 
 def main() -> None:
+    default_mrl_dir = Path(__file__).resolve().parents[1] / "datasets" / "data"
     parser = argparse.ArgumentParser(description="Fine-tune MobileNetV3-Small on MRL Eye Dataset")
-    parser.add_argument("--data-dir", type=str, default=None, help="Path to MRL Eye Dataset folder")
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=str(default_mrl_dir) if default_mrl_dir.is_dir() else None,
+        help="Path to MRL Eye Dataset folder (defaults to backend/datasets/data if present)",
+    )
     parser.add_argument("--epochs-warmup", type=int, default=3, help="Frozen-backbone warmup epochs")
     parser.add_argument("--epochs-finetune", type=int, default=6, help="Unfrozen fine-tuning epochs")
     parser.add_argument("--batch-size", type=int, default=64, help="Training mini-batch size")

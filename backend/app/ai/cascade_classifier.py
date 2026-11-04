@@ -108,11 +108,12 @@ class MobileNetV3EyeVerifier:
         crop = crop_quality.crop_rgb
 
         if self.onnx_session is not None and self.input_name is not None:
-            # Standard ImageNet-normalized (1, 3, 64, 64) tensor
-            img = crop.astype(np.float32) / 255.0
+            # Convert RGB webcam crop to 3-channel luminance to bridge the IR (MRL dataset) <-> RGB (webcam) domain gap
+            gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+            lum3 = np.stack([gray, gray, gray], axis=-1).astype(np.float32) / 255.0
             mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
             std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-            img = (img - mean) / std
+            img = (lum3 - mean) / std
             tensor = np.transpose(img, (2, 0, 1))[np.newaxis, ...]
             logits = self.onnx_session.run(None, {self.input_name: tensor})[0][0]
             exp_logits = np.exp(logits - np.max(logits))

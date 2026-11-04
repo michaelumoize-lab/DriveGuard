@@ -1,0 +1,22 @@
+{
+  "test_accuracy_pct": 92.77,
+  "test_roc_auc_pct": 97.44,
+  "test_precision_pct": 88.59,
+  "test_recall_pct": 90.71,
+  "test_f1_pct": 89.63,
+  "confusion_matrix": {
+    "tn_open": 1788,
+    "fp_closed": 117,
+    "fn_open": 93,
+    "tp_closed": 908
+  },
+  "subgroup_accuracy": {
+    "glasses_yes_acc_pct": 89.91,
+    "glasses_no_acc_pct": 94.84,
+    "glare_reflections_acc_pct": 89.72,
+    "no_reflections_acc_pct": 93.99,
+    "bad_lighting_acc_pct": 93.33,
+    "good_lighting_acc_pct": 91.9
+  },
+  "onnx_model_path": "C:\\Users\\Michael Umoize\\Desktop\\DriveGuard\\backend\\weights\\mobilenetv3_eye.onnx"
+}
