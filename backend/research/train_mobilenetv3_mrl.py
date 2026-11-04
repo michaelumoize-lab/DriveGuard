@@ -103,24 +103,30 @@ def discover_mrl_dataset(data_dir: Path, max_samples: Optional[int] = None) -> L
             samples.append(parsed)
             continue
 
-        # Fallback for Kaggle folder-named subsets (e.g. parent folder named "Open" or "Closed")
+        # Fallback for Kaggle folder-named subsets (e.g. parent folder named "Open"/"Awake" or "Closed"/"Sleepy")
         parent_lower = img_path.parent.name.lower()
-        if "open" in parent_lower:
+        split_hint = img_path.parent.parent.name.lower() if img_path.parent.parent else ""
+        subj_tag = (
+            f"split_{split_hint}_{hash(img_path.stem) % 10:02d}"
+            if split_hint in ("train", "val", "valid", "test")
+            else f"subj_{hash(img_path.stem) % 25:02d}"
+        )
+        if any(k in parent_lower for k in ("open", "awake", "alert")):
             samples.append(
                 MRLEyeSample(
                     path=img_path,
-                    subject_id=f"subj_{hash(img_path.stem) % 25:02d}",
+                    subject_id=subj_tag,
                     label_closed=0,
                     glasses=None,
                     reflections=None,
                     lighting=None,
                 )
             )
-        elif "close" in parent_lower:
+        elif any(k in parent_lower for k in ("close", "sleep", "drowsy")):
             samples.append(
                 MRLEyeSample(
                     path=img_path,
-                    subject_id=f"subj_{hash(img_path.stem) % 25:02d}",
+                    subject_id=subj_tag,
                     label_closed=1,
                     glasses=None,
                     reflections=None,
