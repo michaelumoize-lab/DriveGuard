@@ -1,0 +1,41 @@
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+
+# Large AI model weights (auto-downloaded at runtime)
+backend/weights/*.task
+backend/weights/*.onnx
+backend/weights/*.pt
+backend/weights/*.pth
+
+# Live personal webcam session outputs (keep benchmark sample outputs)
+backend/research/outputs/live_*.json
+backend/research/outputs/*.mp4
+backend/research/outputs/*.avi
+
+# Node / Next.js (for Phase 3 frontend)
+node_modules/
+.next/
+out/
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

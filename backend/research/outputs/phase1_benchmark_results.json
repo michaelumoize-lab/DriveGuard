@@ -1,0 +1,26 @@
+{
+  "EXPERIMENT_A_GEOMETRIC_ONLY": {
+    "fixed_false_alarm_frames": 1193.0,
+    "pdbp_false_alarm_frames": 457.0,
+    "drowsy_recall_pct": 100.0,
+    "cnn_trigger_rate_pct": 0.0,
+    "mean_stage_latency_ms": 0.205,
+    "disagreement_audits": 0.0
+  },
+  "EXPERIMENT_B_CNN_ALWAYS": {
+    "fixed_false_alarm_frames": 1193.0,
+    "pdbp_false_alarm_frames": 0.0,
+    "drowsy_recall_pct": 83.7,
+    "cnn_trigger_rate_pct": 100.0,
+    "mean_stage_latency_ms": 0.958,
+    "disagreement_audits": 300.0
+  },
+  "EXPERIMENT_C_CONFIDENCE_GATED_CASCADE": {
+    "fixed_false_alarm_frames": 1193.0,
+    "pdbp_false_alarm_frames": 0.0,
+    "drowsy_recall_pct": 83.7,
+    "cnn_trigger_rate_pct": 38.5,
+    "mean_stage_latency_ms": 0.563,
+    "disagreement_audits": 300.0
+  }
+}
