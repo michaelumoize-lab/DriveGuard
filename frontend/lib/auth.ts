@@ -3,10 +3,10 @@ import { prismaAdapter } from "better-auth/adapters/prisma";
 import { prisma } from "@/lib/prisma";
 import { admin, multiSession } from "better-auth/plugins";
 import { nextCookies } from "better-auth/next-js";
-import { lastLoginMethod } from "better-auth/plugins"
+import { lastLoginMethod } from "better-auth/plugins";
 
 const BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET;
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? process.env.BETTER_AUTH_URL ?? "http://localhost:3000";
+const APP_URL = process.env.BETTER_AUTH_URL ?? "http://localhost:3000";
 
 if (!BETTER_AUTH_SECRET) {
   throw new Error("BETTER_AUTH_SECRET environment variable is required");
@@ -36,9 +36,9 @@ export const auth = betterAuth({
   },
 
   user: {
-    deleteUser: { 
-      enabled: true
-    } 
+    deleteUser: {
+      enabled: true,
+    },
   },
 
   databaseHooks: {
@@ -57,7 +57,10 @@ export const auth = betterAuth({
               },
             });
           } catch (err) {
-            console.error("Failed to initialize UserProfile on registration:", err);
+            console.error(
+              "Failed to initialize UserProfile on registration:",
+              err,
+            );
           }
         },
       },

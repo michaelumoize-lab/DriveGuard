@@ -34,8 +34,11 @@ import {
   WifiOff,
   Maximize2,
   Minimize2,
+  Smartphone,
+  Monitor,
+  Flame,
+  Clock,
   Compass,
-  Zap,
 } from "lucide-react";
 
 export interface NormalizedTelemetry {
@@ -74,6 +77,22 @@ export function LiveDriverMonitor() {
   const lastFrameSentTimeRef = useRef<number>(0);
   const audioContextRef = useRef<AudioContext | null>(null);
 
+  // Active Session & DB Logging Refs
+  const activeSessionCodeRef = useRef<string | null>(null);
+  const lastAlertLoggedTimeRef = useRef<number>(0);
+  const sessionMetricsRef = useRef({
+    totalFrames: 0,
+    fpsSum: 0,
+    latencySum: 0,
+    perclosSum: 0,
+    maxPerclos: 0,
+    totalBlinks: 0,
+    blinkRateSum: 0,
+    normalCount: 0,
+    warningCount: 0,
+    criticalCount: 0,
+  });
+
   // States
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isWsConnected, setIsWsConnected] = useState(false);
@@ -85,12 +104,35 @@ export function LiveDriverMonitor() {
   const [sessionDurationSec, setSessionDurationSec] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
+  // Device & Layout Modes
+  const [isMobileDevice, setIsMobileDevice] = useState(false);
+  const [viewOrientation, setViewOrientation] = useState<"portrait" | "landscape">("landscape");
+
   // Backend target selector (default to Local if on localhost, or Cloud Render)
   const [backendType, setBackendType] = useState<"local" | "cloud">("local");
 
   const localWsUrl = "ws://127.0.0.1:8000";
   const cloudWsUrl = process.env.NEXT_PUBLIC_FASTAPI_WS_URL || "wss://driveguard-x048.onrender.com";
   const activeWsBase = backendType === "local" ? localWsUrl : cloudWsUrl;
+
+  // Auto-detect mobile device & orientation
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const checkMobile = () => {
+        const isSmallScreen = window.innerWidth <= 768;
+        const isMobileUA = /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        const mobile = isSmallScreen || isMobileUA;
+        setIsMobileDevice(mobile);
+        if (mobile) {
+          setViewOrientation("portrait");
+        }
+      };
+
+      checkMobile();
+      window.addEventListener("resize", checkMobile);
+      return () => window.removeEventListener("resize", checkMobile);
+    }
+  }, []);
 
   // Initialize preference from localStorage if available
   useEffect(() => {
@@ -105,7 +147,7 @@ export function LiveDriverMonitor() {
     }
   }, []);
 
-  // Listen to browser fullscreen changes (e.g. Esc key pressed)
+  // Listen to browser fullscreen changes
   useEffect(() => {
     const handleFullscreenChange = () => {
       setIsFullscreen(Boolean(document.fullscreenElement));
@@ -214,6 +256,37 @@ export function LiveDriverMonitor() {
     };
   };
 
+  // Background Database Alert Logger (throttled to at most once per 3.5s per event)
+  const logAlertToDatabase = useCallback(async (t: NormalizedTelemetry) => {
+    const sessionCode = activeSessionCodeRef.current;
+    if (!sessionCode) return;
+    if (t.state !== "WARNING" && t.state !== "CRITICAL") return;
+
+    const now = Date.now();
+    if (now - lastAlertLoggedTimeRef.current < 3500) return;
+    lastAlertLoggedTimeRef.current = now;
+
+    try {
+      await fetch("/api/alerts/log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionCode,
+          severity: t.state,
+          riskScore: t.risk_score,
+          earValue: t.ear,
+          perclosPct: t.perclos_60s,
+          poseZone: t.pose_zone,
+          reasons: t.reason_codes,
+          cascadeDecision: t.decision_authority,
+          timestampMs: t.timestamp_ms,
+        }),
+      });
+    } catch (err) {
+      console.warn("Could not persist alert to database:", err);
+    }
+  }, []);
+
   const sendCommand = useCallback((cmd: Record<string, unknown>) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(cmd));
@@ -240,7 +313,6 @@ export function LiveDriverMonitor() {
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
-    // Safety timeout for cold cloud instances
     const connectTimeout = setTimeout(() => {
       if (ws.readyState !== WebSocket.OPEN && backendType === "cloud" && fallbackToLocal) {
         console.warn("Cloud connection timed out, attempting local fallback...");
@@ -268,10 +340,34 @@ export function LiveDriverMonitor() {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        let parsed: NormalizedTelemetry | null = null;
         if (data.type === "TELEMETRY" && data.telemetry) {
-          setTelemetry(parseTelemetry(data.telemetry));
+          parsed = parseTelemetry(data.telemetry);
         } else if (data.frame_index !== undefined) {
-          setTelemetry(parseTelemetry(data));
+          parsed = parseTelemetry(data);
+        }
+
+        if (parsed) {
+          setTelemetry(parsed);
+
+          // Update session aggregate metrics
+          const m = sessionMetricsRef.current;
+          m.totalFrames += 1;
+          m.fpsSum += parsed.fps;
+          m.latencySum += parsed.latency_ms;
+          m.perclosSum += parsed.perclos_60s;
+          m.maxPerclos = Math.max(m.maxPerclos, parsed.perclos_60s);
+          if (parsed.blink_rate > 0) {
+            m.blinkRateSum += parsed.blink_rate;
+          }
+          if (parsed.state === "CRITICAL") m.criticalCount += 1;
+          else if (parsed.state === "WARNING") m.warningCount += 1;
+          else m.normalCount += 1;
+
+          // Auto-log warning or critical alerts to database
+          if (parsed.state === "WARNING" || parsed.state === "CRITICAL") {
+            logAlertToDatabase(parsed);
+          }
         }
       } catch {
         // Non-JSON binary or malformed payload
@@ -299,17 +395,30 @@ export function LiveDriverMonitor() {
     };
 
     return ws;
-  }, [activeWsBase, backendType, selectedExperiment]);
+  }, [activeWsBase, backendType, selectedExperiment, logAlertToDatabase]);
 
-  // Main Start Camera & Streaming Action
+  // Main Start Camera & Streaming Action (Mobile-First Portrait Optimized)
   const startStream = async () => {
     try {
+      const isPortrait = viewOrientation === "portrait" || isMobileDevice;
+
+      // Request device camera with mobile-first portrait aspect ratio when on portrait
+      const videoConstraints: MediaTrackConstraints = isPortrait
+        ? {
+            facingMode: "user",
+            aspectRatio: { ideal: 9 / 16 },
+            width: { ideal: 720 },
+            height: { ideal: 1280 },
+          }
+        : {
+            facingMode: "user",
+            aspectRatio: { ideal: 16 / 9 },
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+          };
+
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          facingMode: "user",
-        },
+        video: videoConstraints,
         audio: false,
       });
 
@@ -323,12 +432,41 @@ export function LiveDriverMonitor() {
       setIsCameraActive(true);
       setSessionStartTime(Date.now());
 
+      // 1. Initialize Driving Session in PostgreSQL
+      const sessionCode = `DRV-${Date.now().toString().slice(-6)}`;
+      activeSessionCodeRef.current = sessionCode;
+      sessionMetricsRef.current = {
+        totalFrames: 0,
+        fpsSum: 0,
+        latencySum: 0,
+        perclosSum: 0,
+        maxPerclos: 0,
+        totalBlinks: 0,
+        blinkRateSum: 0,
+        normalCount: 0,
+        warningCount: 0,
+        criticalCount: 0,
+      };
+
+      try {
+        await fetch("/api/sessions/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionCode }),
+        });
+        toast.success(`Driving Session ${sessionCode} started & recording to DB!`);
+      } catch (err) {
+        console.warn("Could not register session in DB:", err);
+      }
+
+      // 2. Connect WebSocket
       const sessionId = `web_${Date.now()}`;
       const ws = connectWebSocket(sessionId);
 
       isFrameInFlightRef.current = false;
       lastFrameSentTimeRef.current = 0;
 
+      // 3. Backpressure-Controlled Frame Grabber (respects portrait aspect ratio)
       frameIntervalRef.current = setInterval(() => {
         const now = Date.now();
         if (now - lastFrameSentTimeRef.current < 40) return;
@@ -351,8 +489,15 @@ export function LiveDriverMonitor() {
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
 
-        canvas.width = 320;
-        canvas.height = 240;
+        // Size canvas matching camera orientation for 0-distortion MediaPipe processing
+        if (isPortrait) {
+          canvas.width = 240;
+          canvas.height = 320;
+        } else {
+          canvas.width = 320;
+          canvas.height = 240;
+        }
+
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
         canvas.toBlob(
@@ -379,7 +524,41 @@ export function LiveDriverMonitor() {
     }
   };
 
-  const stopStream = () => {
+  // Teardown everything cleanly & finalize session in DB
+  const stopStream = async () => {
+    const sessionCode = activeSessionCodeRef.current;
+    const duration = sessionStartTime ? Math.floor((Date.now() - sessionStartTime) / 1000) : 0;
+    const m = sessionMetricsRef.current;
+
+    // 1. Finalize Driving Session in PostgreSQL
+    if (sessionCode) {
+      try {
+        const avgFps = m.totalFrames > 0 ? Number((m.fpsSum / m.totalFrames).toFixed(1)) : 0;
+        const avgLatency = m.totalFrames > 0 ? Number((m.latencySum / m.totalFrames).toFixed(1)) : 0;
+        const avgPerclos = m.totalFrames > 0 ? Number((m.perclosSum / m.totalFrames).toFixed(1)) : 0;
+        const avgBlinkRate = m.totalFrames > 0 ? Number((m.blinkRateSum / m.totalFrames).toFixed(1)) : 0;
+
+        await fetch("/api/sessions/end", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionCode,
+            durationSeconds: duration,
+            averageFps: avgFps,
+            averageLatencyMs: avgLatency,
+            averagePerclosPct: avgPerclos,
+            maxPerclosPct: Number(m.maxPerclos.toFixed(1)),
+            averageBlinkRate: avgBlinkRate,
+            warningAlertsCount: m.warningCount,
+            criticalAlertsCount: m.criticalCount,
+          }),
+        });
+        toast.success(`Trip saved to Database! Logged ${m.warningCount} warnings & ${m.criticalCount} critical events.`);
+      } catch (err) {
+        console.warn("Could not finalize session in DB:", err);
+      }
+    }
+
     if (frameIntervalRef.current) {
       clearInterval(frameIntervalRef.current);
       frameIntervalRef.current = null;
@@ -408,8 +587,8 @@ export function LiveDriverMonitor() {
     setWsStatus("disconnected");
     setTelemetry(null);
     setSessionStartTime(null);
+    activeSessionCodeRef.current = null;
     isFrameInFlightRef.current = false;
-    toast.info("Driver monitoring session ended.");
   };
 
   const reconnectWebSocket = () => {
@@ -444,37 +623,106 @@ export function LiveDriverMonitor() {
       ? "bg-muted text-muted-foreground"
       : "bg-emerald-600 text-white font-semibold";
 
+  const isPortraitMode = viewOrientation === "portrait";
+
   return (
     <div
       ref={containerRef}
       className={`space-y-6 transition-all ${
-        isFullscreen ? "fixed inset-0 z-50 bg-black p-4 flex flex-col justify-between overflow-hidden" : ""
+        isFullscreen
+          ? "fixed inset-0 z-50 bg-black p-0 sm:p-4 flex flex-col justify-between overflow-hidden"
+          : ""
       }`}
     >
+      {/* Top Mobile/Desktop Orientation Bar */}
+      {!isFullscreen && (
+        <div className="flex items-center justify-between bg-muted/40 p-2.5 rounded-xl border border-border text-xs">
+          <div className="flex items-center gap-2">
+            <span className="text-muted-foreground hidden sm:inline">Stream Orientation:</span>
+            <div className="flex items-center bg-background rounded-lg p-0.5 border border-border">
+              <button
+                type="button"
+                onClick={() => setViewOrientation("portrait")}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all flex items-center gap-1.5 ${
+                  viewOrientation === "portrait"
+                    ? "bg-primary text-primary-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Smartphone className="size-3.5" />
+                <span>TikTok Portrait</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewOrientation("landscape")}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all flex items-center gap-1.5 ${
+                  viewOrientation === "landscape"
+                    ? "bg-primary text-primary-foreground shadow-xs"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <Monitor className="size-3.5" />
+                <span>Webcam Landscape</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {activeSessionCodeRef.current && (
+              <Badge variant="outline" className="text-[10px] font-mono border-primary/40 text-primary bg-primary/10">
+                🔴 {activeSessionCodeRef.current}
+              </Badge>
+            )}
+            <span className="text-[11px] text-muted-foreground hidden md:inline">
+              {isMobileDevice ? "📱 Mobile Device Detected" : "💻 Desktop Mode"}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Video & Real-time HUD Grid */}
-      <div className={`grid gap-6 ${isFullscreen ? "h-full grid-cols-1" : "grid-cols-1 lg:grid-cols-3"}`}>
-        {/* Main Video Viewport */}
+      <div
+        className={`grid gap-6 ${
+          isFullscreen
+            ? "h-full w-full grid-cols-1 p-0"
+            : isPortraitMode
+            ? "grid-cols-1 md:grid-cols-12 max-w-5xl mx-auto"
+            : "grid-cols-1 lg:grid-cols-3"
+        }`}
+      >
+        {/* Main Video Viewport (TikTok Style Portrait or Landscape) */}
         <Card
-          className={`overflow-hidden border-border/80 flex flex-col ${
-            isFullscreen ? "border-0 rounded-none bg-black h-full" : "lg:col-span-2"
+          className={`overflow-hidden border-border/80 flex flex-col relative ${
+            isFullscreen
+              ? "border-0 rounded-none bg-black h-full w-full"
+              : isPortraitMode
+              ? "md:col-span-7 lg:col-span-6 mx-auto w-full max-w-[420px] shadow-2xl rounded-3xl border-2"
+              : "lg:col-span-2"
           }`}
         >
-          {/* Card / HUD Header */}
+          {/* Card / HUD Header (Minimalist for Portrait) */}
           <CardHeader
             className={`py-3 px-4 flex flex-row items-center justify-between border-b border-border ${
-              isFullscreen ? "bg-black/90 border-white/10 z-30" : ""
+              isFullscreen
+                ? "bg-black/90 border-white/10 z-30"
+                : isPortraitMode
+                ? "bg-background/90 backdrop-blur-md"
+                : ""
             }`}
           >
             <div className="flex items-center gap-2">
               <Camera className="size-4 text-primary" />
               <CardTitle className="text-sm font-semibold text-foreground">
-                {isFullscreen ? "DriveGuard Fullscreen Cockpit HUD" : "Webcam Cabin Feed"}
+                {isFullscreen
+                  ? "DriveGuard Cockpit HUD"
+                  : isPortraitMode
+                  ? "TikTok Cabin Stream"
+                  : "Webcam Cabin Feed"}
               </CardTitle>
             </div>
 
             {/* Target AI Engine Toggle & Status */}
-            <div className="flex items-center gap-2">
-              {/* Local vs Cloud Switcher */}
+            <div className="flex items-center gap-1.5 sm:gap-2">
               <div className="flex items-center bg-muted/60 rounded-md p-0.5 text-[11px] font-mono border border-border">
                 <button
                   type="button"
@@ -484,7 +732,7 @@ export function LiveDriverMonitor() {
                       ? "bg-primary text-primary-foreground font-semibold shadow-xs"
                       : "text-muted-foreground hover:text-foreground"
                   }`}
-                  title="Local AI Engine (ws://127.0.0.1:8000) — Fast, zero latency"
+                  title="Local AI Engine (ws://127.0.0.1:8000)"
                 >
                   ⚡ Local
                 </button>
@@ -516,12 +764,12 @@ export function LiveDriverMonitor() {
                 {isWsConnected ? (
                   <>
                     <Wifi className="size-3" />
-                    WS: LIVE
+                    LIVE
                   </>
                 ) : wsStatus === "connecting" ? (
                   <>
                     <RefreshCw className="size-3 animate-spin" />
-                    CONNECTING
+                    SYNC
                   </>
                 ) : (
                   <>
@@ -531,14 +779,7 @@ export function LiveDriverMonitor() {
                 )}
               </Badge>
 
-              {telemetry && (
-                <span className="text-[11px] font-mono text-muted-foreground hidden sm:inline">
-                  {telemetry.fps ? `${telemetry.fps.toFixed(1)} FPS` : "--"} |{" "}
-                  {telemetry.latency_ms ? `${telemetry.latency_ms.toFixed(1)} ms` : "--"}
-                </span>
-              )}
-
-              {/* Fullscreen Toggle Button */}
+              {/* Fullscreen Button */}
               <Button
                 size="sm"
                 variant="ghost"
@@ -551,8 +792,16 @@ export function LiveDriverMonitor() {
             </div>
           </CardHeader>
 
-          {/* Video Viewport Content */}
-          <CardContent className="p-0 relative bg-black aspect-video flex-1 flex items-center justify-center overflow-hidden">
+          {/* Video Viewport Content (9:16 aspect ratio on portrait) */}
+          <CardContent
+            className={`p-0 relative bg-black flex-1 flex items-center justify-center overflow-hidden ${
+              isFullscreen
+                ? "h-full w-full"
+                : isPortraitMode
+                ? "aspect-[9/16] min-h-[500px]"
+                : "aspect-video"
+            }`}
+          >
             {/* Native Video Element */}
             <video
               ref={videoRef}
@@ -566,41 +815,36 @@ export function LiveDriverMonitor() {
 
             {/* Offline Overlay Placeholder (Only visible when camera is truly inactive) */}
             {!isCameraActive && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/95 backdrop-blur-xs text-center p-6 space-y-3 z-10">
-                <div className="p-3 rounded-full bg-primary/10 text-primary">
-                  <Activity className="size-8" />
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/95 backdrop-blur-xs text-center p-6 space-y-4 z-10">
+                <div className="p-3.5 rounded-full bg-primary/10 text-primary">
+                  <Flame className="size-8 animate-pulse text-primary" />
                 </div>
-                <div className="font-semibold text-foreground text-sm">
-                  Ready to Start Driver Monitoring
+                <div className="font-bold text-foreground text-base">
+                  {isPortraitMode ? "TikTok-Style Mobile Stream" : "Ready to Start Monitoring"}
                 </div>
-                <p className="text-xs text-muted-foreground max-w-sm">
-                  Click &apos;Start Live Stream&apos; below to enable your camera and connect to the edge AI cascade.
+                <p className="text-xs text-muted-foreground max-w-xs">
+                  {isPortraitMode
+                    ? "Hold your phone vertically. Face detection, blink kinematics, and fatigue alerts stream in real-time."
+                    : "Click below to enable your camera and connect to the edge AI cascade."}
                 </p>
-                <div className="flex flex-col sm:flex-row items-center gap-2 pt-1">
-                  <Button size="sm" onClick={startStream} className="bg-primary text-primary-foreground">
-                    <Play className="size-4 mr-1.5" />
-                    Start Live Stream
-                  </Button>
-                </div>
-                <div className="text-[11px] font-mono text-muted-foreground/80">
-                  Target AI Server:{" "}
-                  <span className="text-foreground font-semibold">
-                    {backendType === "local" ? "127.0.0.1:8000 (Local Python)" : "driveguard-x048.onrender.com"}
-                  </span>
+                <Button size="sm" onClick={startStream} className="bg-primary text-primary-foreground font-semibold px-6 py-2 rounded-xl shadow-md">
+                  <Play className="size-4 mr-1.5" />
+                  Start Live Stream
+                </Button>
+                <div className="text-[10px] font-mono text-muted-foreground/80">
+                  Target: {backendType === "local" ? "127.0.0.1:8000 (Local Python)" : "driveguard-x048.onrender.com"}
                 </div>
               </div>
             )}
 
             {/* Disconnected Notice if camera is active but WS dropped */}
             {isCameraActive && !isWsConnected && (
-              <div className="absolute top-3 left-3 right-3 flex items-center justify-between p-2 rounded-md bg-black/85 backdrop-blur-md border border-amber-500/40 text-amber-400 text-xs shadow-md z-20">
+              <div className="absolute top-3 left-3 right-3 flex items-center justify-between p-2 rounded-xl bg-black/85 backdrop-blur-md border border-amber-500/40 text-amber-400 text-xs shadow-md z-20">
                 <div className="flex items-center gap-2">
-                  <AlertTriangle className="size-4 animate-bounce" />
-                  <span>
-                    AI Backend offline ({activeWsBase}). Webcam feed running in local preview mode.
-                  </span>
+                  <AlertTriangle className="size-4 animate-bounce shrink-0" />
+                  <span className="truncate">AI Offline ({activeWsBase})</span>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 shrink-0">
                   {backendType === "cloud" && (
                     <Button
                       size="sm"
@@ -608,7 +852,7 @@ export function LiveDriverMonitor() {
                       onClick={() => changeBackendType("local")}
                       className="h-7 text-xs border-primary/50 text-primary hover:bg-primary/20"
                     >
-                      ⚡ Switch to Local
+                      ⚡ Local
                     </Button>
                   )}
                   <Button
@@ -618,89 +862,81 @@ export function LiveDriverMonitor() {
                     className="h-7 text-xs border-amber-500/50 text-amber-300 hover:bg-amber-500/20"
                   >
                     <RefreshCw className="size-3 mr-1" />
-                    Reconnect
+                    Retry
                   </Button>
                 </div>
               </div>
             )}
 
-            {/* In-Video Heads-Up Overlay when Stream and Telemetry are active */}
+            {/* TikTok-Style Overlay HUD Elements (When Camera is Active) */}
             {isCameraActive && telemetry && (
               <>
-                {/* Top Status HUD */}
+                {/* Top Profile / Zone Chip */}
                 <div className="absolute top-3 left-3 right-3 flex items-start justify-between pointer-events-none z-10">
-                  <div className={`px-3 py-1.5 rounded-lg shadow-md text-xs uppercase tracking-wider font-bold ${stateColor}`}>
+                  <div className={`px-3 py-1.5 rounded-full shadow-lg text-xs uppercase tracking-wider font-extrabold ${stateColor}`}>
                     {telemetry.state}
                   </div>
                   <div className="flex flex-col items-end gap-1.5">
-                    <div className="px-2.5 py-1 rounded-md bg-black/75 backdrop-blur-md border border-white/10 text-[11px] font-mono text-white shadow-xs">
+                    <div className="px-2.5 py-1 rounded-full bg-black/75 backdrop-blur-md border border-white/15 text-[11px] font-mono text-white shadow-xs">
                       Zone: <strong>{telemetry.pose_zone}</strong>
                     </div>
                     {telemetry.risk_score > 0 && (
-                      <div className="px-2 py-0.5 rounded bg-black/70 border border-white/10 text-[10px] font-mono text-white/90">
-                        Risk: {(telemetry.risk_score * 100).toFixed(0)}%
+                      <div className="px-2.5 py-0.5 rounded-full bg-black/70 border border-white/10 text-[10px] font-mono text-white/90">
+                        Fatigue: {(telemetry.risk_score * 100).toFixed(0)}%
                       </div>
                     )}
                   </div>
                 </div>
 
-                {/* Fullscreen Floating Telemetry Cockpit Bar */}
-                {isFullscreen && (
-                  <div className="absolute bottom-16 left-4 right-4 p-3 rounded-xl bg-black/80 backdrop-blur-md border border-white/15 grid grid-cols-2 sm:grid-cols-4 gap-3 text-white pointer-events-none z-20">
-                    <div>
-                      <span className="text-[10px] text-white/60 font-mono block">EAR (Openness)</span>
-                      <span className="text-sm font-bold font-mono text-emerald-400">
-                        {telemetry.ear.toFixed(3)}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-[10px] text-white/60 font-mono block">PERCLOS (60s)</span>
-                      <span className={`text-sm font-bold font-mono ${telemetry.perclos_60s > 15 ? "text-rose-400" : "text-white"}`}>
-                        {telemetry.perclos_60s.toFixed(1)}%
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-[10px] text-white/60 font-mono block">Blink Frequency</span>
-                      <span className="text-sm font-bold font-mono text-white">
-                        {telemetry.blink_rate.toFixed(1)}/min
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-[10px] text-white/60 font-mono block">Head Orientation</span>
-                      <span className="text-sm font-bold font-mono text-white">
-                        P: {telemetry.pitch_deg.toFixed(0)}° / Y: {telemetry.yaw_deg.toFixed(0)}°
-                      </span>
-                    </div>
+                {/* TikTok-Style Floating Left Live Metrics Bubbles */}
+                <div className="absolute bottom-20 left-3 flex flex-col gap-1.5 pointer-events-none z-20">
+                  {/* Bubble 1: EAR */}
+                  <div className="px-3 py-1.5 rounded-xl bg-black/70 backdrop-blur-md border border-white/15 text-white flex items-center gap-2 shadow-lg w-fit">
+                    <Eye className="size-3.5 text-emerald-400 shrink-0" />
+                    <span className="text-[11px] font-mono">
+                      EAR: <strong className="text-emerald-400">{telemetry.ear.toFixed(3)}</strong>
+                    </span>
                   </div>
-                )}
 
-                {/* Bottom Reason Tags Overlay */}
-                {telemetry.reason_codes.length > 0 && (
-                  <div className="absolute bottom-3 left-3 right-3 flex flex-wrap gap-1.5 pointer-events-none z-10">
-                    {telemetry.reason_codes.map((code) => (
-                      <span
-                        key={code}
-                        className="px-2 py-0.5 rounded text-[10px] font-mono bg-black/85 backdrop-blur-sm border border-amber-500/50 text-amber-300 font-semibold"
-                      >
-                        {code}
-                      </span>
-                    ))}
+                  {/* Bubble 2: PERCLOS */}
+                  <div className="px-3 py-1.5 rounded-xl bg-black/70 backdrop-blur-md border border-white/15 text-white flex items-center gap-2 shadow-lg w-fit">
+                    <Activity className="size-3.5 text-primary shrink-0" />
+                    <span className="text-[11px] font-mono">
+                      PERCLOS: <strong className={telemetry.perclos_60s > 15 ? "text-rose-400 font-bold" : "text-white"}>
+                        {telemetry.perclos_60s.toFixed(1)}%
+                      </strong>
+                    </span>
                   </div>
-                )}
+
+                  {/* Bubble 3: Blink Rate & Head Nod */}
+                  <div className="px-3 py-1 rounded-xl bg-black/70 backdrop-blur-md border border-white/10 text-white/90 text-[10px] font-mono w-fit">
+                    {telemetry.blink_rate.toFixed(0)} blinks/min • Pitch: {telemetry.pitch_deg.toFixed(0)}°
+                  </div>
+
+                  {/* Bubble 4: Active Warning Reasons */}
+                  {telemetry.reason_codes.map((reason) => (
+                    <div
+                      key={reason}
+                      className="px-2.5 py-1 rounded-lg bg-rose-600/90 text-white text-[10px] font-mono font-bold animate-pulse w-fit shadow-md border border-rose-400/40"
+                    >
+                      ⚠️ {reason}
+                    </div>
+                  ))}
+                </div>
               </>
             )}
           </CardContent>
 
-          {/* Footer Controls */}
+          {/* Footer Controls (Floating or Pinned Dock) */}
           <CardFooter className="py-3 px-4 flex items-center justify-between border-t border-border bg-muted/20">
             <div className="flex items-center gap-2">
               {isCameraActive ? (
-                <Button size="sm" variant="destructive" onClick={stopStream}>
+                <Button size="sm" variant="destructive" onClick={stopStream} className="rounded-xl">
                   <Square className="size-3.5 mr-1.5" />
                   Stop Stream
                 </Button>
               ) : (
-                <Button size="sm" onClick={startStream} className="bg-primary text-primary-foreground">
+                <Button size="sm" onClick={startStream} className="bg-primary text-primary-foreground font-semibold rounded-xl">
                   <Play className="size-3.5 mr-1.5" />
                   Start Stream
                 </Button>
@@ -710,41 +946,34 @@ export function LiveDriverMonitor() {
                 size="sm"
                 variant="outline"
                 onClick={() => setAudioMuted((prev) => !prev)}
-                className="h-9 w-9 p-0"
-                title={audioMuted ? "Unmute Drowsiness Buzzer" : "Mute Buzzer"}
+                className="h-9 w-9 p-0 rounded-xl"
+                title={audioMuted ? "Unmute Buzzer" : "Mute Buzzer"}
               >
                 {audioMuted ? <VolumeX className="size-4" /> : <Volume2 className="size-4 text-primary" />}
               </Button>
-
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={toggleFullscreen}
-                className="h-9 w-9 p-0 hidden sm:inline-flex"
-                title={isFullscreen ? "Exit Fullscreen" : "Fullscreen HUD"}
-              >
-                {isFullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
-              </Button>
             </div>
 
-            <div className="text-xs font-mono text-muted-foreground">
-              Session Duration:{" "}
-              <strong className="text-foreground">
+            <div className="text-xs font-mono text-muted-foreground flex items-center gap-2">
+              <Clock className="size-3.5" />
+              <span>
                 {Math.floor(sessionDurationSec / 60)}m {sessionDurationSec % 60}s
-              </strong>
+              </span>
             </div>
           </CardFooter>
         </Card>
 
-        {/* Live Kinematics Telemetry Panel (hidden in fullscreen) */}
-        {!isFullscreen && (
-          <div className="space-y-4">
+        {/* Live Kinematics Telemetry Side Panel (Desktop Widescreen or Side Companion) */}
+        {(!isFullscreen || !isPortraitMode) && (
+          <div className={`space-y-4 ${isPortraitMode ? "md:col-span-5 lg:col-span-6" : ""}`}>
             <Card className="border-border/80">
               <CardHeader className="pb-3">
                 <CardTitle className="text-sm font-semibold flex items-center gap-2">
                   <Eye className="size-4 text-primary" />
-                  Eye & Kinematics Telemetry
+                  Live Sensor Telemetry
                 </CardTitle>
+                <CardDescription className="text-xs">
+                  Sub-frame blink kinematics & database recording
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4 text-xs">
                 {/* EAR Bar */}
@@ -765,7 +994,7 @@ export function LiveDriverMonitor() {
                   />
                   <div className="text-[10px] text-muted-foreground font-mono flex justify-between">
                     <span>Closed (&lt;0.18)</span>
-                    <span>Cutoff ({telemetry?.ear_threshold?.toFixed(3) || "0.220"})</span>
+                    <span>Dynamic Cutoff ({telemetry?.ear_threshold?.toFixed(3) || "0.220"})</span>
                     <span>Open (&gt;0.30)</span>
                   </div>
                 </div>
@@ -797,15 +1026,15 @@ export function LiveDriverMonitor() {
 
                 {/* Blink Stats */}
                 <div className="grid grid-cols-2 gap-2 pt-2 border-t border-border">
-                  <div className="p-2 rounded bg-muted/40 font-mono">
-                    <span className="text-muted-foreground block text-[10px]">Blink Rate</span>
+                  <div className="p-2 rounded-xl bg-muted/40 font-mono">
+                    <span className="text-muted-foreground block text-[10px]">Blink Frequency</span>
                     <span className="font-semibold text-sm">
                       {isWsConnected && telemetry?.blink_rate !== undefined
                         ? `${telemetry.blink_rate.toFixed(1)}/min`
                         : "--"}
                     </span>
                   </div>
-                  <div className="p-2 rounded bg-muted/40 font-mono">
+                  <div className="p-2 rounded-xl bg-muted/40 font-mono">
                     <span className="text-muted-foreground block text-[10px]">Recent Blink Dur</span>
                     <span className="font-semibold text-sm">
                       {isWsConnected && telemetry?.blink_duration_ms
@@ -815,20 +1044,15 @@ export function LiveDriverMonitor() {
                   </div>
                 </div>
 
-                {/* Head Pose Deg */}
-                <div className="grid grid-cols-2 gap-2 font-mono text-[11px] text-muted-foreground">
-                  <div className="p-1.5 rounded bg-muted/30">
-                    Pitch:{" "}
-                    <span className="text-foreground font-semibold">
-                      {isWsConnected && telemetry ? `${telemetry.pitch_deg.toFixed(1)}°` : "0°"}
-                    </span>
+                {/* Database Recording Pill */}
+                <div className="p-2.5 rounded-xl bg-primary/5 border border-primary/20 flex items-center justify-between text-[11px]">
+                  <div className="flex items-center gap-2">
+                    <span className={`size-2 rounded-full ${isCameraActive ? "bg-emerald-500 animate-ping" : "bg-muted-foreground"}`} />
+                    <span className="font-medium text-foreground">PostgreSQL Session Audit:</span>
                   </div>
-                  <div className="p-1.5 rounded bg-muted/30">
-                    Yaw:{" "}
-                    <span className="text-foreground font-semibold">
-                      {isWsConnected && telemetry ? `${telemetry.yaw_deg.toFixed(1)}°` : "0°"}
-                    </span>
-                  </div>
+                  <span className="font-mono text-primary font-semibold">
+                    {activeSessionCodeRef.current || "Ready to Record"}
+                  </span>
                 </div>
               </CardContent>
             </Card>
@@ -853,7 +1077,7 @@ export function LiveDriverMonitor() {
                   <div
                     key={exp.key}
                     onClick={() => switchExperiment(exp.key as "CASCADE" | "GEOMETRIC" | "CNN")}
-                    className={`p-2.5 rounded-lg border cursor-pointer text-xs transition-colors ${
+                    className={`p-2.5 rounded-xl border cursor-pointer text-xs transition-colors ${
                       selectedExperiment === exp.key
                         ? "border-primary bg-primary/10 text-primary font-medium"
                         : "border-border hover:bg-muted/30 text-muted-foreground"

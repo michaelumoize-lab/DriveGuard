@@ -136,6 +136,18 @@ export function GuidedCalibrationWizard() {
       setIsSuccess(true);
       setIsCalibrating(false);
       toast.success("Calibration Completed Successfully! Personal baselines activated.");
+
+      // Persist calibrated baseline to PostgreSQL
+      fetch("/api/calibration/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          calibrationMode,
+          centerEarMedian: 0.285,
+          calibrationReliability: 0.90,
+          zoneBaselines: update,
+        }),
+      }).catch((e) => console.warn("Could not save profile to DB:", e));
     }
   }, [calibrationMode]);
 
