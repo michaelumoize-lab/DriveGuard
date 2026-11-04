@@ -1,0 +1,216 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ==========================================
+// 1. BETTER AUTH REQUIRED CORE TABLES
+// ==========================================
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  role          String?   @default("USER")
+  banned        Boolean?  @default(false)
+  banReason     String?
+  banExpires    DateTime?
+
+  // Better Auth Relations
+  sessions Session[]
+  accounts Account[]
+
+  // IntelliGuard Domain Relations
+  profile         UserProfile?
+  driverProfile   DriverProfile?
+  drivingSessions DrivingSession[]
+
+  @@map("user")
+}
+
+model Session {
+  id             String   @id @default(cuid())
+  expiresAt      DateTime
+  token          String   @unique
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  ipAddress      String?
+  userAgent      String?
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  impersonatedBy String?
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+// ==========================================
+// 2. DRIVER & ONBOARDING PROFILE TABLE
+// ==========================================
+enum SensitivityLevel {
+  STANDARD
+  HIGH
+  HIGHWAY
+}
+
+model UserProfile {
+  id                    String           @id @default(cuid())
+  userId                String           @unique
+  user                  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Onboarding Status & Progress
+  onboardingCompleted   Boolean          @default(false)
+  onboardingStep        Int              @default(1)
+  completedSteps        String[]         @default([])
+
+  // Contact & Personal Info
+  phoneNumber           String?
+  licenseNumber         String?
+
+  // Vehicle Information
+  vehicleMake           String?
+  vehicleModel          String?
+  vehicleYear           Int?
+  licensePlate          String?
+
+  // Emergency Contact
+  emergencyContactName  String?
+  emergencyContactPhone String?
+
+  // Alert & Sensitivity Preferences
+  sensitivityLevel      SensitivityLevel @default(STANDARD)
+  audioAlertsEnabled    Boolean          @default(true)
+  mirrorSuppression     Boolean          @default(true)
+  wearsGlasses          Boolean          @default(false)
+
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+
+  @@map("user_profiles")
+}
+
+// ==========================================
+// 3. CALIBRATED AI DRIVER BASELINE
+// ==========================================
+model DriverProfile {
+  id                     String    @id @default(cuid())
+  userId                 String    @unique
+  user                   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  calibrationMode        String    @default("UNIVARIATE_CENTER")
+  centerEarMedian        Float     @default(0.29)
+  centerEarMadScaled     Float     @default(0.015)
+  blinkDurationMedianMs  Float     @default(260.0)
+  blinkDurationMadMs     Float     @default(45.0)
+  blinkRcrMedian         Float     @default(1.15)
+  blinkRcrMad            Float     @default(0.20)
+  neutralPitchDeg        Float     @default(0.0)
+  neutralYawDeg          Float     @default(0.0)
+  calibrationReliability Float     @default(0.50)
+
+  // JSONB storage for 4-Zone baselines (CENTER, LEFT_MIRROR, RIGHT_MIRROR, DASHBOARD)
+  zoneBaselines          Json?
+  isCalibrated           Boolean   @default(false)
+  calibratedAt           DateTime?
+
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@map("driver_profiles")
+}
+
+// ==========================================
+// 4. DRIVING SESSIONS & SAFETY AUDIT LOGS
+// ==========================================
+model DrivingSession {
+  id                  String            @id @default(cuid())
+  userId              String
+  user                User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  sessionCode         String            @unique
+  startedAt           DateTime          @default(now())
+  endedAt             DateTime?
+  durationSeconds     Int               @default(0)
+
+  // Aggregated Session Telemetry
+  averageFps          Float?
+  averageLatencyMs    Float?
+  averagePerclosPct   Float?
+  maxPerclosPct       Float?
+  totalBlinks         Int               @default(0)
+  averageBlinkRate    Float?
+
+  // Alert Counts
+  normalFramesCount   Int               @default(0)
+  warningAlertsCount  Int               @default(0)
+  criticalAlertsCount Int               @default(0)
+  mirrorSuppressions  Int               @default(0)
+
+  alerts              DrowsinessAlert[]
+
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  @@index([userId])
+  @@index([startedAt])
+  @@map("driving_sessions")
+}
+
+model DrowsinessAlert {
+  id              String         @id @default(cuid())
+  sessionId       String
+  session         DrivingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  timestampMs     Float
+  severity        String         // "WARNING" | "CRITICAL"
+  riskScore       Float
+  earValue        Float
+  perclosPct      Float
+  poseZone        String         // "CENTER" | "LEFT_MIRROR" | "RIGHT_MIRROR" | "DASHBOARD"
+  reasons         String[]       // ["MICROSLEEP", "INCREASED_PERCLOS"]
+  cascadeDecision String         // "GEOMETRIC" | "CNN" | "WEIGHTED_CONSENSUS"
+
+  createdAt       DateTime       @default(now())
+
+  @@index([sessionId])
+  @@index([severity])
+  @@map("drowsiness_alerts")
+}

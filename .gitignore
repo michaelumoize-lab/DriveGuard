@@ -36,6 +36,12 @@ backend/research/outputs/*.avi
 node_modules/
 .next/
 out/
+frontend/node_modules/
+frontend/.next/
+frontend/.env
+frontend/.env.local
+frontend/*.tsbuildinfo
+frontend/next-env.d.ts
 
 # OS & Editor files
 .DS_Store
