@@ -1,9 +1,10 @@
 import React from "react";
-import { LiveDriverMonitor } from "@/components/monitor/live-driver-monitor";
+import { UnifiedLiveMonitor } from "@/components/monitor/unified-live-monitor";
 
 export const metadata = {
   title: "Live Driver Telemetry Monitor | DriveGuard",
-  description: "Real-time webcam computer vision telemetry streaming via WebSocket to the DriveGuard Edge AI Cascade.",
+  description:
+    "Real-time webcam computer vision telemetry streaming via WebSocket to the DriveGuard Edge AI Cascade.",
 };
 
 export default function LiveMonitorPage() {
@@ -14,11 +15,11 @@ export default function LiveMonitorPage() {
           Live Driver Monitoring Console
         </h1>
         <p className="text-xs sm:text-sm text-muted-foreground">
-          Stream real-time webcam video to the DriveGuard Cascade Engine to assess sub-frame blink kinematics, 3D gaze zones, and fatigue risks.
+          Real-time responsive cabin monitoring powered by DriveGuard adaptive confidence cascade, 3D gaze tracking, and sub-frame blink kinematics.
         </p>
       </div>
 
-      <LiveDriverMonitor />
+      <UnifiedLiveMonitor />
     </div>
   );
 }

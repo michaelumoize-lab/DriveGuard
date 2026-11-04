@@ -161,48 +161,50 @@ export function CameraSimulationHUD() {
 
   return (
     <div ref={containerRef} className="w-full space-y-4">
-      {/* Top Header Card */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-2xl bg-card border border-border shadow-xs">
-        <div className="space-y-0.5">
-          <div className="flex items-center gap-2">
-            <Camera className="size-5 text-primary" />
-            <h2 className="text-base sm:text-lg font-bold text-foreground">
-              Responsive Webcam Driver HUD
-            </h2>
-            <Badge variant="outline" className="border-primary/40 bg-primary/10 text-primary text-[10px] font-mono">
-              STANDALONE SIMULATION
-            </Badge>
+      {/* Top Header Card (Hidden in Fullscreen View) */}
+      {!isFullscreen && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-2xl bg-card border border-border shadow-xs">
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2">
+              <Camera className="size-5 text-primary" />
+              <h2 className="text-base sm:text-lg font-bold text-foreground">
+                Responsive Webcam Driver HUD
+              </h2>
+              <Badge variant="outline" className="border-primary/40 bg-primary/10 text-primary text-[10px] font-mono">
+                STANDALONE SIMULATION
+              </Badge>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Fully functional WebRTC browser camera interface prepared for future AI driver drowsiness detection.
+            </p>
           </div>
-          <p className="text-xs text-muted-foreground">
-            Fully functional WebRTC browser camera interface prepared for future AI driver drowsiness detection.
-          </p>
-        </div>
 
-        {/* Quick Orientation & Mode Selector */}
-        <div className="flex items-center gap-2 shrink-0">
-          <Button
-            size="sm"
-            variant={isPortrait ? "default" : "outline"}
-            onClick={() => setViewOrientation("portrait")}
-            className="text-xs h-9 px-3 rounded-xl gap-1.5"
-            title="Portrait View (Mobile Driver View)"
-          >
-            <Smartphone className="size-3.5" />
-            <span>Portrait</span>
-          </Button>
+          {/* Quick Orientation & Mode Selector */}
+          <div className="flex items-center gap-2 shrink-0">
+            <Button
+              size="sm"
+              variant={isPortrait ? "default" : "outline"}
+              onClick={() => setViewOrientation("portrait")}
+              className="text-xs h-9 px-3 rounded-xl gap-1.5"
+              title="Portrait View (Mobile Driver View)"
+            >
+              <Smartphone className="size-3.5" />
+              <span>Portrait</span>
+            </Button>
 
-          <Button
-            size="sm"
-            variant={!isPortrait ? "default" : "outline"}
-            onClick={() => setViewOrientation("landscape")}
-            className="text-xs h-9 px-3 rounded-xl gap-1.5"
-            title="Landscape View (Desktop Cockpit View)"
-          >
-            <Monitor className="size-3.5" />
-            <span>Landscape</span>
-          </Button>
+            <Button
+              size="sm"
+              variant={!isPortrait ? "default" : "outline"}
+              onClick={() => setViewOrientation("landscape")}
+              className="text-xs h-9 px-3 rounded-xl gap-1.5"
+              title="Landscape View (Desktop Cockpit View)"
+            >
+              <Monitor className="size-3.5" />
+              <span>Landscape</span>
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Error Display Card if error occurs */}
       {error && (
