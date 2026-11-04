@@ -4,23 +4,23 @@
     "pdbp_false_alarm_frames": 457.0,
     "drowsy_recall_pct": 100.0,
     "cnn_trigger_rate_pct": 0.0,
-    "mean_stage_latency_ms": 0.205,
+    "mean_stage_latency_ms": 0.225,
     "disagreement_audits": 0.0
   },
   "EXPERIMENT_B_CNN_ALWAYS": {
     "fixed_false_alarm_frames": 1193.0,
-    "pdbp_false_alarm_frames": 0.0,
-    "drowsy_recall_pct": 83.7,
+    "pdbp_false_alarm_frames": 458.0,
+    "drowsy_recall_pct": 100.0,
     "cnn_trigger_rate_pct": 100.0,
-    "mean_stage_latency_ms": 0.958,
+    "mean_stage_latency_ms": 3.698,
     "disagreement_audits": 300.0
   },
   "EXPERIMENT_C_CONFIDENCE_GATED_CASCADE": {
     "fixed_false_alarm_frames": 1193.0,
-    "pdbp_false_alarm_frames": 0.0,
-    "drowsy_recall_pct": 83.7,
+    "pdbp_false_alarm_frames": 457.0,
+    "drowsy_recall_pct": 100.0,
     "cnn_trigger_rate_pct": 38.5,
-    "mean_stage_latency_ms": 0.563,
+    "mean_stage_latency_ms": 1.796,
     "disagreement_audits": 300.0
   }
 }
