@@ -20,11 +20,23 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
   const {
     sessionId: initialSessionId,
     driverId = "driver_default",
-    defaultBackend = "cloud",
-    targetFps = 20,
+    defaultBackend,
+    targetFps = 25,
     onTelemetry,
     onError,
   } = options;
+
+  // Auto-detect optimal backend: default to localhost when running on local machine
+  const initialBackend: "cloud" | "local" = useMemo(() => {
+    if (defaultBackend) return defaultBackend;
+    if (typeof window !== "undefined") {
+      const hostname = window.location.hostname;
+      if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") {
+        return "local";
+      }
+    }
+    return "cloud";
+  }, [defaultBackend]);
 
   // Stable session identifier that does NOT regenerate on re-renders
   const stableSessionId = useMemo(
@@ -36,7 +48,17 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
     process.env.NEXT_PUBLIC_FASTAPI_WS_URL || "wss://driveguard-x048.onrender.com";
   const localWsBase = "ws://127.0.0.1:8000";
 
-  const [backendType, setBackendType] = useState<"cloud" | "local">(defaultBackend);
+  const [backendType, setBackendType] = useState<"cloud" | "local">(initialBackend);
+
+  // Sync with browser hostname on mount
+  useEffect(() => {
+    if (!defaultBackend && typeof window !== "undefined") {
+      const hostname = window.location.hostname;
+      if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") {
+        setBackendType("local");
+      }
+    }
+  }, [defaultBackend]);
   const [connectionStatus, setConnectionStatus] = useState<
     "disconnected" | "connecting" | "connected" | "reconnecting" | "error"
   >("disconnected");
@@ -207,8 +229,11 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
       const targetWidth = 640;
       const targetHeight = Math.round((vh / vw) * targetWidth);
 
-      canvas.width = targetWidth;
-      canvas.height = targetHeight;
+      // Only resize canvas if dimensions actually changed, preventing GPU context reallocation
+      if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+      }
 
       const ctx = canvas.getContext("2d", { willReadFrequently: false });
       if (!ctx) return;
@@ -227,7 +252,7 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
       isFrameInFlightRef.current = true;
       lastSendTimeRef.current = performance.now();
 
-      // Encode to JPEG at high fidelity (quality 0.80)
+      // Encode to JPEG at 0.68 quality (matches client_webcam_test.py quality 70, cuts payload by 50%)
       canvas.toBlob(
         async (blob) => {
           if (!blob || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
@@ -247,7 +272,7 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
           }
         },
         "image/jpeg",
-        0.8
+        0.68
       );
     },
     []

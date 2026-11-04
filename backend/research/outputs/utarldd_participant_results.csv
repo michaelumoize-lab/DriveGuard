@@ -1,0 +1,7 @@
+participant_id,calibrated_ear,alert_fixed_fa_pct,alert_pdbp_fa_pct,drowsy_fixed_recall_pct,drowsy_pdbp_recall_pct,first_alert_sec,cnn_gate_pct
+01,0.285,0.0,0.0,1.11,0.0,-1.0,14.0
+02,0.285,0.0,0.0,2.67,0.0,-1.0,10.67
+03,0.275,0.0,0.0,8.0,0.0,-1.0,22.0
+04,0.285,3.19,0.0,0.0,0.0,-1.0,2.93
+05,0.285,0.0,0.0,0.0,0.0,-1.0,4.66
+06,0.285,0.0,0.0,0.0,0.0,-1.0,7.82

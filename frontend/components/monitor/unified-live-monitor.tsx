@@ -119,7 +119,7 @@ export function UnifiedLiveMonitor() {
   } = useAiTelemetryStream({
     sessionId: stableSessionId,
     driverId: "michael_driver",
-    targetFps: 20, // 20 FPS lock-step ping-pong
+    targetFps: 25, // 25 FPS lock-step ping-pong
   });
 
   // Reactive Stream Trigger: automatically start/stop WebSocket loop when camera becomes active
@@ -570,7 +570,11 @@ export function UnifiedLiveMonitor() {
             }`}
           >
             {/* Live AI Telemetry HUD Gauges */}
-            <LiveTelemetryHUD telemetry={telemetry} cameraState={cameraState} />
+            <LiveTelemetryHUD
+              telemetry={telemetry}
+              cameraState={cameraState}
+              backendType={backendType}
+            />
 
             {/* Experiment Mode Selector Card */}
             <Card className="border-border">

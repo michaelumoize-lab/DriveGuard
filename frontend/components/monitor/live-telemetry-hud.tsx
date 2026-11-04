@@ -20,12 +20,14 @@ import {
 interface LiveTelemetryHUDProps {
   telemetry: FrameTelemetry | null;
   cameraState?: CameraState;
+  backendType?: "cloud" | "local";
   className?: string;
 }
 
 export function LiveTelemetryHUD({
   telemetry,
   cameraState = "not-initialized",
+  backendType = "local",
   className = "",
 }: LiveTelemetryHUDProps) {
   const isCameraActive = cameraState === "active";
@@ -44,7 +46,7 @@ export function LiveTelemetryHUD({
                 Analyzing Live Facial Features...
               </p>
               <p className="text-[11px] text-muted-foreground mt-0.5">
-                Streaming unwarped video frames to the DriveGuard Cascade on Render.
+                Streaming unwarped video frames to {backendType === "local" ? "Local AI Engine (127.0.0.1:8000)" : "DriveGuard Cascade on Render"}.
               </p>
             </div>
           </>
