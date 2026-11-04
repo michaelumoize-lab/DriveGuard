@@ -315,45 +315,80 @@ class LiveWebcamHUDClient:
             cv2.putText(hud, f"Decision: {winner}", (panel_x, panel_y + 231), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1)
 
         # 6. Guided Calibration Wizard Overlay (Centered if calibrating)
-        if cal is not None and cal.get("is_calibrating", False):
-            phase = cal.get("phase_name", "CALIBRATING")
-            step = cal.get("phase_idx", 1)
-            rem = cal.get("remaining_sec", 0.0)
-            prog = cal.get("step_progress_pct", 0.0)
+        is_calibrating = cal is not None and not cal.get("is_completed", False)
+        if is_calibrating:
+            step = cal.get("phase_index", 1)
+            total = cal.get("total_phases", 4)
+            zone_name = cal.get("current_zone", "CENTER")
+            instruction = cal.get("instruction", f"LOOK AT {zone_name}")
+            prog = cal.get("zone_progress_pct", 0.0)
+            total_prog = cal.get("total_progress_pct", 0.0)
+            feedback = cal.get("stability_feedback", "Holding Steady")
+            in_zone = cal.get("is_head_in_target_zone", True)
 
-            cal_w = 460
-            cal_h = 100
+            cal_w = min(560, w - 40)
+            cal_h = 130
             cal_x = (w - cal_w) // 2
-            cal_y = h // 2 - 50
+            cal_y = (h - cal_h) // 2
 
-            cv2.rectangle(hud, (cal_x, cal_y), (cal_x + cal_w, cal_y + cal_h), (35, 10, 50), -1)
-            cv2.rectangle(hud, (cal_x, cal_y), (cal_x + cal_w, cal_y + cal_h), (200, 100, 255), 2)
+            # Translucent backdrop
+            overlay_cal = hud.copy()
+            bg_color = (45, 15, 60) if in_zone else (20, 20, 70)
+            cv2.rectangle(overlay_cal, (cal_x, cal_y), (cal_x + cal_w, cal_y + cal_h), bg_color, -1)
+            cv2.addWeighted(overlay_cal, 0.88, hud, 0.12, 0, hud)
+            border_color = (220, 100, 255) if in_zone else (0, 215, 255)
+            cv2.rectangle(hud, (cal_x, cal_y), (cal_x + cal_w, cal_y + cal_h), border_color, 2)
 
+            # Step title
             cv2.putText(
                 hud,
-                f"4-ZONE CALIBRATION (Step {step}/4)",
-                (cal_x + 20, cal_y + 30),
+                f"4-ZONE CALIBRATION | STEP {step} OF {total} (Total: {total_prog:.0f}%)",
+                (cal_x + 18, cal_y + 28),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 200, 255),
+                0.55,
+                (255, 220, 255),
                 2,
                 cv2.LINE_AA,
             )
+            # Target instruction
             cv2.putText(
                 hud,
-                f"{phase} ({rem:.1f}s)",
-                (cal_x + 20, cal_y + 60),
+                instruction,
+                (cal_x + 18, cal_y + 60),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
+                0.60,
                 (0, 255, 255),
                 2,
                 cv2.LINE_AA,
             )
+            # Feedback string
+            feed_color = (0, 255, 150) if in_zone else (0, 215, 255)
+            cv2.putText(
+                hud,
+                f"Status: {feedback} | Target: {zone_name}",
+                (cal_x + 18, cal_y + 88),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.46,
+                feed_color,
+                1,
+                cv2.LINE_AA,
+            )
 
-            # Progress Bar
-            fill = int((prog / 100.0) * (cal_w - 40))
-            cv2.rectangle(hud, (cal_x + 20, cal_y + 72), (cal_x + cal_w - 20, cal_y + 86), (60, 30, 80), -1)
-            cv2.rectangle(hud, (cal_x + 20, cal_y + 72), (cal_x + 20 + fill, cal_y + 86), (200, 100, 255), -1)
+            # Progress Bar for active step
+            bar_w = cal_w - 36
+            fill = int((prog / 100.0) * bar_w)
+            cv2.rectangle(hud, (cal_x + 18, cal_y + 100), (cal_x + 18 + bar_w, cal_y + 116), (50, 25, 70), -1)
+            cv2.rectangle(hud, (cal_x + 18, cal_y + 100), (cal_x + 18 + fill, cal_y + 116), (220, 100, 255), -1)
+            cv2.putText(
+                hud,
+                f"{prog:.0f}%",
+                (cal_x + 22 + fill if fill < bar_w - 40 else cal_x + fill - 35, cal_y + 113),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.38,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
 
         # 7. Notification Banner
         if time.time() < self.notification_expiry:
@@ -381,6 +416,47 @@ class LiveWebcamHUDClient:
             )
 
         return hud
+
+    def handle_server_message(self, resp_data: Dict[str, Any]) -> None:
+        """Update local telemetry and notification state from server response."""
+        msg_type = resp_data.get("type")
+
+        if msg_type == "TELEMETRY":
+            self.latest_telemetry = resp_data.get("telemetry")
+            cal = resp_data.get("calibration")
+            if cal is not None:
+                self.latest_calibration = cal
+                if cal.get("is_completed", False):
+                    self.set_notification("Calibration complete! Personal baseline active.", duration_sec=4.0)
+            elif self.latest_calibration and not self.latest_calibration.get("is_completed", False):
+                self.latest_calibration = None
+                self.set_notification("Calibration finished! Personal baseline active.", duration_sec=4.0)
+
+        elif msg_type == "CALIBRATION_STARTED":
+            self.latest_calibration = resp_data.get("calibration")
+            self.set_notification("Calibration started! Follow target instructions in center of screen.", duration_sec=4.0)
+        elif msg_type == "CALIBRATION_CANCELLED":
+            self.latest_calibration = None
+            self.set_notification("Calibration cancelled.", duration_sec=3.0)
+        elif msg_type == "PROFILE_SAVED":
+            prof = resp_data.get("profile", {})
+            is_cal = prof.get("is_calibrated", False)
+            mode = prof.get("calibration_mode", "UNKNOWN")
+            center_ear = prof.get("center_ear_median", 0.0)
+            if is_cal:
+                self.set_notification(f"Calibrated profile saved to disk! Mode: {mode} (EAR: {center_ear:.3f})", duration_sec=5.0)
+            else:
+                self.set_notification(f"Profile saved ({mode}). Press 'c' to run 4-zone calibration first!", duration_sec=5.0)
+        elif msg_type == "EXPERIMENT_SWITCHED":
+            active_mode = resp_data.get("active_mode", "UNKNOWN")
+            self.set_notification(f"Experiment mode switched: {active_mode.split('_')[-1]}", duration_sec=3.5)
+
+    async def send_control_command(self, ws: Any, cmd: Dict[str, Any]) -> None:
+        """Send a JSON control command and immediately read & process the server's reply."""
+        await ws.send(json.dumps(cmd))
+        raw_reply = await ws.recv()
+        resp_data = json.loads(raw_reply)
+        self.handle_server_message(resp_data)
 
     async def run(self) -> None:
         """Main async loop: captures frames, sends to WebSocket, receives telemetry."""
@@ -445,23 +521,7 @@ class LiveWebcamHUDClient:
                     self.last_roundtrip_ms = (t1 - t0) * 1000.0
 
                     resp_data = json.loads(raw_resp)
-                    msg_type = resp_data.get("type")
-
-                    if msg_type == "TELEMETRY":
-                        self.latest_telemetry = resp_data.get("telemetry")
-                        self.latest_calibration = resp_data.get("calibration")
-                    elif msg_type == "CALIBRATION_STARTED":
-                        self.latest_calibration = resp_data.get("calibration")
-                        self.set_notification("Calibration started! Follow on-screen instructions.")
-                    elif msg_type == "CALIBRATION_CANCELLED":
-                        self.latest_calibration = None
-                        self.set_notification("Calibration cancelled.")
-                    elif msg_type == "PROFILE_SAVED":
-                        prof = resp_data.get("profile", {})
-                        self.set_notification(f"Profile saved successfully! Mode: {prof.get('calibration_mode')}")
-                    elif msg_type == "EXPERIMENT_SWITCHED":
-                        active_mode = resp_data.get("active_mode", "UNKNOWN")
-                        self.set_notification(f"Switched mode: {active_mode.split('_')[-1]}")
+                    self.handle_server_message(resp_data)
 
                     # Render HUD
                     display_frame = self.draw_hud(frame)
@@ -475,46 +535,50 @@ class LiveWebcamHUDClient:
                         break
                     elif key == ord("c"):
                         print("[Client] Requesting 4-Zone Calibration...")
-                        self.set_notification("Starting 4-Zone Calibration...")
-                        await ws.send(
-                            json.dumps({
+                        await self.send_control_command(
+                            ws,
+                            {
                                 "action": "START_CALIBRATION",
                                 "four_zone": True,
                                 "zone_duration_sec": 4.0,
-                            })
+                            },
                         )
                     elif key == ord("1"):
                         print("[Client] Switching to Experiment A (Geometric EAR Only)...")
-                        await ws.send(
-                            json.dumps({
+                        await self.send_control_command(
+                            ws,
+                            {
                                 "action": "SWITCH_EXPERIMENT",
                                 "mode": "EXPERIMENT_A_GEOMETRIC_ONLY",
-                            })
+                            },
                         )
                     elif key == ord("2"):
                         print("[Client] Switching to Experiment B (MobileNetV3 Always)...")
-                        await ws.send(
-                            json.dumps({
+                        await self.send_control_command(
+                            ws,
+                            {
                                 "action": "SWITCH_EXPERIMENT",
                                 "mode": "EXPERIMENT_B_CNN_ALWAYS",
-                            })
+                            },
                         )
                     elif key == ord("3"):
                         print("[Client] Switching to Experiment C (Confidence-Gated Cascade)...")
-                        await ws.send(
-                            json.dumps({
+                        await self.send_control_command(
+                            ws,
+                            {
                                 "action": "SWITCH_EXPERIMENT",
                                 "mode": "EXPERIMENT_C_CONFIDENCE_GATED_CASCADE",
-                            })
+                            },
                         )
                     elif key == ord("s"):
                         print("[Client] Saving calibrated profile to backend...")
-                        await ws.send(
-                            json.dumps({
+                        await self.send_control_command(
+                            ws,
+                            {
                                 "action": "SAVE_PROFILE",
                                 "driver_name": "Michael",
                                 "vehicle_id": "DriveGuard-01",
-                            })
+                            },
                         )
 
                     # Maintain target frame pacing

@@ -52,12 +52,13 @@ async def websocket_session_stream(
                 frame_bytes = message["bytes"]
                 telemetry_dto = engine.process_frame(frame_bytes)
 
+                cal_status = engine.get_calibration_status()
                 response_payload = {
                     "type": "TELEMETRY",
                     "telemetry": telemetry_dto.model_dump(),
                     "calibration": (
-                        engine.get_calibration_status().model_dump()
-                        if engine.is_calibrating
+                        cal_status.model_dump()
+                        if (engine.is_calibrating or (cal_status is not None and not cal_status.is_completed))
                         else None
                     ),
                 }

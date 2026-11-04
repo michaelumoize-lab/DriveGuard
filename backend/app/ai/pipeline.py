@@ -352,7 +352,35 @@ class SessionAIEngine:
             )
             if new_profile is not None:
                 self.set_profile(new_profile)
-                self._last_completed_calibration_dto = self._build_calibration_dto(ts_ms)
+                self._last_completed_calibration_dto = CalibrationPhaseDTO(
+                    current_zone="CENTER",
+                    phase_index=4,
+                    total_phases=4,
+                    zone_progress_pct=100.0,
+                    total_progress_pct=100.0,
+                    stable_samples_count=len(new_profile.zone_baselines),
+                    target_samples_count=15,
+                    instruction="Calibration successful! Personal baselines activated.",
+                    is_head_in_target_zone=True,
+                    stability_feedback="Profile Ready",
+                    is_completed=True,
+                )
+                self.calibration_session = None
+            elif not self.calibration_session.is_running and self.calibration_session.rejection_reason is not None:
+                self._last_completed_calibration_dto = CalibrationPhaseDTO(
+                    current_zone="CENTER",
+                    phase_index=1,
+                    total_phases=4,
+                    zone_progress_pct=0.0,
+                    total_progress_pct=0.0,
+                    stable_samples_count=0,
+                    target_samples_count=15,
+                    instruction="Calibration rejected. Please ensure good lighting and face visibility.",
+                    is_head_in_target_zone=False,
+                    stability_feedback="Rejected",
+                    is_completed=True,
+                    rejection_reason=self.calibration_session.rejection_reason,
+                )
                 self.calibration_session = None
 
         # 8. Personalised Adaptive Risk Engine (FSM State, Reason Codes, Dual-Anchor Update)
