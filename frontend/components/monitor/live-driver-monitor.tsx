@@ -119,8 +119,9 @@ export function LiveDriverMonitor() {
   // Device & Layout Modes
   const [isMobileDevice, setIsMobileDevice] = useState(false);
   const [viewOrientation, setViewOrientation] = useState<"portrait" | "landscape">("landscape");
-  // Framing Mode: "fit" (wide FOV, no crop) vs "cover" (fullscreen fill)
-  const [framingMode, setFramingMode] = useState<"fit" | "cover">("fit");
+  // Framing Mode: "cover" (portrait fill) vs "fit" (wide letterbox)
+  const [framingMode, setFramingMode] = useState<"fit" | "cover">("cover");
+  const [zoomScale, setZoomScale] = useState<number>(1.0);
 
   // Pre-Flight AI Warm-up Dialog State
   const [isWarmingUpAI, setIsWarmingUpAI] = useState(false);
@@ -143,8 +144,9 @@ export function LiveDriverMonitor() {
         setIsMobileDevice(mobile);
         if (mobile) {
           setViewOrientation("portrait");
-          // Mobile default is Wide FOV (fit) so camera is never over-zoomed
-          setFramingMode("fit");
+          // Mobile default is portrait fill (cover) so it fills the screen like a mobile stream
+          setFramingMode("cover");
+          setZoomScale(1.0);
           // Mobile devices cannot run Python on 127.0.0.1, always use cloud
           setBackendType("cloud");
         }
@@ -877,6 +879,26 @@ export function LiveDriverMonitor() {
                 )}
               </Badge>
 
+              {/* Zoom & Framing Controls */}
+              <div className="flex items-center bg-muted/60 rounded-md p-0.5 border border-border text-[11px] font-mono">
+                <button
+                  type="button"
+                  onClick={() => setZoomScale((prev) => (prev <= 0.9 ? 1.0 : 0.85))}
+                  className="px-1.5 py-0.5 rounded text-muted-foreground hover:text-foreground font-semibold"
+                  title="Toggle Zoom Scale: 0.85x (Wide) vs 1.0x (Standard)"
+                >
+                  {zoomScale <= 0.9 ? "0.85x" : "1.0x"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFramingMode((prev) => (prev === "cover" ? "fit" : "cover"))}
+                  className="px-1.5 py-0.5 rounded text-muted-foreground hover:text-foreground"
+                  title="Toggle Framing: Fill Portrait vs Fit Screen"
+                >
+                  {framingMode === "cover" ? "Fill" : "Fit"}
+                </button>
+              </div>
+
               {/* Fullscreen Button */}
               <Button
                 size="sm"
@@ -896,7 +918,7 @@ export function LiveDriverMonitor() {
               isFullscreen
                 ? "h-full w-full"
                 : isPortraitMode
-                ? "aspect-[9/16] min-h-[460px] max-h-[75vh]"
+                ? "aspect-[9/16] min-h-[480px] sm:min-h-[520px]"
                 : "aspect-video"
             }`}
           >
@@ -906,7 +928,8 @@ export function LiveDriverMonitor() {
               autoPlay
               playsInline
               muted
-              className={`w-full h-full -scale-x-100 transition-all ${
+              style={{ transform: `scaleX(-1) scale(${zoomScale})` }}
+              className={`w-full h-full transition-transform duration-200 ${
                 framingMode === "cover" ? "object-cover" : "object-contain"
               }`}
             />
