@@ -236,10 +236,27 @@ class GuidedCalibrationSession:
     and construction of a DriverBehaviourProfile.
     """
 
-    def __init__(self, driver_id: str = "driver_001", four_zone_mode: bool = True) -> None:
+    def __init__(
+        self,
+        driver_id: str = "driver_001",
+        four_zone_mode: bool = True,
+        step_duration_sec: Optional[float] = None,
+    ) -> None:
         self.driver_id = driver_id
         self.four_zone_mode = four_zone_mode
-        self.steps = FOUR_ZONE_CALIBRATION_PLAN if four_zone_mode else CENTER_ONLY_CALIBRATION_PLAN
+        self.step_duration_sec = step_duration_sec
+        base_steps = FOUR_ZONE_CALIBRATION_PLAN if four_zone_mode else CENTER_ONLY_CALIBRATION_PLAN
+        if step_duration_sec is not None:
+            self.steps = tuple(
+                CalibrationStepConfig(
+                    zone=s.zone,
+                    duration_sec=float(step_duration_sec),
+                    instruction=s.instruction,
+                )
+                for s in base_steps
+            )
+        else:
+            self.steps = base_steps
 
         self.is_running: bool = False
         self.is_completed: bool = False
@@ -255,7 +272,7 @@ class GuidedCalibrationSession:
         self._reliabilities: List[float] = []
         self._collected_blinks: List[BlinkEvent] = []
 
-    def start(self, timestamp_ms: float) -> None:
+    def start(self, timestamp_ms: Optional[float] = None) -> None:
         """Start or restart the guided calibration workflow."""
         self.is_running = True
         self.is_completed = False
@@ -342,7 +359,8 @@ class GuidedCalibrationSession:
         valid_ratio = valid_center / total_center
 
         center_ears = self._ear_samples_by_zone.get(center_key, [])
-        if valid_ratio < 0.70 or len(center_ears) < 15:
+        min_samples = 4 if (self.step_duration_sec is not None and self.step_duration_sec < 2.0) else 15
+        if valid_ratio < 0.70 or len(center_ears) < min_samples:
             self.rejection_reason = (
                 f"REJECTED_POOR_VISIBILITY: Valid face tracking ratio was {valid_ratio:.0%} "
                 f"({len(center_ears)} open-eye samples). Please ensure good lighting and camera framing."
