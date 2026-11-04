@@ -607,6 +607,7 @@ def main() -> None:
         description="DriveGuard Live WebSocket Webcam Client Test",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    parser.add_argument("--url", type=str, default=None, help="Direct WebSocket URL (e.g. wss://driveguard.onrender.com/ws/v1/session/live_01). Overrides --host/--port.")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="FastAPI server host")
     parser.add_argument("--port", type=int, default=8000, help="FastAPI server port")
     parser.add_argument("--session-id", type=str, default="live_webcam_demo", help="Session ID")
@@ -616,7 +617,7 @@ def main() -> None:
     parser.add_argument("--synthetic", action="store_true", help="Run with simulated synthetic driver frames (no webcam required)")
     args = parser.parse_args()
 
-    ws_url = f"ws://{args.host}:{args.port}/ws/v1/session/{args.session_id}"
+    ws_url = args.url if args.url else f"ws://{args.host}:{args.port}/ws/v1/session/{args.session_id}"
 
     client = LiveWebcamHUDClient(
         server_ws_url=ws_url,

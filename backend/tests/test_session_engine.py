@@ -163,6 +163,50 @@ class TestSessionAIEngine(unittest.TestCase):
         self.assertEqual(dto.state, AlertStateEnum.NORMAL)
         self.assertTrue(dto.comparison.fixed_false_alarm)
 
+    def test_target_acquisition_spatial_gating_calibration(self) -> None:
+        """Calibration progress must ONLY fill when driver is actively looking in target zone."""
+        mock_lm = DummyMockLandmarker(ear=0.28, pitch=0.0, yaw=0.0)
+        engine = SessionAIEngine(landmarker=mock_lm)
+        cal_dto = engine.start_calibration(four_zone_mode=True, zone_duration_sec=0.2)
+        self.assertTrue(engine.is_calibrating)
+        self.assertEqual(cal_dto.current_zone, "CENTER")
+
+        frame = np.full((120, 160, 3), 100, dtype=np.uint8)
+        ts = 3000.0
+
+        # Step 1: Center (mock_lm yaw=0.0 is Center). Ingest 6 frames to complete Center
+        for _ in range(6):
+            dto = engine.process_frame(frame, timestamp_ms=ts)
+            ts += 33.3
+
+        # Should now be on Step 2 (LEFT_MIRROR)
+        status = engine.get_calibration_status()
+        self.assertIsNotNone(status)
+        self.assertEqual(status.current_zone, "LEFT_MIRROR")
+        self.assertEqual(status.phase_index, 2)
+        self.assertEqual(status.zone_progress_pct, 0.0)
+
+        # Driver still looking CENTER (mock_lm yaw=0.0). Ingest 5 frames: progress MUST NOT advance!
+        for _ in range(5):
+            dto = engine.process_frame(frame, timestamp_ms=ts)
+            ts += 33.3
+
+        status_after_unaligned = engine.get_calibration_status()
+        self.assertEqual(status_after_unaligned.zone_progress_pct, 0.0)
+        self.assertFalse(status_after_unaligned.is_head_in_target_zone)
+        self.assertIn("Driver Mirror", status_after_unaligned.stability_feedback)
+
+        # Now driver turns to LEFT_MIRROR (yaw = -18.0)
+        mock_lm.yaw = -18.0
+        for _ in range(6):
+            dto = engine.process_frame(frame, timestamp_ms=ts)
+            ts += 33.3
+
+        # Step 2 must now have completed and transitioned to Step 3 (RIGHT_MIRROR)
+        status_after_aligned = engine.get_calibration_status()
+        self.assertEqual(status_after_aligned.current_zone, "RIGHT_MIRROR")
+        self.assertEqual(status_after_aligned.phase_index, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

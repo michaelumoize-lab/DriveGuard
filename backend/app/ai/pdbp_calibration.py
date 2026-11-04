@@ -272,6 +272,16 @@ class GuidedCalibrationSession:
         self._reliabilities: List[float] = []
         self._collected_blinks: List[BlinkEvent] = []
 
+        # Target-Acquisition Spatial Gating
+        if step_duration_sec is not None and step_duration_sec <= 1.0:
+            self.target_samples_per_zone: int = max(4, int(step_duration_sec * 25))
+        else:
+            self.target_samples_per_zone = 35  # ~1.4 - 1.7 seconds of stable gaze per zone
+        self._learned_neutral_pitch: float = 0.0
+        self._learned_neutral_yaw: float = 0.0
+        self._is_aligned: bool = False
+        self._feedback_msg: str = "Aligning..."
+
     def start(self, timestamp_ms: Optional[float] = None) -> None:
         """Start or restart the guided calibration workflow."""
         self.is_running = True
@@ -279,6 +289,10 @@ class GuidedCalibrationSession:
         self.rejection_reason = None
         self._step_idx = 0
         self._step_start_ts_ms = timestamp_ms
+        self._learned_neutral_pitch = 0.0
+        self._learned_neutral_yaw = 0.0
+        self._is_aligned = False
+        self._feedback_msg = "Look straight ahead at center roadway"
         for s in self.steps:
             z = s.zone.value
             self._total_frames_by_zone[z] = 0
@@ -293,16 +307,61 @@ class GuidedCalibrationSession:
     def current_step(self) -> CalibrationStepConfig:
         return self.steps[min(self._step_idx, len(self.steps) - 1)]
 
-    def get_progress(self, timestamp_ms: float) -> Tuple[int, int, float, str]:
+    def is_pose_aligned_with_target(
+        self,
+        target_zone: PoseZone,
+        pitch_deg: float,
+        yaw_deg: float,
+    ) -> Tuple[bool, str]:
         """
-        Return (current_step_num, total_steps, step_progress_ratio, instruction_text).
+        Verify whether the driver's head is oriented toward target_zone.
+        Returns (is_aligned, feedback_instruction).
         """
-        if not self.is_running or self._step_start_ts_ms is None:
-            return 0, len(self.steps), 0.0, "Calibration idle"
+        ref_yaw = self._learned_neutral_yaw if self._step_idx > 0 else 0.0
+        ref_pitch = self._learned_neutral_pitch if self._step_idx > 0 else 0.0
+        rel_yaw = yaw_deg - ref_yaw
+        rel_pitch = pitch_deg - ref_pitch
+
+        if target_zone == PoseZone.CENTER:
+            if abs(rel_yaw) > 13.0 or abs(rel_pitch) > 11.0:
+                return False, "Look straight ahead at center roadway"
+            return True, "Holding Steady (Center Roadway)"
+
+        elif target_zone == PoseZone.LEFT_MIRROR:
+            if rel_yaw > -10.0:
+                return False, "Turn head toward Driver Mirror  <-"
+            return True, "Holding Steady (Driver Mirror)"
+
+        elif target_zone == PoseZone.RIGHT_MIRROR:
+            if rel_yaw < 10.0:
+                return False, "Turn head toward Passenger Mirror  ->"
+            return True, "Holding Steady (Passenger Mirror)"
+
+        elif target_zone == PoseZone.DASHBOARD:
+            if rel_pitch > -7.5:
+                return False, "Glance downward at Dashboard  v"
+            return True, "Holding Steady (Dashboard)"
+
+        return True, "Holding Steady"
+
+    def get_progress(self, timestamp_ms: float) -> Tuple[int, int, float, str, bool, str]:
+        """
+        Return (current_step_num, total_steps, step_progress_ratio, instruction_text, is_aligned, feedback_text).
+        """
+        if not self.is_running:
+            return 0, len(self.steps), 0.0, "Calibration idle", False, "Idle"
         step = self.current_step
-        elapsed_s = max(0.0, (timestamp_ms - self._step_start_ts_ms) / 1000.0)
-        ratio = float(np.clip(elapsed_s / step.duration_sec, 0.0, 1.0))
-        return self._step_idx + 1, len(self.steps), ratio, step.instruction
+        z_key = step.zone.value
+        samples = len(self._ear_samples_by_zone.get(z_key, []))
+        ratio = float(np.clip(samples / max(1, self.target_samples_per_zone), 0.0, 1.0))
+        return (
+            self._step_idx + 1,
+            len(self.steps),
+            ratio,
+            step.instruction,
+            self._is_aligned,
+            self._feedback_msg,
+        )
 
     def ingest_frame(
         self,
@@ -317,7 +376,8 @@ class GuidedCalibrationSession:
     ) -> Optional[DriverBehaviourProfile]:
         """
         Feed one frame of measurements into the active calibration step.
-        Returns the finalized `DriverBehaviourProfile` when the final step completes.
+        Progress ONLY fills when the head is actively oriented into the target zone!
+        Returns the finalized `DriverBehaviourProfile` when all steps complete.
         """
         if not self.is_running:
             return None
@@ -329,10 +389,15 @@ class GuidedCalibrationSession:
         z_key = step.zone.value
         self._total_frames_by_zone[z_key] += 1
 
-        if face_detected and geometric_reliability >= 0.45:
+        is_aligned, feedback = self.is_pose_aligned_with_target(step.zone, pitch_deg, yaw_deg)
+        self._is_aligned = is_aligned
+        self._feedback_msg = feedback
+
+        # ONLY accumulate valid open-eye samples when head is oriented toward target!
+        if face_detected and geometric_reliability >= 0.45 and is_aligned:
             self._valid_frames_by_zone[z_key] += 1
             self._reliabilities.append(geometric_reliability)
-            # Only record open-eye EAR samples (exclude mid-blink frames from open-eye baseline)
+            # Only record open-eye EAR samples (exclude mid-blink frames)
             if not is_eye_currently_closed and ear_value > 0.12:
                 self._ear_samples_by_zone[z_key].append(ear_value)
                 self._pitch_samples_by_zone[z_key].append(pitch_deg)
@@ -341,10 +406,28 @@ class GuidedCalibrationSession:
         if completed_blink is not None:
             self._collected_blinks.append(completed_blink)
 
-        elapsed_s = (timestamp_ms - self._step_start_ts_ms) / 1000.0
-        if elapsed_s >= step.duration_sec:
+        # Step advances ONLY when required target samples are gathered in this zone!
+        current_samples = len(self._ear_samples_by_zone.get(z_key, []))
+        if current_samples >= self.target_samples_per_zone:
+            # If Step 1 (CENTER) finishes, lock in driver's neutral posture!
+            if self._step_idx == 0:
+                p_list = self._pitch_samples_by_zone.get(z_key, [0.0])
+                y_list = self._yaw_samples_by_zone.get(z_key, [0.0])
+                self._learned_neutral_pitch = float(np.median(p_list)) if p_list else 0.0
+                self._learned_neutral_yaw = float(np.median(y_list)) if y_list else 0.0
+
             self._step_idx += 1
             self._step_start_ts_ms = timestamp_ms
+            self._is_aligned = False
+            if self._step_idx >= len(self.steps):
+                return self._finalize()
+
+        # Timeout safety guard: if excessive frames pass in a zone without converging
+        max_zone_frames = max(60, self.target_samples_per_zone * 6)
+        if self._total_frames_by_zone[z_key] >= max_zone_frames:
+            self._step_idx += 1
+            self._step_start_ts_ms = timestamp_ms
+            self._is_aligned = False
             if self._step_idx >= len(self.steps):
                 return self._finalize()
 

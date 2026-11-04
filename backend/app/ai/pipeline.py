@@ -154,7 +154,7 @@ class SessionAIEngine:
             )
 
         ts = timestamp_ms or (time.perf_counter() * 1000.0)
-        curr_step_num, total_steps, ratio, instruction = self.calibration_session.get_progress(ts)
+        curr_step_num, total_steps, ratio, instruction, is_aligned, feedback = self.calibration_session.get_progress(ts)
         phase_idx = max(1, curr_step_num)
         step = self.calibration_session.current_step
         zone_samples = len(self.calibration_session._ear_samples_by_zone.get(step.zone.value, []))
@@ -168,10 +168,10 @@ class SessionAIEngine:
             zone_progress_pct=round(zone_pct, 1),
             total_progress_pct=round(total_pct, 1),
             stable_samples_count=zone_samples,
-            target_samples_count=15,
+            target_samples_count=self.calibration_session.target_samples_per_zone,
             instruction=instruction,
-            is_head_in_target_zone=True,
-            stability_feedback="Holding Steady",
+            is_head_in_target_zone=is_aligned,
+            stability_feedback=feedback,
             is_completed=self.calibration_session.is_completed,
             rejection_reason=self.calibration_session.rejection_reason,
         )
