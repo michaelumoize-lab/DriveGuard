@@ -70,7 +70,7 @@ class TemporalKinematicsTracker:
         ema_alpha: float = 0.60,
         perclos_window_sec: float = 60.0,
         min_blink_duration_ms: float = 55.0,
-        max_blink_duration_ms: float = 2500.0,
+        max_blink_duration_ms: float = 750.0,
     ) -> None:
         self.ema_alpha = ema_alpha
         self.perclos_window_ms = perclos_window_sec * 1000.0
@@ -228,7 +228,9 @@ class TemporalKinematicsTracker:
 
         total_dt = sum(item[1] for item in self._closure_samples)
         closed_dt = sum(item[1] for item in self._closure_samples if item[2])
-        perclos_60s_pct = (closed_dt / total_dt * 100.0) if total_dt > 0.0 else 0.0
+        # Avoid start-of-session small-denominator inflation before 30s of history accumulate
+        effective_window_ms = max(total_dt, 30_000.0)
+        perclos_60s_pct = (closed_dt / effective_window_ms * 100.0) if total_dt > 0.0 else 0.0
 
         # --- Rolling Blink Rate & Recent Blink Kinematics ---
         blinks_in_60s = [b for b in self.blink_history if b.end_ts_ms >= cutoff_60s]

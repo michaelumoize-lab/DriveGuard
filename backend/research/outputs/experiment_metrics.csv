@@ -1,0 +1,8 @@
+configuration,false_alarm_frames,mirror_check_fa_frames,glare_blur_fa_frames,false_alarm_episodes_per_hour,precision_pct,recall_pct,f1_pct,early_warning_lead_time_sec,cnn_trigger_rate_pct,mean_latency_ms,p95_latency_ms
+FIXED_022,872.0,34.0,838.0,2104.6,55.8,100.0,71.6,0.0,0.0,0.085,0.14
+PDBP_1ZONE,367.0,2.0,0.0,110.8,74.1,95.5,83.5,37.5,41.8,0.513,1.273
+PDBP_4ZONE,0.0,0.0,0.0,0.0,100.0,92.1,95.9,35.7,40.0,0.596,1.895
+EXP_A_GEOM_ONLY,537.0,0.0,370.0,55.4,67.2,100.0,80.4,40.0,0.0,0.254,0.603
+EXP_B_CNN_ALWAYS,0.0,0.0,0.0,0.0,100.0,92.1,95.9,35.7,100.0,1.09,1.951
+EXP_C_NAIVE_BLIND_CNN,177.0,0.0,128.0,55.4,86.1,100.0,92.6,40.0,40.0,0.592,1.612
+EXP_C_DRIVEGUARD_CASCADE,0.0,0.0,0.0,0.0,100.0,92.1,95.9,35.7,40.0,0.596,1.895
