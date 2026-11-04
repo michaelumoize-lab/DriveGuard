@@ -69,6 +69,9 @@ class CascadeStageResult:
     stage_latency_ms: float
 
 
+DEFAULT_EYE_ONNX_PATH = Path(__file__).resolve().parents[2] / "weights" / "mobilenetv3_eye.onnx"
+
+
 class MobileNetV3EyeVerifier:
     """
     Lightweight Eye-Crop Classifier (OPEN vs CLOSED).
@@ -82,12 +85,13 @@ class MobileNetV3EyeVerifier:
         self.input_name: Optional[str] = None
         self.is_pretrained_onnx: bool = False
 
-        if onnx_model_path is not None and Path(onnx_model_path).is_file():
+        resolved_path = Path(onnx_model_path) if onnx_model_path is not None else DEFAULT_EYE_ONNX_PATH
+        if resolved_path.is_file():
             try:
                 import onnxruntime as ort
 
                 self.onnx_session = ort.InferenceSession(
-                    str(onnx_model_path), providers=["CPUExecutionProvider"]
+                    str(resolved_path), providers=["CPUExecutionProvider"]
                 )
                 self.input_name = self.onnx_session.get_inputs()[0].name
                 self.is_pretrained_onnx = True
