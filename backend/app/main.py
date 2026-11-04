@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import time
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Dict
+from typing import AsyncGenerator, Dict, Any
+import traceback
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -60,6 +61,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Capture any uncaught runtime exception and return structured JSON with traceback."""
+    tb = traceback.format_exc()
+    print(f"[ERROR] Uncaught exception on {request.method} {request.url.path}: {exc}\n{tb}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "ERROR",
+            "error_type": type(exc).__name__,
+            "message": str(exc),
+            "traceback": tb,
+        },
+    )
 
 # Root & Health Check Endpoints
 @app.get("/", tags=["Status"])

@@ -38,11 +38,33 @@ async def websocket_session_stream(
     """
     await websocket.accept()
 
-    engine = await session_manager.get_or_create_session(
-        session_id=session_id,
-        driver_id=driver_id,
-        experiment_mode=experiment_mode,
-    )
+    try:
+        engine = await session_manager.get_or_create_session(
+            session_id=session_id,
+            driver_id=driver_id,
+            experiment_mode=experiment_mode,
+        )
+        # Send immediate ready handshake so client knows session is active
+        await websocket.send_json(
+            {
+                "type": "SESSION_READY",
+                "session_id": session_id,
+                "driver_id": driver_id,
+                "experiment_mode": engine.experiment_mode.value,
+            }
+        )
+    except Exception as exc:
+        import traceback
+        tb = traceback.format_exc()
+        print(f"[ERROR] Failed to instantiate AI session '{session_id}': {exc}\n{tb}")
+        try:
+            await websocket.send_json(
+                {"type": "FATAL_ERROR", "detail": f"Failed to initialize AI session: {exc}"}
+            )
+            await websocket.close(code=1011)
+        except Exception:
+            pass
+        return
 
     try:
         while True:

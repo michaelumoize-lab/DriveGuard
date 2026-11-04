@@ -87,18 +87,23 @@ class DriveGuardFaceLandmarker:
             )
             self._tasks_landmarker = mp_vision.FaceLandmarker.create_from_options(options)
             self._use_tasks_api = True
-        except Exception:
+        except Exception as exc:
+            print(f"[DriveGuardFaceLandmarker WARNING] Tasks API initialization failed ({exc}). Attempting legacy FaceMesh...")
             if hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh"):
-                self._legacy_face_mesh = mp.solutions.face_mesh.FaceMesh(
-                    static_image_mode=False,
-                    max_num_faces=1,
-                    refine_landmarks=True,
-                    min_detection_confidence=0.50,
-                    min_tracking_confidence=0.50,
-                )
-                self._use_tasks_api = False
+                try:
+                    self._legacy_face_mesh = mp.solutions.face_mesh.FaceMesh(
+                        static_image_mode=False,
+                        max_num_faces=1,
+                        refine_landmarks=True,
+                        min_detection_confidence=0.50,
+                        min_tracking_confidence=0.50,
+                    )
+                    self._use_tasks_api = False
+                    print("[DriveGuardFaceLandmarker] Legacy FaceMesh initialized successfully.")
+                except Exception as legacy_exc:
+                    raise RuntimeError(f"Could not initialize Tasks API ({exc}) nor legacy FaceMesh ({legacy_exc})")
             else:
-                raise RuntimeError("Could not initialize MediaPipe FaceLandmarker or FaceMesh.")
+                raise RuntimeError(f"Could not initialize MediaPipe Tasks API: {exc}")
 
     def process_frame(
         self,

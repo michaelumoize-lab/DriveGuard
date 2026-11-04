@@ -8,9 +8,9 @@ export const metadata = {
 
 export default function LiveMonitorPage() {
   return (
-    <div className="p-4 sm:p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
-      <div>
-        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
+    <div className="p-2 sm:p-6 md:p-8 space-y-3 sm:space-y-6 max-w-7xl mx-auto">
+      <div className="hidden sm:block">
+        <h1 className="text-xl sm:text-3xl font-bold tracking-tight text-foreground">
           Live Driver Monitoring Console
         </h1>
         <p className="text-xs sm:text-sm text-muted-foreground">

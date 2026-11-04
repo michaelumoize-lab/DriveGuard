@@ -118,7 +118,7 @@ class DriverBehaviourProfile:
             ear_mad_scaled=max(self.center_ear_mad_scaled, 0.015),
             pitch_median_deg=self.neutral_pitch_deg + (-12.0 if zone == PoseZone.DASHBOARD else 0.0),
             yaw_median_deg=self.neutral_yaw_deg
-            + (-22.0 if zone == PoseZone.LEFT_MIRROR else (22.0 if zone == PoseZone.RIGHT_MIRROR else 0.0)),
+            + (20.0 if zone == PoseZone.LEFT_MIRROR else (-20.0 if zone == PoseZone.RIGHT_MIRROR else 0.0)),
             sample_count=0,
         )
 
@@ -355,13 +355,15 @@ class GuidedCalibrationSession:
             return True, "Holding Steady (Center Roadway)"
 
         elif target_zone == PoseZone.LEFT_MIRROR:
-            if rel_yaw > -10.0:
-                return False, "Turn head toward Driver Mirror  <-"
+            # Driver turning left yields positive relative yaw in front-facing camera frame
+            if rel_yaw < 9.0:
+                return False, "Turn head toward Driver Mirror (Left)  <-"
             return True, "Holding Steady (Driver Mirror)"
 
         elif target_zone == PoseZone.RIGHT_MIRROR:
-            if rel_yaw < 10.0:
-                return False, "Turn head toward Passenger Mirror  ->"
+            # Driver turning right yields negative relative yaw in front-facing camera frame
+            if rel_yaw > -9.0:
+                return False, "Turn head toward Passenger Mirror (Right)  ->"
             return True, "Holding Steady (Passenger Mirror)"
 
         elif target_zone == PoseZone.DASHBOARD:

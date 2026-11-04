@@ -104,13 +104,16 @@ def compute_single_eye_ear(landmarks_xyz: np.ndarray, indices: Tuple[int, ...], 
 def compute_yaw_weighted_ear(left_ear: float, right_ear: float, yaw_deg: float) -> float:
     """
     Combine left and right EAR while handling partial occlusion when the head turns.
+    In front-facing webcam frames:
+      - Positive yaw (> 15 deg) indicates head turned toward driver's LEFT (right eye is more frontal).
+      - Negative yaw (< -15 deg) indicates head turned toward driver's RIGHT (left eye is more frontal).
     """
     if yaw_deg > 15.0:
-        # Head turned right -> left eye is closer/more frontal to camera
-        w_left, w_right = 0.75, 0.25
-    elif yaw_deg < -15.0:
         # Head turned left -> right eye is closer/more frontal to camera
         w_left, w_right = 0.25, 0.75
+    elif yaw_deg < -15.0:
+        # Head turned right -> left eye is closer/more frontal to camera
+        w_left, w_right = 0.75, 0.25
     else:
         w_left, w_right = 0.50, 0.50
     return w_left * left_ear + w_right * right_ear
@@ -214,11 +217,13 @@ def classify_pose_zone(
     if abs(rel_yaw) > 48.0 or abs(rel_pitch) > 38.0:
         return PoseZone.OUT_OF_BOUNDS
 
-    if rel_yaw <= -14.0:
+    # Mirror-corrected driver perspective (front-facing webcam):
+    # Driver turning left yields positive relative yaw; turning right yields negative relative yaw.
+    if rel_yaw >= 12.0:
         return PoseZone.LEFT_MIRROR
-    if rel_yaw >= 14.0:
+    if rel_yaw <= -12.0:
         return PoseZone.RIGHT_MIRROR
-    if rel_pitch <= -10.0:
+    if rel_pitch <= -8.0:
         return PoseZone.DASHBOARD
 
     return PoseZone.CENTER

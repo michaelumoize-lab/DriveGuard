@@ -14,22 +14,26 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { useSystemHealth } from "@/hooks/use-system-health";
+import {
   Activity,
   Camera,
   Play,
   Square,
   Volume2,
   VolumeX,
-  Sparkles,
   ShieldAlert,
   AlertTriangle,
   Eye,
   RefreshCw,
   Cpu,
-  Layers,
-  Server,
-  Radio,
-  CheckCircle2,
   Wifi,
   WifiOff,
   Maximize2,
@@ -38,7 +42,9 @@ import {
   Monitor,
   Flame,
   Clock,
-  Compass,
+  Crop,
+  Sparkles,
+  Zap,
 } from "lucide-react";
 
 export interface NormalizedTelemetry {
@@ -76,6 +82,8 @@ export function LiveDriverMonitor() {
   const isFrameInFlightRef = useRef<boolean>(false);
   const lastFrameSentTimeRef = useRef<number>(0);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Active Session & DB Logging Refs
   const activeSessionCodeRef = useRef<string | null>(null);
@@ -93,10 +101,14 @@ export function LiveDriverMonitor() {
     criticalCount: 0,
   });
 
+  // Single Source of Truth: System Health from Navbar Hook
+  const { health, refresh: refreshHealth } = useSystemHealth();
+  const fastApiStatus = health?.services?.fastapi?.status;
+
   // States
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isWsConnected, setIsWsConnected] = useState(false);
-  const [wsStatus, setWsStatus] = useState<"disconnected" | "connecting" | "connected" | "error">("disconnected");
+  const [wsStatus, setWsStatus] = useState<"disconnected" | "connecting" | "connected" | "reconnecting" | "error">("disconnected");
   const [telemetry, setTelemetry] = useState<NormalizedTelemetry | null>(null);
   const [audioMuted, setAudioMuted] = useState(false);
   const [selectedExperiment, setSelectedExperiment] = useState<"CASCADE" | "GEOMETRIC" | "CNN">("CASCADE");
@@ -107,9 +119,15 @@ export function LiveDriverMonitor() {
   // Device & Layout Modes
   const [isMobileDevice, setIsMobileDevice] = useState(false);
   const [viewOrientation, setViewOrientation] = useState<"portrait" | "landscape">("landscape");
+  // Framing Mode: "fit" (wide FOV, no crop) vs "cover" (fullscreen fill)
+  const [framingMode, setFramingMode] = useState<"fit" | "cover">("fit");
 
-  // Backend target selector (default to Local if on localhost, or Cloud Render)
-  const [backendType, setBackendType] = useState<"local" | "cloud">("local");
+  // Pre-Flight AI Warm-up Dialog State
+  const [isWarmingUpAI, setIsWarmingUpAI] = useState(false);
+  const [warmUpCountdown, setWarmUpCountdown] = useState(25);
+
+  // Backend target selector (default to Cloud Render unless explicitly on localhost)
+  const [backendType, setBackendType] = useState<"local" | "cloud">("cloud");
 
   const localWsUrl = "ws://127.0.0.1:8000";
   const cloudWsUrl = process.env.NEXT_PUBLIC_FASTAPI_WS_URL || "wss://driveguard-x048.onrender.com";
@@ -125,6 +143,10 @@ export function LiveDriverMonitor() {
         setIsMobileDevice(mobile);
         if (mobile) {
           setViewOrientation("portrait");
+          // Mobile default is Wide FOV (fit) so camera is never over-zoomed
+          setFramingMode("fit");
+          // Mobile devices cannot run Python on 127.0.0.1, always use cloud
+          setBackendType("cloud");
         }
       };
 
@@ -134,15 +156,42 @@ export function LiveDriverMonitor() {
     }
   }, []);
 
-  // Initialize preference from localStorage if available
+  // Initialize preference from localStorage if available (on desktop localhost only)
   useEffect(() => {
     if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("driveguard_backend_type") as "local" | "cloud" | null;
-      if (saved) {
-        setBackendType(saved);
+      const isLocalHost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+      if (isLocalHost) {
+        const saved = localStorage.getItem("driveguard_backend_type") as "local" | "cloud" | null;
+        if (saved) {
+          setBackendType(saved);
+        } else {
+          setBackendType("local");
+        }
       } else {
-        const isLocalHost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
-        setBackendType(isLocalHost ? "local" : "cloud");
+        setBackendType("cloud");
+      }
+    }
+  }, []);
+
+  // Screen Wake Lock API (keeps mobile screen awake while monitoring)
+  const requestWakeLock = useCallback(async () => {
+    try {
+      if (typeof navigator !== "undefined" && "wakeLock" in navigator) {
+        wakeLockRef.current = await navigator.wakeLock.request("screen");
+      }
+    } catch {
+      // Browser policy or background tab restriction
+    }
+  }, []);
+
+  const releaseWakeLock = useCallback(async () => {
+    if (wakeLockRef.current) {
+      try {
+        await wakeLockRef.current.release();
+      } catch {
+        // ignore
+      } finally {
+        wakeLockRef.current = null;
       }
     }
   }, []);
@@ -172,6 +221,11 @@ export function LiveDriverMonitor() {
   };
 
   const changeBackendType = (type: "local" | "cloud") => {
+    const isLocalHost = typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
+    if (type === "local" && !isLocalHost) {
+      toast.warning("Local engine (127.0.0.1:8000) is only accessible on the host computer running Python. Staying on Cloud AI.");
+      return;
+    }
     setBackendType(type);
     if (typeof window !== "undefined") {
       localStorage.setItem("driveguard_backend_type", type);
@@ -190,7 +244,7 @@ export function LiveDriverMonitor() {
     return () => clearInterval(timer);
   }, [isCameraActive, sessionStartTime]);
 
-  // Audio warning buzzer on CRITICAL state
+  // Audio warning buzzer on CRITICAL state & offline chime
   const playAlertBuzzer = useCallback(() => {
     if (audioMuted) return;
     try {
@@ -306,27 +360,25 @@ export function LiveDriverMonitor() {
     toast.info(`Switched cascade mode to: ${mode}`);
   };
 
-  // Connect WebSocket to AI Engine with auto-fallback
-  const connectWebSocket = useCallback((sessionId: string, fallbackToLocal: boolean = true) => {
+  // Connect WebSocket to AI Engine with robust retry and NO mobile localhost fallback
+  const connectWebSocket = useCallback((sessionId: string) => {
     setWsStatus("connecting");
     const wsUrl = `${activeWsBase}/ws/v1/session/${sessionId}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
+    // Generous 12-second timeout for cloud cold starts
     const connectTimeout = setTimeout(() => {
-      if (ws.readyState !== WebSocket.OPEN && backendType === "cloud" && fallbackToLocal) {
-        console.warn("Cloud connection timed out, attempting local fallback...");
-        ws.close();
-        setBackendType("local");
-        toast.warning("Cloud backend unreachable. Auto-switching to Local AI Engine (127.0.0.1:8000) ⚡");
+      if (ws.readyState !== WebSocket.OPEN) {
+        console.warn("Cloud connection taking longer than expected. Retrying...");
       }
-    }, 4500);
+    }, 12000);
 
     ws.onopen = () => {
       clearTimeout(connectTimeout);
       setIsWsConnected(true);
       setWsStatus("connected");
-      toast.success(`Connected to AI Engine (${backendType === "local" ? "127.0.0.1:8000" : "Render Cloud"})!`);
+      toast.success(`Connected to AI Engine (${backendType === "local" ? "Local Engine" : "Cloud Engine"})!`);
 
       const modeKey =
         selectedExperiment === "GEOMETRIC"
@@ -340,6 +392,12 @@ export function LiveDriverMonitor() {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        if (data.type === "SESSION_READY") {
+          setIsWsConnected(true);
+          setWsStatus("connected");
+          return;
+        }
+
         let parsed: NormalizedTelemetry | null = null;
         if (data.type === "TELEMETRY" && data.telemetry) {
           parsed = parseTelemetry(data.telemetry);
@@ -379,11 +437,12 @@ export function LiveDriverMonitor() {
     ws.onerror = () => {
       clearTimeout(connectTimeout);
       setWsStatus("error");
-      if (backendType === "cloud" && fallbackToLocal) {
-        toast.warning("Cloud backend offline. Falling back to Local AI Engine (127.0.0.1:8000)...");
+      const isLocalHost = typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
+      if (backendType === "cloud" && isLocalHost) {
+        toast.warning("Cloud backend unreachable. Falling back to Local AI Engine (127.0.0.1:8000)...");
         setBackendType("local");
       } else {
-        toast.error(`WebSocket connection failed on ${activeWsBase}. Make sure Python server is running.`);
+        toast.error(`AI connection interrupted on ${activeWsBase}. Retrying connection...`);
       }
     };
 
@@ -392,26 +451,38 @@ export function LiveDriverMonitor() {
       setIsWsConnected(false);
       setWsStatus("disconnected");
       isFrameInFlightRef.current = false;
+
+      // Exponential auto-reconnect if camera is still streaming
+      if (isCameraActive) {
+        setWsStatus("reconnecting");
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          if (isCameraActive) {
+            const nextSessionId = `web_${Date.now()}`;
+            connectWebSocket(nextSessionId);
+          }
+        }, 3000);
+      }
     };
 
     return ws;
-  }, [activeWsBase, backendType, selectedExperiment, logAlertToDatabase]);
+  }, [activeWsBase, backendType, selectedExperiment, logAlertToDatabase, isCameraActive]);
 
-  // Main Start Camera & Streaming Action (Mobile-First Portrait Optimized)
-  const startStream = async () => {
+  // Execute actual camera capture & start streaming
+  const executeCameraStreaming = async () => {
     try {
       const isPortrait = viewOrientation === "portrait" || isMobileDevice;
 
-      // Request device camera with mobile-first portrait aspect ratio when on portrait
+      // Video constraints: Natural sensor aspect ratio without artificial digital zoom
       const videoConstraints: MediaTrackConstraints = isPortrait
         ? {
-            facingMode: "user",
+            facingMode: { ideal: "user" },
             aspectRatio: { ideal: 9 / 16 },
             width: { ideal: 720 },
             height: { ideal: 1280 },
           }
         : {
-            facingMode: "user",
+            facingMode: { ideal: "user" },
             aspectRatio: { ideal: 16 / 9 },
             width: { ideal: 640 },
             height: { ideal: 480 },
@@ -431,6 +502,7 @@ export function LiveDriverMonitor() {
 
       setIsCameraActive(true);
       setSessionStartTime(Date.now());
+      requestWakeLock();
 
       // 1. Initialize Driving Session in PostgreSQL
       const sessionCode = `DRV-${Date.now().toString().slice(-6)}`;
@@ -466,7 +538,7 @@ export function LiveDriverMonitor() {
       isFrameInFlightRef.current = false;
       lastFrameSentTimeRef.current = 0;
 
-      // 3. Backpressure-Controlled Frame Grabber (respects portrait aspect ratio)
+      // 3. Backpressure-Controlled Frame Grabber (respects natural sensor aspect ratio)
       frameIntervalRef.current = setInterval(() => {
         const now = Date.now();
         if (now - lastFrameSentTimeRef.current < 40) return;
@@ -524,17 +596,57 @@ export function LiveDriverMonitor() {
     }
   };
 
+  // Pre-Flight Check before starting camera stream
+  const startStream = async () => {
+    // If backend is cloud and navbar/health indicates offline, probe first
+    if (backendType === "cloud" && fastApiStatus !== "online") {
+      setIsWarmingUpAI(true);
+      setWarmUpCountdown(25);
+      return;
+    }
+
+    await executeCameraStreaming();
+  };
+
+  // Launch in offline preview mode (skips waiting for AI cloud)
+  const launchOfflinePreviewMode = async () => {
+    setIsWarmingUpAI(false);
+    toast.info("Starting in Local Camera Preview Mode. AI features will connect once ready.");
+    await executeCameraStreaming();
+  };
+
+  // Auto-poll probe while warming up AI dialog is open
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (isWarmingUpAI) {
+      timer = setInterval(async () => {
+        setWarmUpCountdown((prev) => Math.max(0, prev - 1));
+        const res = await refreshHealth();
+        if (res?.services?.fastapi?.status === "online") {
+          setIsWarmingUpAI(false);
+          toast.success("AI Cloud Engine is online! Launching live stream...");
+          executeCameraStreaming();
+        }
+      }, 3000);
+    }
+    return () => clearInterval(timer);
+  }, [isWarmingUpAI, refreshHealth]);
+
   // Teardown everything cleanly & finalize session in DB
   const stopStream = async () => {
     const sessionCode = activeSessionCodeRef.current;
     const duration = sessionStartTime ? Math.floor((Date.now() - sessionStartTime) / 1000) : 0;
-    const m = sessionMetricsRef.current;
+    releaseWakeLock();
 
-    // 1. Finalize Driving Session in PostgreSQL
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
     if (sessionCode) {
       try {
+        const m = sessionMetricsRef.current;
         const avgFps = m.totalFrames > 0 ? Number((m.fpsSum / m.totalFrames).toFixed(1)) : 0;
-        const avgLatency = m.totalFrames > 0 ? Number((m.latencySum / m.totalFrames).toFixed(1)) : 0;
         const avgPerclos = m.totalFrames > 0 ? Number((m.perclosSum / m.totalFrames).toFixed(1)) : 0;
         const avgBlinkRate = m.totalFrames > 0 ? Number((m.blinkRateSum / m.totalFrames).toFixed(1)) : 0;
 
@@ -544,8 +656,8 @@ export function LiveDriverMonitor() {
           body: JSON.stringify({
             sessionCode,
             durationSeconds: duration,
+            totalFrames: m.totalFrames,
             averageFps: avgFps,
-            averageLatencyMs: avgLatency,
             averagePerclosPct: avgPerclos,
             maxPerclosPct: Number(m.maxPerclos.toFixed(1)),
             averageBlinkRate: avgBlinkRate,
@@ -607,12 +719,14 @@ export function LiveDriverMonitor() {
   useEffect(() => {
     return () => {
       if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (wsRef.current) wsRef.current.close();
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
       }
+      releaseWakeLock();
     };
-  }, []);
+  }, [releaseWakeLock]);
 
   const stateColor =
     telemetry?.state === "CRITICAL"
@@ -628,17 +742,17 @@ export function LiveDriverMonitor() {
   return (
     <div
       ref={containerRef}
-      className={`space-y-6 transition-all ${
+      className={`space-y-4 sm:space-y-6 transition-all ${
         isFullscreen
-          ? "fixed inset-0 z-50 bg-black p-0 sm:p-4 flex flex-col justify-between overflow-hidden"
+          ? "fixed inset-0 z-50 bg-black p-0 sm:p-4 flex flex-col justify-between overflow-hidden h-[100dvh] w-screen"
           : ""
       }`}
     >
-      {/* Top Mobile/Desktop Orientation Bar */}
+      {/* Top Mobile/Desktop Orientation & Framing Controls */}
       {!isFullscreen && (
-        <div className="flex items-center justify-between bg-muted/40 p-2.5 rounded-xl border border-border text-xs">
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground hidden sm:inline">Stream Orientation:</span>
+        <div className="flex flex-wrap items-center justify-between gap-2 bg-muted/40 p-2 sm:p-2.5 rounded-xl border border-border text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-muted-foreground hidden sm:inline">Orientation:</span>
             <div className="flex items-center bg-background rounded-lg p-0.5 border border-border">
               <button
                 type="button"
@@ -650,7 +764,7 @@ export function LiveDriverMonitor() {
                 }`}
               >
                 <Smartphone className="size-3.5" />
-                <span>TikTok Portrait</span>
+                <span>Portrait HUD</span>
               </button>
               <button
                 type="button"
@@ -662,9 +776,20 @@ export function LiveDriverMonitor() {
                 }`}
               >
                 <Monitor className="size-3.5" />
-                <span>Webcam Landscape</span>
+                <span>Landscape Cockpit</span>
               </button>
             </div>
+
+            {/* Framing Mode Toggle (Wide FOV vs Fill) */}
+            <button
+              type="button"
+              onClick={() => setFramingMode((prev) => (prev === "fit" ? "cover" : "fit"))}
+              className="px-2.5 py-1 rounded-lg border border-border bg-background hover:bg-muted text-muted-foreground hover:text-foreground text-xs flex items-center gap-1.5 transition-colors"
+              title="Toggle Camera Framing (Wide FOV vs Fill)"
+            >
+              <Crop className="size-3.5 text-primary" />
+              <span>{framingMode === "fit" ? "Wide FOV (No Crop)" : "Fill Screen"}</span>
+            </button>
           </div>
 
           <div className="flex items-center gap-2">
@@ -682,7 +807,7 @@ export function LiveDriverMonitor() {
 
       {/* Video & Real-time HUD Grid */}
       <div
-        className={`grid gap-6 ${
+        className={`grid gap-4 sm:gap-6 ${
           isFullscreen
             ? "h-full w-full grid-cols-1 p-0"
             : isPortraitMode
@@ -690,19 +815,19 @@ export function LiveDriverMonitor() {
             : "grid-cols-1 lg:grid-cols-3"
         }`}
       >
-        {/* Main Video Viewport (TikTok Style Portrait or Landscape) */}
+        {/* Main Video Viewport (Portrait HUD or Landscape) */}
         <Card
           className={`overflow-hidden border-border/80 flex flex-col relative ${
             isFullscreen
               ? "border-0 rounded-none bg-black h-full w-full"
               : isPortraitMode
-              ? "md:col-span-7 lg:col-span-6 mx-auto w-full max-w-[420px] shadow-2xl rounded-3xl border-2"
+              ? "md:col-span-7 lg:col-span-6 mx-auto w-full max-w-[440px] shadow-2xl rounded-2xl sm:rounded-3xl border-2"
               : "lg:col-span-2"
           }`}
         >
-          {/* Card / HUD Header (Minimalist for Portrait) */}
+          {/* Card / HUD Header */}
           <CardHeader
-            className={`py-3 px-4 flex flex-row items-center justify-between border-b border-border ${
+            className={`py-2.5 sm:py-3 px-3 sm:px-4 flex flex-row items-center justify-between border-b border-border ${
               isFullscreen
                 ? "bg-black/90 border-white/10 z-30"
                 : isPortraitMode
@@ -716,47 +841,20 @@ export function LiveDriverMonitor() {
                 {isFullscreen
                   ? "DriveGuard Cockpit HUD"
                   : isPortraitMode
-                  ? "TikTok Cabin Stream"
-                  : "Webcam Cabin Feed"}
+                  ? "Driver Focus Stream"
+                  : "Cabin Camera Stream"}
               </CardTitle>
             </div>
 
             {/* Target AI Engine Toggle & Status */}
             <div className="flex items-center gap-1.5 sm:gap-2">
-              <div className="flex items-center bg-muted/60 rounded-md p-0.5 text-[11px] font-mono border border-border">
-                <button
-                  type="button"
-                  onClick={() => changeBackendType("local")}
-                  className={`px-2 py-0.5 rounded transition-colors ${
-                    backendType === "local"
-                      ? "bg-primary text-primary-foreground font-semibold shadow-xs"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                  title="Local AI Engine (ws://127.0.0.1:8000)"
-                >
-                  ⚡ Local
-                </button>
-                <button
-                  type="button"
-                  onClick={() => changeBackendType("cloud")}
-                  className={`px-2 py-0.5 rounded transition-colors ${
-                    backendType === "cloud"
-                      ? "bg-primary text-primary-foreground font-semibold shadow-xs"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                  title="Cloud AI Engine (Render)"
-                >
-                  ☁️ Cloud
-                </button>
-              </div>
-
               {/* WS Live Indicator */}
               <Badge
                 variant="outline"
                 className={`text-[10px] font-mono flex items-center gap-1 ${
                   isWsConnected
                     ? "border-emerald-500/40 text-emerald-500 bg-emerald-500/10"
-                    : wsStatus === "connecting"
+                    : wsStatus === "connecting" || wsStatus === "reconnecting"
                     ? "border-amber-500/40 text-amber-500 bg-amber-500/10 animate-pulse"
                     : "border-destructive/30 text-destructive bg-destructive/10"
                 }`}
@@ -766,15 +864,15 @@ export function LiveDriverMonitor() {
                     <Wifi className="size-3" />
                     LIVE
                   </>
-                ) : wsStatus === "connecting" ? (
+                ) : wsStatus === "connecting" || wsStatus === "reconnecting" ? (
                   <>
                     <RefreshCw className="size-3 animate-spin" />
-                    SYNC
+                    SYNCING
                   </>
                 ) : (
                   <>
                     <WifiOff className="size-3" />
-                    OFFLINE
+                    PREVIEW
                   </>
                 )}
               </Badge>
@@ -792,13 +890,13 @@ export function LiveDriverMonitor() {
             </div>
           </CardHeader>
 
-          {/* Video Viewport Content (9:16 aspect ratio on portrait) */}
+          {/* Video Viewport Content */}
           <CardContent
             className={`p-0 relative bg-black flex-1 flex items-center justify-center overflow-hidden ${
               isFullscreen
                 ? "h-full w-full"
                 : isPortraitMode
-                ? "aspect-[9/16] min-h-[500px]"
+                ? "aspect-[9/16] min-h-[460px] max-h-[75vh]"
                 : "aspect-video"
             }`}
           >
@@ -808,7 +906,9 @@ export function LiveDriverMonitor() {
               autoPlay
               playsInline
               muted
-              className="w-full h-full object-cover -scale-x-100"
+              className={`w-full h-full -scale-x-100 transition-all ${
+                framingMode === "cover" ? "object-cover" : "object-contain"
+              }`}
             />
             {/* Hidden canvas for JPEG frame grabbing */}
             <canvas ref={canvasRef} className="hidden" />
@@ -820,19 +920,20 @@ export function LiveDriverMonitor() {
                   <Flame className="size-8 animate-pulse text-primary" />
                 </div>
                 <div className="font-bold text-foreground text-base">
-                  {isPortraitMode ? "TikTok-Style Mobile Stream" : "Ready to Start Monitoring"}
+                  {isPortraitMode ? "Mobile Driver Focus Stream" : "Ready to Start Monitoring"}
                 </div>
                 <p className="text-xs text-muted-foreground max-w-xs">
                   {isPortraitMode
-                    ? "Hold your phone vertically. Face detection, blink kinematics, and fatigue alerts stream in real-time."
-                    : "Click below to enable your camera and connect to the edge AI cascade."}
+                    ? "Mount your phone in portrait. Sub-frame blink kinematics, 3D gaze zones, and fatigue alerts stream in real-time."
+                    : "Enable camera to stream cabin video to the DriveGuard confidence cascade."}
                 </p>
-                <Button size="sm" onClick={startStream} className="bg-primary text-primary-foreground font-semibold px-6 py-2 rounded-xl shadow-md">
+                <Button size="sm" onClick={startStream} className="bg-primary text-primary-foreground font-semibold px-6 py-2 rounded-xl shadow-md min-h-[44px]">
                   <Play className="size-4 mr-1.5" />
                   Start Live Stream
                 </Button>
-                <div className="text-[10px] font-mono text-muted-foreground/80">
-                  Target: {backendType === "local" ? "127.0.0.1:8000 (Local Python)" : "driveguard-x048.onrender.com"}
+                <div className="text-[10px] font-mono text-muted-foreground/80 flex items-center gap-1.5">
+                  <span className={`size-1.5 rounded-full ${fastApiStatus === "online" ? "bg-emerald-500" : "bg-amber-500 animate-ping"}`} />
+                  <span>Target: {backendType === "local" ? "127.0.0.1:8000 (Local Python)" : "driveguard-x048.onrender.com"}</span>
                 </div>
               </div>
             )}
@@ -842,19 +943,11 @@ export function LiveDriverMonitor() {
               <div className="absolute top-3 left-3 right-3 flex items-center justify-between p-2 rounded-xl bg-black/85 backdrop-blur-md border border-amber-500/40 text-amber-400 text-xs shadow-md z-20">
                 <div className="flex items-center gap-2">
                   <AlertTriangle className="size-4 animate-bounce shrink-0" />
-                  <span className="truncate">AI Offline ({activeWsBase})</span>
+                  <span className="truncate">
+                    {wsStatus === "reconnecting" ? "Reconnecting to AI Cloud..." : "Camera in Local Preview Mode"}
+                  </span>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
-                  {backendType === "cloud" && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => changeBackendType("local")}
-                      className="h-7 text-xs border-primary/50 text-primary hover:bg-primary/20"
-                    >
-                      ⚡ Local
-                    </Button>
-                  )}
                   <Button
                     size="sm"
                     variant="outline"
@@ -868,7 +961,7 @@ export function LiveDriverMonitor() {
               </div>
             )}
 
-            {/* TikTok-Style Overlay HUD Elements (When Camera is Active) */}
+            {/* Floating Cockpit HUD Elements (When Camera is Active) */}
             {isCameraActive && telemetry && (
               <>
                 {/* Top Profile / Zone Chip */}
@@ -888,9 +981,9 @@ export function LiveDriverMonitor() {
                   </div>
                 </div>
 
-                {/* TikTok-Style Floating Left Live Metrics Bubbles */}
+                {/* Live Telemetry Gauges (Left Stack) */}
                 <div className="absolute bottom-20 left-3 flex flex-col gap-1.5 pointer-events-none z-20">
-                  {/* Bubble 1: EAR */}
+                  {/* Gauge 1: EAR */}
                   <div className="px-3 py-1.5 rounded-xl bg-black/70 backdrop-blur-md border border-white/15 text-white flex items-center gap-2 shadow-lg w-fit">
                     <Eye className="size-3.5 text-emerald-400 shrink-0" />
                     <span className="text-[11px] font-mono">
@@ -898,7 +991,7 @@ export function LiveDriverMonitor() {
                     </span>
                   </div>
 
-                  {/* Bubble 2: PERCLOS */}
+                  {/* Gauge 2: PERCLOS */}
                   <div className="px-3 py-1.5 rounded-xl bg-black/70 backdrop-blur-md border border-white/15 text-white flex items-center gap-2 shadow-lg w-fit">
                     <Activity className="size-3.5 text-primary shrink-0" />
                     <span className="text-[11px] font-mono">
@@ -908,12 +1001,12 @@ export function LiveDriverMonitor() {
                     </span>
                   </div>
 
-                  {/* Bubble 3: Blink Rate & Head Nod */}
+                  {/* Gauge 3: Blink Rate & Head Nod */}
                   <div className="px-3 py-1 rounded-xl bg-black/70 backdrop-blur-md border border-white/10 text-white/90 text-[10px] font-mono w-fit">
-                    {telemetry.blink_rate.toFixed(0)} blinks/min • Pitch: {telemetry.pitch_deg.toFixed(0)}°
+                    {telemetry.blink_rate.toFixed(0)} blinks/min • Pitch: {telemetry.pitch_deg.toFixed(0)}° • Yaw: {telemetry.yaw_deg.toFixed(0)}°
                   </div>
 
-                  {/* Bubble 4: Active Warning Reasons */}
+                  {/* Gauge 4: Active Warning Reasons */}
                   {telemetry.reason_codes.map((reason) => (
                     <div
                       key={reason}
@@ -927,16 +1020,16 @@ export function LiveDriverMonitor() {
             )}
           </CardContent>
 
-          {/* Footer Controls (Floating or Pinned Dock) */}
-          <CardFooter className="py-3 px-4 flex items-center justify-between border-t border-border bg-muted/20">
+          {/* Footer Controls */}
+          <CardFooter className="py-2.5 sm:py-3 px-3 sm:px-4 flex items-center justify-between border-t border-border bg-muted/20">
             <div className="flex items-center gap-2">
               {isCameraActive ? (
-                <Button size="sm" variant="destructive" onClick={stopStream} className="rounded-xl">
+                <Button size="sm" variant="destructive" onClick={stopStream} className="rounded-xl min-h-[40px]">
                   <Square className="size-3.5 mr-1.5" />
                   Stop Stream
                 </Button>
               ) : (
-                <Button size="sm" onClick={startStream} className="bg-primary text-primary-foreground font-semibold rounded-xl">
+                <Button size="sm" onClick={startStream} className="bg-primary text-primary-foreground font-semibold rounded-xl min-h-[40px]">
                   <Play className="size-3.5 mr-1.5" />
                   Start Stream
                 </Button>
@@ -951,6 +1044,17 @@ export function LiveDriverMonitor() {
               >
                 {audioMuted ? <VolumeX className="size-4" /> : <Volume2 className="size-4 text-primary" />}
               </Button>
+
+              {/* In-stream framing toggle */}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setFramingMode((prev) => (prev === "fit" ? "cover" : "fit"))}
+                className="h-9 w-9 p-0 rounded-xl"
+                title={framingMode === "fit" ? "Switch to Fill Screen" : "Switch to Wide FOV"}
+              >
+                <Crop className="size-4 text-muted-foreground" />
+              </Button>
             </div>
 
             <div className="text-xs font-mono text-muted-foreground flex items-center gap-2">
@@ -962,7 +1066,7 @@ export function LiveDriverMonitor() {
           </CardFooter>
         </Card>
 
-        {/* Live Kinematics Telemetry Side Panel (Desktop Widescreen or Side Companion) */}
+        {/* Live Kinematics Telemetry Companion Panel */}
         {(!isFullscreen || !isPortraitMode) && (
           <div className={`space-y-4 ${isPortraitMode ? "md:col-span-5 lg:col-span-6" : ""}`}>
             <Card className="border-border/80">
@@ -1099,6 +1203,52 @@ export function LiveDriverMonitor() {
           </div>
         )}
       </div>
+
+      {/* Pre-Flight AI Cloud Warm-Up Dialog */}
+      <Dialog open={isWarmingUpAI} onOpenChange={setIsWarmingUpAI}>
+        <DialogContent className="max-w-md p-6">
+          <DialogHeader className="space-y-2 text-center items-center">
+            <div className="p-3.5 rounded-full bg-primary/10 text-primary w-fit">
+              <RefreshCw className="size-8 animate-spin text-primary" />
+            </div>
+            <DialogTitle className="text-lg font-bold">Waking Up DriveGuard AI Engine</DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              The Render Cloud AI microservice spins down after idle periods to save resources. It is currently initializing neural weights and MediaPipe components (~{warmUpCountdown}s).
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-4 space-y-3">
+            <div className="flex items-center justify-between text-xs font-mono">
+              <span className="text-muted-foreground">Container Status:</span>
+              <span className="text-amber-500 font-semibold animate-pulse">Initializing...</span>
+            </div>
+            <Progress value={Math.max(10, ((25 - warmUpCountdown) / 25) * 100)} className="h-2" />
+            <p className="text-[11px] text-muted-foreground text-center">
+              Stream will automatically launch as soon as the handshake succeeds.
+            </p>
+          </div>
+
+          <DialogFooter className="flex flex-col sm:flex-row gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={launchOfflinePreviewMode}
+              className="w-full text-xs"
+            >
+              Start in Camera Preview Mode
+            </Button>
+            <Button
+              variant="default"
+              size="sm"
+              disabled
+              className="w-full text-xs bg-primary/80"
+            >
+              <RefreshCw className="size-3.5 mr-1.5 animate-spin" />
+              Waiting for Cloud AI...
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
