@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { toast } from "sonner";
 import { useCamera } from "@/hooks/use-camera";
 import { useAiTelemetryStream } from "@/hooks/use-ai-telemetry-stream";
@@ -60,6 +60,12 @@ export function UnifiedLiveMonitor() {
   const [isSnapshotOpen, setIsSnapshotOpen] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
 
+  // Stable session identifier (guaranteed not to mutate on re-renders)
+  const stableSessionId = useMemo(
+    () => `live_${Math.random().toString(36).slice(2, 9)}`,
+    []
+  );
+
   // Session & Database Persistence Refs
   const activeSessionCodeRef = useRef<string | null>(null);
   const lastAlertTimeRef = useRef<number>(0);
@@ -111,10 +117,19 @@ export function UnifiedLiveMonitor() {
     switchExperiment,
     reconnect: reconnectWs,
   } = useAiTelemetryStream({
-    sessionId: `dg_session_${Date.now().toString(36)}`,
+    sessionId: stableSessionId,
     driverId: "michael_driver",
-    targetFps: 20, // 20 FPS adaptive lock-step
+    targetFps: 20, // 20 FPS lock-step ping-pong
   });
+
+  // Reactive Stream Trigger: automatically start/stop WebSocket loop when camera becomes active
+  useEffect(() => {
+    if (cameraState === "active" && videoRef.current) {
+      startStreamingLoop(videoRef.current, isMirrored);
+    } else if (cameraState === "stopped" || cameraState === "not-initialized" || cameraState === "paused") {
+      stopStreamingLoop();
+    }
+  }, [cameraState, isMirrored, startStreamingLoop, stopStreamingLoop, videoRef]);
 
   // Synthesized Web Audio Buzzer on CRITICAL Fatigue
   const playAlertBuzzer = useCallback(() => {
@@ -238,7 +253,7 @@ export function UnifiedLiveMonitor() {
     }
   }, []);
 
-  // Start live monitoring (Hardware Camera + Adaptive WebSocket Stream)
+  // Start live monitoring (Hardware Camera + Database Driving Session)
   const handleStartMonitoring = useCallback(async () => {
     await startCamera();
 
@@ -257,14 +272,7 @@ export function UnifiedLiveMonitor() {
         activeSessionCodeRef.current = data.sessionCode;
       }
     } catch (_) {}
-
-    // Start adaptive WebSocket frame pumping once video starts
-    setTimeout(() => {
-      if (videoRef.current) {
-        startStreamingLoop(videoRef.current, isMirrored);
-      }
-    }, 400);
-  }, [startCamera, experimentMode, isMobileDevice, startStreamingLoop, isMirrored, videoRef]);
+  }, [startCamera, experimentMode, isMobileDevice]);
 
   // Stop live monitoring
   const handleStopMonitoring = useCallback(async () => {
@@ -562,7 +570,7 @@ export function UnifiedLiveMonitor() {
             }`}
           >
             {/* Live AI Telemetry HUD Gauges */}
-            <LiveTelemetryHUD telemetry={telemetry} />
+            <LiveTelemetryHUD telemetry={telemetry} cameraState={cameraState} />
 
             {/* Experiment Mode Selector Card */}
             <Card className="border-border">

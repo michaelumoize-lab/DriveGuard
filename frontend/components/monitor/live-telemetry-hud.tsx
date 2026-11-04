@@ -2,11 +2,12 @@
 
 import React from "react";
 import { FrameTelemetry } from "@/types/telemetry";
+import { CameraState } from "@/types/camera";
 import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
 import {
   Activity,
   AlertTriangle,
+  Camera,
   Compass,
   Cpu,
   Eye,
@@ -18,15 +19,48 @@ import {
 
 interface LiveTelemetryHUDProps {
   telemetry: FrameTelemetry | null;
+  cameraState?: CameraState;
   className?: string;
 }
 
-export function LiveTelemetryHUD({ telemetry, className = "" }: LiveTelemetryHUDProps) {
+export function LiveTelemetryHUD({
+  telemetry,
+  cameraState = "not-initialized",
+  className = "",
+}: LiveTelemetryHUDProps) {
+  const isCameraActive = cameraState === "active";
+
   if (!telemetry) {
     return (
-      <div className={`p-4 rounded-2xl bg-card border border-border text-center text-xs text-muted-foreground ${className}`}>
-        <Activity className="size-5 mx-auto mb-2 text-muted-foreground/60 animate-pulse" />
-        <p>Awaiting live driver telemetry packet...</p>
+      <div className={`p-4 rounded-2xl bg-card border border-border text-center space-y-2.5 ${className}`}>
+        {isCameraActive ? (
+          <>
+            <div className="relative size-8 mx-auto">
+              <div className="size-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+              <Activity className="size-4 text-primary absolute inset-0 m-auto animate-pulse" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-foreground">
+                Analyzing Live Facial Features...
+              </p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Streaming unwarped video frames to the DriveGuard Cascade on Render.
+              </p>
+            </div>
+          </>
+        ) : (
+          <>
+            <Camera className="size-6 mx-auto text-muted-foreground/60" />
+            <div>
+              <p className="text-xs font-semibold text-foreground">
+                Camera in Standby Mode
+              </p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Click &quot;Start Camera&quot; to begin sub-frame eye closure and 3D gaze telemetry.
+              </p>
+            </div>
+          </>
+        )}
       </div>
     );
   }
