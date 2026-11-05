@@ -106,14 +106,25 @@ class SessionAIEngine:
 
     def start_calibration(
         self,
-        four_zone_mode: bool = True,
+        four_zone_mode: Optional[bool] = None,
+        three_zone_mode: Optional[bool] = None,
         zone_duration_sec: float = 5.0,
         timestamp_ms: Optional[float] = None,
     ) -> CalibrationPhaseDTO:
-        """Begin a new guided calibration session (4-Zone or 1-Zone)."""
+        """Begin a new guided calibration session (3-Zone, 4-Zone, or 1-Zone)."""
+        if four_zone_mode is True:
+            is_4z, is_3z = True, False
+        elif three_zone_mode is True:
+            is_4z, is_3z = False, True
+        elif four_zone_mode is False and (three_zone_mode is False or three_zone_mode is None):
+            is_4z, is_3z = False, False
+        else:
+            is_4z, is_3z = False, True
+
         self.calibration_session = GuidedCalibrationSession(
             driver_id=self.driver_id,
-            four_zone_mode=four_zone_mode,
+            four_zone_mode=is_4z,
+            three_zone_mode=is_3z,
             step_duration_sec=zone_duration_sec,
         )
         self.calibration_session.start(timestamp_ms=timestamp_ms)
@@ -361,11 +372,13 @@ class SessionAIEngine:
                 completed_blink=kinematics_res.completed_blink,
             )
             if new_profile is not None:
+                total_steps = len(self.calibration_session.steps)
                 self.set_profile(new_profile)
+                profile_dto = self.export_profile_dto()
                 self._last_completed_calibration_dto = CalibrationPhaseDTO(
                     current_zone="CENTER",
-                    phase_index=4,
-                    total_phases=4,
+                    phase_index=total_steps,
+                    total_phases=total_steps,
                     zone_progress_pct=100.0,
                     total_progress_pct=100.0,
                     stable_samples_count=len(new_profile.zone_baselines),
@@ -374,6 +387,7 @@ class SessionAIEngine:
                     is_head_in_target_zone=True,
                     stability_feedback="Profile Ready",
                     is_completed=True,
+                    profile=profile_dto,
                 )
                 self.calibration_session = None
             elif not self.calibration_session.is_running and self.calibration_session.rejection_reason is not None:

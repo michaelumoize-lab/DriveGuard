@@ -7,6 +7,8 @@ from __future__ import annotations
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.app.schemas.profile import DriverProfileDTO
+
 
 class CalibrationPhaseDTO(BaseModel):
     """Real-time progress state for a single calibration phase."""
@@ -29,6 +31,7 @@ class CalibrationPhaseDTO(BaseModel):
     stability_feedback: str = Field(description="Real-time feedback: 'Holding Steady', 'Turn Further Left', etc.")
     is_completed: bool = Field(default=False, description="Whether calibration has completed successfully")
     rejection_reason: Optional[str] = Field(default=None, description="Reason if calibration was rejected")
+    profile: Optional[DriverProfileDTO] = Field(default=None, description="Calibrated driver profile if completed")
 
 
 class CalibrationStartRequest(BaseModel):

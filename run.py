@@ -140,11 +140,14 @@ def main() -> None:
         sys.exit(0)
 
     import uvicorn
+    from backend.app.core.config import settings
 
     print(f"\n[DriveGuard] Starting FastAPI Server...")
     print(f"   - REST API:           http://{args.host}:{args.port}")
     print(f"   - Interactive Docs:   http://{args.host}:{args.port}/docs")
     print(f"   - Health Endpoint:    http://{args.host}:{args.port}/health")
+    print(f"   - LiveKit WebRTC SFU: {settings.LIVEKIT_URL or 'Configured'}")
+    print(f"   - LiveKit Token API:  http://{args.host}:{args.port}/api/v1/livekit/token")
     print(f"   - WebSocket Stream:   ws://{args.host}:{args.port}/ws/v1/session/{{session_id}}")
     print(f"\nPress Ctrl+C to stop the server.\n")
 

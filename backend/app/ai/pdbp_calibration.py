@@ -356,13 +356,13 @@ class GuidedCalibrationSession:
 
         elif target_zone == PoseZone.LEFT_MIRROR:
             # Driver turning left yields positive relative yaw in front-facing camera frame
-            if rel_yaw < 9.0:
+            if rel_yaw < 7.0:
                 return False, "Turn head toward Driver Mirror (Left)  <-"
             return True, "Holding Steady (Driver Mirror)"
 
         elif target_zone == PoseZone.RIGHT_MIRROR:
             # Driver turning right yields negative relative yaw in front-facing camera frame
-            if rel_yaw > -9.0:
+            if rel_yaw > -7.0:
                 return False, "Turn head toward Passenger Mirror (Right)  ->"
             return True, "Holding Steady (Passenger Mirror)"
 
@@ -383,7 +383,12 @@ class GuidedCalibrationSession:
         step = self.current_step
         z_key = step.zone.value
         samples = len(self._ear_samples_by_zone.get(z_key, []))
-        ratio = float(np.clip(samples / max(1, self.target_samples_per_zone), 0.0, 1.0))
+        zone_target = (
+            min(20, self.target_samples_per_zone)
+            if step.zone in (PoseZone.LEFT_MIRROR, PoseZone.RIGHT_MIRROR, PoseZone.DASHBOARD)
+            else self.target_samples_per_zone
+        )
+        ratio = float(np.clip(samples / max(1, zone_target), 0.0, 1.0))
         return (
             self._step_idx + 1,
             len(self.steps),
@@ -424,15 +429,28 @@ class GuidedCalibrationSession:
         self._feedback_msg = feedback
 
         # ONLY accumulate valid open-eye samples when head is oriented toward target!
-        # For DASHBOARD, eyelids naturally narrow/droop, so relax geometric reliability to 0.30
-        min_geom_rel = 0.30 if step.zone == PoseZone.DASHBOARD else 0.42
-        min_ear_val = 0.10 if step.zone == PoseZone.DASHBOARD else 0.12
+        # For lateral mirror zones and dashboard, perspective yaw foreshortens one eye
+        # and reduces geometric landmark reliability naturally.
+        if step.zone in (PoseZone.LEFT_MIRROR, PoseZone.RIGHT_MIRROR):
+            min_geom_rel = 0.28
+            min_ear_val = 0.11
+            zone_target = min(20, self.target_samples_per_zone)
+        elif step.zone == PoseZone.DASHBOARD:
+            min_geom_rel = 0.28
+            min_ear_val = 0.10
+            zone_target = min(20, self.target_samples_per_zone)
+        else:
+            min_geom_rel = 0.38
+            min_ear_val = 0.12
+            zone_target = self.target_samples_per_zone
 
         if face_detected and geometric_reliability >= min_geom_rel and is_aligned:
             self._valid_frames_by_zone[z_key] += 1
             self._reliabilities.append(geometric_reliability)
-            # Only record open-eye EAR samples (exclude mid-blink frames)
-            if not is_eye_currently_closed and ear_value > min_ear_val:
+            # Only record open-eye EAR samples. In lateral zones, avoid letting frontal blink
+            # classifier falsely classify foreshortened eyes as closed.
+            is_closed = is_eye_currently_closed if step.zone == PoseZone.CENTER else (ear_value < min_ear_val)
+            if not is_closed and ear_value > min_ear_val:
                 self._ear_samples_by_zone[z_key].append(ear_value)
                 self._pitch_samples_by_zone[z_key].append(pitch_deg)
                 self._yaw_samples_by_zone[z_key].append(yaw_deg)
@@ -440,15 +458,19 @@ class GuidedCalibrationSession:
         if completed_blink is not None:
             self._collected_blinks.append(completed_blink)
 
-        # Step advances when required target samples are gathered in this zone!
-        # For DASHBOARD, 20 samples or 85% is plenty to establish median cutoff without getting stuck
-        zone_target = (
-            min(20, self.target_samples_per_zone)
-            if step.zone == PoseZone.DASHBOARD
-            else self.target_samples_per_zone
-        )
+        # Step advances when required target samples are gathered, OR
+        # when the driver has held their head aligned in this zone, OR timeout fallback (prevents hanging)
         current_samples = len(self._ear_samples_by_zone.get(z_key, []))
-        if current_samples >= zone_target or (current_samples >= 18 and self._total_frames_by_zone[z_key] >= 35):
+        aligned_frames = self._valid_frames_by_zone.get(z_key, 0)
+        min_aligned = min(20, max(4, int(zone_target * 0.8)))
+        max_total = min(45, max(6, int(zone_target * 2.0)))
+        should_advance = (
+            current_samples >= zone_target
+            or (current_samples >= max(2, min_aligned // 2) and aligned_frames >= min_aligned)
+            or (aligned_frames >= int(min_aligned * 1.5))
+            or (self._total_frames_by_zone[z_key] >= max_total)
+        )
+        if should_advance:
             # If Step 1 (CENTER) finishes, lock in driver's neutral posture!
             if self._step_idx == 0:
                 p_list = self._pitch_samples_by_zone.get(z_key, [0.0])
@@ -506,8 +528,8 @@ class GuidedCalibrationSession:
         for step in self.steps:
             zk = step.zone.value
             ears = sorted(self._ear_samples_by_zone.get(zk, []))
-            if len(ears) >= 5:
-                trim_idx = max(1, int(len(ears) * 0.10))
+            if len(ears) >= 3:
+                trim_idx = int(len(ears) * 0.10) if len(ears) >= 10 else 0
                 trimmed_ears = ears[trim_idx:]
                 ear_med, ear_mad = compute_median_and_scaled_mad(trimmed_ears, min_floor=0.015)
                 pitch_med, _ = compute_median_and_scaled_mad(
@@ -525,6 +547,22 @@ class GuidedCalibrationSession:
                     sample_count=len(trimmed_ears),
                 )
 
+        if center_key not in zone_baselines:
+            ear_med = float(np.median(center_ears)) if center_ears else 0.28
+            ear_mad = (
+                float(np.median(np.abs(np.array(center_ears) - ear_med))) * 1.4826
+                if len(center_ears) > 1
+                else 0.015
+            )
+            zone_baselines[center_key] = ZoneBaseline(
+                zone=center_key,
+                ear_median=ear_med,
+                ear_mad_scaled=max(ear_mad, 0.015),
+                pitch_median_deg=0.0,
+                yaw_median_deg=0.0,
+                sample_count=len(center_ears),
+            )
+
         center_zb = zone_baselines[center_key]
 
         # Backfill any missing zones relative to the primary CENTER anchor (especially DASHBOARD in 3-zone mode)
@@ -534,7 +572,7 @@ class GuidedCalibrationSession:
                 ear_median=round(center_zb.ear_median * 0.92, 4),
                 ear_mad_scaled=max(center_zb.ear_mad_scaled, 0.015),
                 pitch_median_deg=center_zb.pitch_median_deg,
-                yaw_median_deg=center_zb.yaw_median_deg - 22.0,
+                yaw_median_deg=center_zb.yaw_median_deg + 20.0,
                 sample_count=center_zb.sample_count,
             )
         if PoseZone.RIGHT_MIRROR.value not in zone_baselines:
@@ -543,7 +581,7 @@ class GuidedCalibrationSession:
                 ear_median=round(center_zb.ear_median * 0.92, 4),
                 ear_mad_scaled=max(center_zb.ear_mad_scaled, 0.015),
                 pitch_median_deg=center_zb.pitch_median_deg,
-                yaw_median_deg=center_zb.yaw_median_deg + 22.0,
+                yaw_median_deg=center_zb.yaw_median_deg - 20.0,
                 sample_count=center_zb.sample_count,
             )
         if PoseZone.DASHBOARD.value not in zone_baselines:

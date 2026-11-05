@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { toast } from "sonner";
 import { useCamera } from "@/hooks/use-camera";
-import { useAiTelemetryStream } from "@/hooks/use-ai-telemetry-stream";
+import { useLivekitTelemetryStream } from "@/hooks/use-livekit-telemetry-stream";
 import { CapturedFrame } from "@/types/camera";
 import { ExperimentMode, FrameTelemetry } from "@/types/telemetry";
 import { CameraView } from "@/components/camera/camera-view";
@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   Activity,
   AlertTriangle,
@@ -33,7 +34,9 @@ import {
   Maximize2,
   Minimize2,
   Monitor,
+  Radio,
   RefreshCw,
+  SlidersHorizontal,
   ShieldAlert,
   ShieldCheck,
   Smartphone,
@@ -103,7 +106,7 @@ export function UnifiedLiveMonitor() {
     mirrored: true,
   });
 
-  // 2. Adaptive AI Telemetry WebSocket Streaming Hook
+  // 2. Adaptive AI Telemetry LiveKit WebRTC Streaming Hook
   const {
     isConnected: isWsConnected,
     connectionStatus: wsStatus,
@@ -116,17 +119,16 @@ export function UnifiedLiveMonitor() {
     stopStreamingLoop,
     switchExperiment,
     reconnect: reconnectWs,
-  } = useAiTelemetryStream({
+  } = useLivekitTelemetryStream({
     sessionId: stableSessionId,
     driverId: "michael_driver",
-    targetFps: 25, // 25 FPS lock-step ping-pong
   });
 
   // Reactive Stream Trigger: automatically start/stop WebSocket loop when camera becomes active
   useEffect(() => {
     if (cameraState === "active" && videoRef.current) {
       startStreamingLoop(videoRef.current, isMirrored);
-    } else if (cameraState === "stopped" || cameraState === "not-initialized" || cameraState === "paused") {
+    } else if (cameraState === "stopped" || cameraState === "paused") {
       stopStreamingLoop();
     }
   }, [cameraState, isMirrored, startStreamingLoop, stopStreamingLoop, videoRef]);
@@ -331,63 +333,67 @@ export function UnifiedLiveMonitor() {
     <div ref={containerRef} className="w-full space-y-4">
       {/* 1. Top Header Card (COMPLETELY HIDDEN IN FULLSCREEN VIEW AS REQUESTED) */}
       {!isFullscreen && (
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-2xl bg-card border border-border shadow-xs">
-          <div className="space-y-0.5">
-            <div className="flex items-center gap-2">
-              <Activity className="size-5 text-primary" />
-              <h2 className="text-base sm:text-lg font-bold text-foreground">
-                Driver Safety Live Monitor
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 sm:p-3.5 rounded-2xl bg-card border border-border/80 shadow-xs">
+          <div className="space-y-0.5 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="size-8 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0">
+                <Radio className="size-4 animate-pulse" />
+              </div>
+              <h2 className="text-base sm:text-lg font-bold text-foreground tracking-tight">
+                Driver Safety Live Simulation
               </h2>
               <Badge
                 variant="outline"
-                className={`text-[10px] font-mono flex items-center gap-1 ${
+                className={`text-[10px] font-mono flex items-center gap-1.5 px-2.5 py-0.5 rounded-full ${
                   isWsConnected
                     ? "border-emerald-500/40 text-emerald-500 bg-emerald-500/10"
                     : wsStatus === "connecting" || wsStatus === "reconnecting"
                     ? "border-amber-500/40 text-amber-500 bg-amber-500/10 animate-pulse"
-                    : "border-border text-muted-foreground"
+                    : "border-border text-muted-foreground bg-muted/40"
                 }`}
               >
                 <span
                   className={`size-1.5 rounded-full ${
                     isWsConnected
-                      ? "bg-emerald-500"
+                      ? "bg-emerald-500 shadow-xs shadow-emerald-500/50"
                       : wsStatus === "connecting" || wsStatus === "reconnecting"
                       ? "bg-amber-500 animate-ping"
-                      : "bg-muted-foreground"
+                      : "bg-muted-foreground/60"
                   }`}
                 />
-                <span>{isWsConnected ? "AI CLOUD CONNECTED" : "AI ENGINE STANDBY"}</span>
+                <span>{isWsConnected ? "LIVEKIT WEBRTC ACTIVE" : "CASCADE PIPELINE STANDBY"}</span>
               </Badge>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Real-time cabin monitoring powered by DriveGuard adaptive confidence cascade, 3D gaze tracking, and sub-frame blink kinematics.
+            <p className="text-xs text-muted-foreground pl-10 hidden sm:block">
+              Real-time driver cabin telemetry stream: 3D gaze tracking, sub-frame blink kinematics &amp; confidence-gated AI cascade.
             </p>
           </div>
 
           {/* Quick Orientation & Mode Selector */}
-          <div className="flex items-center gap-2 shrink-0">
-            <Button
-              size="sm"
-              variant={isPortrait ? "default" : "outline"}
-              onClick={() => setViewOrientation("portrait")}
-              className="text-xs h-9 px-3 rounded-xl gap-1.5"
-              title="Portrait View (Mobile Driver View)"
-            >
-              <Smartphone className="size-3.5" />
-              <span>Portrait</span>
-            </Button>
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 self-end sm:self-center">
+            <div className="flex items-center p-1 rounded-xl bg-muted/50 border border-border/60">
+              <Button
+                size="sm"
+                variant={isPortrait ? "default" : "ghost"}
+                onClick={() => setViewOrientation("portrait")}
+                className="text-xs h-7 sm:h-8 px-2.5 rounded-lg gap-1.5"
+                title="Portrait View (Mobile Driver View)"
+              >
+                <Smartphone className="size-3.5" />
+                <span>Portrait</span>
+              </Button>
 
-            <Button
-              size="sm"
-              variant={!isPortrait ? "default" : "outline"}
-              onClick={() => setViewOrientation("landscape")}
-              className="text-xs h-9 px-3 rounded-xl gap-1.5"
-              title="Landscape View (Desktop Cockpit View)"
-            >
-              <Monitor className="size-3.5" />
-              <span>Landscape</span>
-            </Button>
+              <Button
+                size="sm"
+                variant={!isPortrait ? "default" : "ghost"}
+                onClick={() => setViewOrientation("landscape")}
+                className="text-xs h-7 sm:h-8 px-2.5 rounded-lg gap-1.5"
+                title="Landscape View (Desktop Cockpit View)"
+              >
+                <Monitor className="size-3.5" />
+                <span>Landscape</span>
+              </Button>
+            </div>
           </div>
         </div>
       )}
@@ -576,76 +582,96 @@ export function UnifiedLiveMonitor() {
               backendType={backendType}
             />
 
-            {/* Experiment Mode Selector Card */}
-            <Card className="border-border">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                  <Sparkles className="size-4 text-primary" />
-                  <span>Cascade Experiment Mode</span>
-                </CardTitle>
-                <CardDescription className="text-xs">
-                  Switch the arbitration logic between Geometric EAR and MobileNetV3 CNN.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <ExperimentSelector
-                  currentMode={experimentMode}
-                  onSelectMode={switchExperiment}
-                />
-              </CardContent>
-            </Card>
-
-            {/* Camera Input Device Card */}
-            <Card className="border-border">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                  <Camera className="size-4 text-primary" />
-                  <span>Camera Input Sensor</span>
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <CameraSelector
-                  devices={devices}
-                  selectedDeviceId={selectedDeviceId}
-                  onSelectDevice={selectDevice}
-                  onRefreshDevices={refreshDevices}
-                />
-              </CardContent>
-            </Card>
-
-            {/* Target Cloud / Engine Selector */}
-            <Card className="border-border">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                  <Cpu className="size-4 text-primary" />
-                  <span>AI Inference Target</span>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-muted-foreground">Server Endpoint</span>
-                  <span className="font-mono text-foreground font-medium">
-                    {backendType === "cloud" ? "Render Cloud AI" : "127.0.0.1:8000"}
-                  </span>
+            {/* Hardware & Cascade Configuration Card (Tabs for Clean Vertical Space) */}
+            <Card className="border-border/80 shadow-xs overflow-hidden">
+              <CardHeader className="p-3.5 pb-2 border-b border-border/50 bg-muted/20">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <SlidersHorizontal className="size-4 text-primary" />
+                    <CardTitle className="text-xs font-bold uppercase tracking-wider text-foreground">
+                      Configuration &amp; Sensors
+                    </CardTitle>
+                  </div>
+                  <Badge variant="outline" className="text-[10px] font-mono text-muted-foreground border-border/60">
+                    {backendType === "cloud" ? "Cloud AI" : "Local:8000"}
+                  </Badge>
                 </div>
-                <div className="flex items-center gap-2 pt-1">
-                  <Button
-                    size="sm"
-                    variant={backendType === "cloud" ? "default" : "outline"}
-                    onClick={() => switchBackend("cloud")}
-                    className="text-xs h-8 flex-1 rounded-xl"
-                  >
-                    Cloud (Render)
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant={backendType === "local" ? "default" : "outline"}
-                    onClick={() => switchBackend("local")}
-                    className="text-xs h-8 flex-1 rounded-xl"
-                  >
-                    Localhost (8000)
-                  </Button>
-                </div>
+              </CardHeader>
+              <CardContent className="p-3">
+                <Tabs defaultValue="cascade" className="w-full space-y-3">
+                  <TabsList className="grid grid-cols-3 w-full h-9 bg-muted/50 p-1 rounded-xl">
+                    <TabsTrigger
+                      value="cascade"
+                      className="text-xs font-medium rounded-lg data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-2xs"
+                    >
+                      <Sparkles className="size-3 mr-1 text-primary shrink-0" />
+                      <span>Cascade</span>
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="camera"
+                      className="text-xs font-medium rounded-lg data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-2xs"
+                    >
+                      <Camera className="size-3 mr-1 text-primary shrink-0" />
+                      <span>Camera</span>
+                    </TabsTrigger>
+                    <TabsTrigger
+                      value="engine"
+                      className="text-xs font-medium rounded-lg data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-2xs"
+                    >
+                      <Cpu className="size-3 mr-1 text-primary shrink-0" />
+                      <span>Engine</span>
+                    </TabsTrigger>
+                  </TabsList>
+
+                  {/* Tab 1: Experiment Selector */}
+                  <TabsContent value="cascade" className="mt-0 focus-visible:outline-none">
+                    <ExperimentSelector
+                      currentMode={experimentMode}
+                      onSelectMode={switchExperiment}
+                    />
+                  </TabsContent>
+
+                  {/* Tab 2: Camera Selector */}
+                  <TabsContent value="camera" className="mt-0 focus-visible:outline-none space-y-2">
+                    <div className="text-[11px] text-muted-foreground">
+                      Select active hardware optical sensor for driver eye and face tracking:
+                    </div>
+                    <CameraSelector
+                      devices={devices}
+                      selectedDeviceId={selectedDeviceId}
+                      onSelectDevice={selectDevice}
+                      onRefreshDevices={refreshDevices}
+                    />
+                  </TabsContent>
+
+                  {/* Tab 3: AI Inference Target */}
+                  <TabsContent value="engine" className="mt-0 focus-visible:outline-none space-y-2.5">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">Active Server Endpoint:</span>
+                      <span className="font-mono text-foreground font-semibold" suppressHydrationWarning>
+                        {backendType === "cloud" ? "LiveKit Cloud (Render)" : "127.0.0.1:8000"}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2" suppressHydrationWarning>
+                      <Button
+                        size="sm"
+                        variant={backendType === "cloud" ? "default" : "outline"}
+                        onClick={() => switchBackend("cloud")}
+                        className="text-xs h-9 flex-1 rounded-xl"
+                      >
+                        LiveKit Cloud
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant={backendType === "local" ? "default" : "outline"}
+                        onClick={() => switchBackend("local")}
+                        className="text-xs h-9 flex-1 rounded-xl"
+                      >
+                        Localhost (8000)
+                      </Button>
+                    </div>
+                  </TabsContent>
+                </Tabs>
               </CardContent>
             </Card>
           </div>

@@ -3,7 +3,7 @@ import { Geist } from "next/font/google";
 import "./globals.css";
 import type { ReactNode } from "react";
 
-import { ThemeProvider } from "next-themes";
+import { ThemeProvider } from "@/components/theme-provider";
 import { Providers } from "@/components/providers";
 import { cn } from "@/lib/utils";
 

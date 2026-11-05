@@ -26,16 +26,16 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
     onError,
   } = options;
 
-  // Auto-detect optimal backend: default to localhost when running on local machine
-  const initialBackend: "cloud" | "local" = useMemo(() => {
-    if (defaultBackend) return defaultBackend;
-    if (typeof window !== "undefined") {
+  // Consistent initial state on both SSR and client to prevent hydration mismatch
+  const [backendType, setBackendType] = useState<"cloud" | "local">(defaultBackend || "local");
+
+  // Sync client hostname strictly after mount
+  useEffect(() => {
+    if (!defaultBackend && typeof window !== "undefined") {
       const hostname = window.location.hostname;
-      if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") {
-        return "local";
-      }
+      const isLocal = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+      setBackendType(isLocal ? "local" : "cloud");
     }
-    return "cloud";
   }, [defaultBackend]);
 
   // Stable session identifier that does NOT regenerate on re-renders
@@ -47,18 +47,6 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
   const cloudWsBase =
     process.env.NEXT_PUBLIC_FASTAPI_WS_URL || "wss://driveguard-x048.onrender.com";
   const localWsBase = "ws://127.0.0.1:8000";
-
-  const [backendType, setBackendType] = useState<"cloud" | "local">(initialBackend);
-
-  // Sync with browser hostname on mount
-  useEffect(() => {
-    if (!defaultBackend && typeof window !== "undefined") {
-      const hostname = window.location.hostname;
-      if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") {
-        setBackendType("local");
-      }
-    }
-  }, [defaultBackend]);
   const [connectionStatus, setConnectionStatus] = useState<
     "disconnected" | "connecting" | "connected" | "reconnecting" | "error"
   >("disconnected");

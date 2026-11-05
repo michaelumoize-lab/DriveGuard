@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.app.api.routes.calibration import router as calibration_router
+from backend.app.api.routes.livekit_token import router as livekit_router
 from backend.app.api.routes.profiles import router as profiles_router
 from backend.app.api.routes.sessions import router as sessions_router
 from backend.app.api.ws_telemetry import ws_router
@@ -115,6 +116,7 @@ api_v1_router = APIRouter(prefix=settings.API_V1_STR)
 api_v1_router.include_router(sessions_router)
 api_v1_router.include_router(profiles_router)
 api_v1_router.include_router(calibration_router)
+api_v1_router.include_router(livekit_router)
 
 app.include_router(api_v1_router)
 

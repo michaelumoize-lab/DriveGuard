@@ -6,14 +6,29 @@ import { CameraState } from "@/types/camera";
 import { Badge } from "@/components/ui/badge";
 import {
   Activity,
+  AlertOctagon,
   AlertTriangle,
+  ArrowDownRight,
+  ArrowUpRight,
   Camera,
+  CheckCircle2,
+  Clock,
   Compass,
   Cpu,
+  Crosshair,
   Eye,
+  EyeOff,
   Flame,
   Gauge,
+  HelpCircle,
+  Radio,
+  RotateCcw,
+  ShieldAlert,
+  ShieldCheck,
   Sparkles,
+  Timer,
+  Wifi,
+  WifiOff,
   Zap,
 } from "lucide-react";
 
@@ -32,41 +47,78 @@ export function LiveTelemetryHUD({
 }: LiveTelemetryHUDProps) {
   const isCameraActive = cameraState === "active";
 
+  // 1. Standby / Connecting State
   if (!telemetry) {
     return (
-      <div className={`p-4 rounded-2xl bg-card border border-border text-center space-y-2.5 ${className}`}>
+      <div
+        className={`p-5 rounded-2xl bg-card/90 backdrop-blur-md border border-border/80 shadow-md space-y-4 ${className}`}
+      >
+        <div className="flex items-center justify-between border-b border-border/60 pb-3">
+          <div className="flex items-center gap-2">
+            <Radio className="size-4 text-primary animate-pulse" />
+            <h3 className="text-xs font-bold uppercase tracking-wider text-foreground">
+              Cockpit Telemetry HUD
+            </h3>
+          </div>
+          <Badge
+            variant="outline"
+            className="text-[10px] font-mono border-border text-muted-foreground"
+          >
+            {isCameraActive ? "INITIALIZING" : "STANDBY"}
+          </Badge>
+        </div>
+
         {isCameraActive ? (
-          <>
-            <div className="relative size-8 mx-auto">
-              <div className="size-8 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
-              <Activity className="size-4 text-primary absolute inset-0 m-auto animate-pulse" />
+          <div className="py-4 text-center space-y-3">
+            <div className="relative size-12 mx-auto">
+              <div className="size-12 rounded-full border-2 border-primary/20 border-t-primary animate-spin" />
+              <Activity className="size-5 text-primary absolute inset-0 m-auto animate-pulse" />
             </div>
-            <div>
+            <div className="space-y-1">
               <p className="text-xs font-semibold text-foreground">
-                Analyzing Live Facial Features...
+                Synthesizing Facial Landmarks &amp; Gaze Vector...
               </p>
-              <p className="text-[11px] text-muted-foreground mt-0.5">
-                Streaming unwarped video frames to {backendType === "local" ? "Local AI Engine (127.0.0.1:8000)" : "DriveGuard Cascade on Render"}.
+              <p className="text-[11px] text-muted-foreground max-w-xs mx-auto">
+                Connected to {backendType === "local" ? "Local AI Engine (127.0.0.1:8000)" : "DriveGuard LiveKit Engine"}. Awaiting first telemetry frame.
               </p>
             </div>
-          </>
+          </div>
         ) : (
-          <>
-            <Camera className="size-6 mx-auto text-muted-foreground/60" />
-            <div>
+          <div className="py-4 text-center space-y-3">
+            <div className="size-12 rounded-2xl bg-muted/40 border border-border flex items-center justify-center mx-auto text-muted-foreground/70">
+              <Camera className="size-6" />
+            </div>
+            <div className="space-y-1">
               <p className="text-xs font-semibold text-foreground">
-                Camera in Standby Mode
+                Driver Telemetry Offline
               </p>
-              <p className="text-[11px] text-muted-foreground mt-0.5">
-                Click &quot;Start Camera&quot; to begin sub-frame eye closure and 3D gaze telemetry.
+              <p className="text-[11px] text-muted-foreground max-w-xs mx-auto">
+                Click &quot;Start Camera&quot; to begin sub-frame eye aspect ratio (EAR), PERCLOS, 3D gaze tracking, and cascade AI arbitration.
               </p>
             </div>
-          </>
+          </div>
         )}
+
+        {/* Standby Baseline Spec Preview */}
+        <div className="grid grid-cols-3 gap-2 pt-1 border-t border-border/40 text-center font-mono">
+          <div className="p-2 rounded-xl bg-muted/30 border border-border/50">
+            <div className="text-[9px] uppercase text-muted-foreground">EAR Cutoff</div>
+            <div className="text-xs font-bold text-foreground mt-0.5">0.220</div>
+          </div>
+          <div className="p-2 rounded-xl bg-muted/30 border border-border/50">
+            <div className="text-[9px] uppercase text-muted-foreground">PERCLOS Win</div>
+            <div className="text-xs font-bold text-foreground mt-0.5">60s</div>
+          </div>
+          <div className="p-2 rounded-xl bg-muted/30 border border-border/50">
+            <div className="text-[9px] uppercase text-muted-foreground">Cascade Mode</div>
+            <div className="text-xs font-bold text-foreground mt-0.5">Adaptive</div>
+          </div>
+        </div>
       </div>
     );
   }
 
+  // 2. Active Telemetry Unpack
   const {
     state,
     risk_score,
@@ -77,9 +129,12 @@ export function LiveTelemetryHUD({
     eye_metrics,
     head_pose,
     cascade,
+    reason_codes,
   } = telemetry;
 
   const ear = eye_metrics?.ear_raw ?? 0;
+  const earLeft = eye_metrics?.ear_left;
+  const earRight = eye_metrics?.ear_right;
   const threshold = eye_metrics?.ear_closure_threshold ?? 0.22;
   const isEyeClosed = eye_metrics?.is_eye_closed ?? false;
   const perclos = eye_metrics?.perclos_pct ?? 0;
@@ -87,183 +142,425 @@ export function LiveTelemetryHUD({
   const blinkRcr = eye_metrics?.blink_rcr;
   const blinkRate = eye_metrics?.blink_rate_per_min ?? 0;
 
-  // Determine state banner colors
-  const getStateColor = () => {
+  // Determine state banner visuals
+  const getStateVisuals = () => {
     switch (state) {
       case "CRITICAL":
-        return "bg-rose-500 text-white animate-pulse";
+        return {
+          pillBg: "bg-rose-500 text-white shadow-md shadow-rose-500/25",
+          icon: <ShieldAlert className="size-4 animate-bounce" />,
+          label: "CRITICAL FATIGUE",
+          sublabel: "Immediate rest required",
+          cardBorder: "border-rose-500/40 ring-1 ring-rose-500/20",
+          riskColor: "text-rose-500",
+        };
       case "WARNING":
-        return "bg-amber-500 text-black";
+        return {
+          pillBg: "bg-amber-500 text-black shadow-md shadow-amber-500/20",
+          icon: <AlertTriangle className="size-4" />,
+          label: "DROWSY / WARNING",
+          sublabel: "Elevated eyelid closure",
+          cardBorder: "border-amber-500/40 ring-1 ring-amber-500/20",
+          riskColor: "text-amber-500",
+        };
       case "NORMAL":
-        return "bg-emerald-500 text-white";
+        return {
+          pillBg: "bg-emerald-500 text-white shadow-md shadow-emerald-500/20",
+          icon: <ShieldCheck className="size-4" />,
+          label: "ATTENTIVE & SAFE",
+          sublabel: "Normal eyelid & gaze profile",
+          cardBorder: "border-border",
+          riskColor: "text-emerald-500",
+        };
       default:
-        return "bg-muted text-muted-foreground";
+        return {
+          pillBg: "bg-muted text-muted-foreground",
+          icon: <EyeOff className="size-4" />,
+          label: state || "UNKNOWN",
+          sublabel: "Facial detection degraded",
+          cardBorder: "border-border",
+          riskColor: "text-muted-foreground",
+        };
     }
   };
 
+  const stateStyle = getStateVisuals();
+  const riskPct = Math.round(risk_score * 100);
+
+  // Friendly human interpretations for reason codes
+  const getReasonLabel = (code: string) => {
+    switch (code) {
+      case "EXTENDED_EYE_CLOSURE":
+      case "EXTENDED_CLOSURE":
+        return "Extended Eye Closure (>1.2s)";
+      case "HIGH_PERCLOS":
+        return `PERCLOS ${perclos.toFixed(1)}% Exceeds 25%`;
+      case "OFF_ROAD_GAZE":
+        return "Off-Road Distracted Gaze";
+      case "MICRO_SLEEP":
+        return "Microsleep Episode Detected";
+      case "YAWN_DETECTED":
+        return "Frequent Yawning Detected";
+      default:
+        return code.replace(/_/g, " ");
+    }
+  };
+
+  // 3D Zone Arrow or label
+  const getZoneDisplay = (zone: string) => {
+    switch (zone) {
+      case "CENTER":
+        return { label: "Center Ahead", hint: "Road Focus", status: "safe" };
+      case "LEFT_MIRROR":
+        return { label: "Left Mirror", hint: "Side Check", status: "caution" };
+      case "RIGHT_MIRROR":
+        return { label: "Right Mirror", hint: "Side Check", status: "caution" };
+      case "DASHBOARD":
+        return { label: "Dashboard", hint: "Cluster Check", status: "caution" };
+      default:
+        return { label: zone, hint: "Averted Gaze", status: "critical" };
+    }
+  };
+
+  const zoneInfo = getZoneDisplay(pose_zone);
+
   return (
     <div className={`space-y-3 ${className}`}>
-      {/* Top Cockpit Telemetry Strip: State & Risk Score */}
-      <div className="flex items-center justify-between p-3 rounded-2xl bg-card border border-border shadow-xs">
-        <div className="flex items-center gap-2">
-          <div className={`px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider ${getStateColor()}`}>
-            {state}
+      {/* 1. Top Cockpit Telemetry Banner: State, Risk, & Stream Health */}
+      <div
+        className={`p-3 sm:p-3.5 rounded-2xl bg-card border ${stateStyle.cardBorder} shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3`}
+      >
+        {/* Left: Dynamic Status Pill + Risk Rating */}
+        <div className="flex items-center gap-3">
+          <div
+            className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 ${stateStyle.pillBg}`}
+          >
+            {stateStyle.icon}
+            <span>{stateStyle.label}</span>
           </div>
-          <span className="text-xs text-muted-foreground font-mono">
-            Risk: <strong>{(risk_score * 100).toFixed(0)}%</strong>
-          </span>
+
+          <div className="flex flex-col">
+            <span className="text-[10px] uppercase font-mono text-muted-foreground leading-none">
+              Risk Index
+            </span>
+            <span className={`text-sm font-black font-mono leading-tight ${stateStyle.riskColor}`}>
+              {riskPct}%
+            </span>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2 text-xs font-mono">
-          <Badge variant="outline" className="border-border text-[11px] gap-1">
+        {/* Right: Stream Health Metrics (FPS, Network RTT, Inference) */}
+        <div className="flex items-center gap-1.5 flex-wrap font-mono text-[11px]">
+          {/* FPS Badge with warning color if dropped */}
+          <Badge
+            variant="outline"
+            className={`px-2 py-0.5 rounded-lg border gap-1 ${
+              fps < 10
+                ? "border-amber-500/40 text-amber-500 bg-amber-500/10"
+                : "border-border text-foreground"
+            }`}
+            title="Video Frames Processed per Second"
+          >
             <Gauge className="size-3 text-primary" />
             <span>{fps.toFixed(1)} FPS</span>
           </Badge>
+
+          {/* RTT Badge with latency rating */}
           {network_roundtrip_ms !== undefined && (
-            <Badge variant="outline" className="border-border text-[11px] text-muted-foreground">
-              RTT: {network_roundtrip_ms}ms
+            <Badge
+              variant="outline"
+              className={`px-2 py-0.5 rounded-lg border gap-1 ${
+                network_roundtrip_ms > 400
+                  ? "border-rose-500/40 text-rose-500 bg-rose-500/10"
+                  : network_roundtrip_ms > 150
+                  ? "border-amber-500/40 text-amber-500 bg-amber-500/10"
+                  : "border-border text-foreground"
+              }`}
+              title="End-to-End WebSocket Roundtrip Latency"
+            >
+              <Wifi className="size-3 text-primary" />
+              <span>{network_roundtrip_ms}ms</span>
+            </Badge>
+          )}
+
+          {/* AI Inference Latency Badge */}
+          {inference_latency_ms !== undefined && inference_latency_ms > 0 && (
+            <Badge
+              variant="outline"
+              className="px-2 py-0.5 rounded-lg border-border text-muted-foreground hidden xs:inline-flex"
+              title="Edge AI Model Processing Time"
+            >
+              AI: {inference_latency_ms.toFixed(0)}ms
             </Badge>
           )}
         </div>
       </div>
 
-      {/* 2-Column Gauge Grid: EAR on Left, PERCLOS on Right */}
+      {/* 2. Explainable Reason Banner (If active warnings exist) */}
+      {reason_codes && reason_codes.length > 0 && (
+        <div className="px-3 py-2 rounded-xl bg-destructive/10 border border-destructive/20 text-xs flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1 text-destructive font-semibold shrink-0">
+            <AlertOctagon className="size-3.5" />
+            <span className="text-[11px] uppercase tracking-wide">Triggers:</span>
+          </div>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {reason_codes.map((code, idx) => (
+              <span
+                key={idx}
+                className="px-2 py-0.5 rounded-md bg-destructive/20 text-destructive text-[11px] font-medium"
+              >
+                {getReasonLabel(code)}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 3. Hero Gauge Grid: EAR (Left) vs PERCLOS (Right) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {/* EAR Gauge Box */}
-        <div className="p-3.5 rounded-2xl bg-card border border-border space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold flex items-center gap-1.5 text-foreground">
-              <Eye className="size-3.5 text-primary" />
-              <span>Eye Aspect Ratio (EAR)</span>
-            </span>
+        {/* Card A: Eye Aspect Ratio (EAR) */}
+        <div className="p-3.5 rounded-2xl bg-card border border-border shadow-xs space-y-2.5">
+          <div className="flex items-start justify-between gap-2">
+            <div className="space-y-0.5 min-w-0">
+              <div className="flex items-center gap-1.5">
+                <Eye className="size-4 text-primary shrink-0" />
+                <span className="text-xs font-bold text-foreground truncate">
+                  Eye Aspect Ratio
+                </span>
+                <Badge variant="secondary" className="text-[9px] px-1 py-0 font-mono">
+                  EAR
+                </Badge>
+              </div>
+              {earLeft !== undefined && earRight !== undefined ? (
+                <div className="text-[10px] font-mono text-muted-foreground">
+                  L: {earLeft.toFixed(3)} | R: {earRight.toFixed(3)}
+                </div>
+              ) : (
+                <div className="text-[10px] text-muted-foreground">
+                  Dynamic facial geometry
+                </div>
+              )}
+            </div>
+
+            {/* EAR Status Badge */}
             <span
-              className={`text-xs font-mono font-bold px-2 py-0.5 rounded-md ${
-                isEyeClosed ? "bg-rose-500/20 text-rose-400" : "bg-emerald-500/20 text-emerald-400"
+              className={`text-xs font-mono font-bold px-2 py-0.5 rounded-lg flex items-center gap-1 shrink-0 ${
+                isEyeClosed
+                  ? "bg-rose-500/20 text-rose-500 border border-rose-500/30"
+                  : "bg-emerald-500/20 text-emerald-500 border border-emerald-500/30"
               }`}
             >
-              {ear.toFixed(3)}
+              {isEyeClosed ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
+              <span>{ear.toFixed(3)}</span>
+              <span className="text-[10px] uppercase font-sans">
+                {isEyeClosed ? "Closed" : "Open"}
+              </span>
             </span>
           </div>
 
           {/* Visual EAR Bar with Cutoff Marker */}
-          <div className="space-y-1">
+          <div className="space-y-1 pt-0.5">
             <div className="relative h-3 w-full bg-muted/60 rounded-full overflow-hidden">
+              {/* Progress bar fill */}
               <div
                 className={`h-full transition-all duration-100 rounded-full ${
-                  isEyeClosed ? "bg-rose-500" : "bg-emerald-500"
+                  isEyeClosed
+                    ? "bg-rose-500"
+                    : "bg-emerald-500"
                 }`}
-                style={{ width: `${Math.min(100, Math.max(0, (ear / 0.45) * 100))}%` }}
+                style={{
+                  width: `${Math.min(100, Math.max(0, (ear / 0.45) * 100))}%`,
+                }}
               />
-              {/* Dynamic Threshold Cutoff Line */}
+              {/* Dynamic Threshold Cutoff Needle */}
               <div
-                className="absolute top-0 bottom-0 w-1 bg-amber-400 shadow-xs z-10"
-                style={{ left: `${Math.min(95, Math.max(5, (threshold / 0.45) * 100))}%` }}
-                title={`Closure Cutoff: ${threshold.toFixed(3)}`}
+                className="absolute top-0 bottom-0 w-1 bg-amber-400 shadow-sm z-10"
+                style={{
+                  left: `${Math.min(95, Math.max(5, (threshold / 0.45) * 100))}%`,
+                }}
+                title={`Closure Cutoff Threshold: ${threshold.toFixed(3)}`}
               />
             </div>
+
+            {/* Micro Scale Tick Labels */}
             <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
-              <span>Closed (&lt;0.18)</span>
-              <span className="text-amber-400">Cutoff ({threshold.toFixed(3)})</span>
-              <span>Open (&gt;0.30)</span>
+              <span>0.00 (Closed)</span>
+              <span className="text-amber-500 font-semibold">
+                Cutoff ({threshold.toFixed(3)})
+              </span>
+              <span>0.45 (Open)</span>
             </div>
           </div>
         </div>
 
-        {/* PERCLOS (60s Window) Gauge Box */}
-        <div className="p-3.5 rounded-2xl bg-card border border-border space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold flex items-center gap-1.5 text-foreground">
-              <Activity className="size-3.5 text-primary" />
-              <span>PERCLOS (60s Window)</span>
-            </span>
+        {/* Card B: PERCLOS (Percentage Eye Closure) */}
+        <div className="p-3.5 rounded-2xl bg-card border border-border shadow-xs space-y-2.5">
+          <div className="flex items-start justify-between gap-2">
+            <div className="space-y-0.5 min-w-0">
+              <div className="flex items-center gap-1.5">
+                <Activity className="size-4 text-primary shrink-0" />
+                <span className="text-xs font-bold text-foreground truncate">
+                  PERCLOS Fatigue
+                </span>
+                <Badge variant="secondary" className="text-[9px] px-1 py-0 font-mono">
+                  60s
+                </Badge>
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                Time eyes closed &ge; 80%
+              </div>
+            </div>
+
+            {/* PERCLOS Level Badge */}
             <span
-              className={`text-xs font-mono font-bold px-2 py-0.5 rounded-md ${
+              className={`text-xs font-mono font-bold px-2 py-0.5 rounded-lg flex items-center gap-1 shrink-0 ${
                 perclos > 25
-                  ? "bg-rose-500/20 text-rose-400"
+                  ? "bg-rose-500/20 text-rose-500 border border-rose-500/30"
                   : perclos > 15
-                  ? "bg-amber-500/20 text-amber-400"
-                  : "bg-emerald-500/20 text-emerald-400"
+                  ? "bg-amber-500/20 text-amber-500 border border-amber-500/30"
+                  : "bg-emerald-500/20 text-emerald-500 border border-emerald-500/30"
               }`}
             >
-              {perclos.toFixed(1)}%
+              <span>{perclos.toFixed(1)}%</span>
+              <span className="text-[10px] uppercase font-sans">
+                {perclos > 25 ? "Critical" : perclos > 15 ? "Drowsy" : "Alert"}
+              </span>
             </span>
           </div>
 
-          {/* Visual PERCLOS Bar */}
-          <div className="space-y-1">
+          {/* Visual Segmented PERCLOS Bar */}
+          <div className="space-y-1 pt-0.5">
             <div className="relative h-3 w-full bg-muted/60 rounded-full overflow-hidden">
               <div
                 className={`h-full transition-all duration-150 rounded-full ${
-                  perclos > 25 ? "bg-rose-500" : perclos > 15 ? "bg-amber-500" : "bg-emerald-500"
+                  perclos > 25
+                    ? "bg-rose-500"
+                    : perclos > 15
+                    ? "bg-amber-500"
+                    : "bg-emerald-500"
                 }`}
                 style={{ width: `${Math.min(100, Math.max(0, perclos))}%` }}
               />
             </div>
-            <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
-              <span className="text-emerald-400">Alert (&lt;8%)</span>
-              <span className="text-amber-400">Drowsy (15%)</span>
-              <span className="text-rose-400">Critical (&gt;25%)</span>
+
+            {/* Visual Zone Legend */}
+            <div className="flex justify-between text-[10px] font-mono">
+              <span className="text-emerald-500 font-medium">Safe (&lt;15%)</span>
+              <span className="text-amber-500 font-medium">Caution (15-25%)</span>
+              <span className="text-rose-500 font-medium">Critical (&gt;25%)</span>
             </div>
           </div>
         </div>
       </div>
 
-      {/* 3D Gaze Zone & Sub-frame Kinematics */}
+      {/* 4. Cockpit Kinematics & Spatial Tracking (4 Tile Instruments) */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">
-        {/* Active Zone */}
-        <div className="p-2.5 rounded-xl bg-card border border-border">
+        {/* Instrument 1: 3D Gaze Zone */}
+        <div className="p-2.5 rounded-xl bg-card border border-border shadow-2xs space-y-1">
           <div className="text-[10px] text-muted-foreground uppercase flex items-center gap-1">
-            <Compass className="size-3 text-primary" />
-            <span>3D Gaze Zone</span>
+            <Compass className="size-3 text-primary shrink-0" />
+            <span className="truncate">3D Gaze Target</span>
           </div>
-          <div className="font-bold text-foreground mt-0.5 truncate">{pose_zone}</div>
-        </div>
-
-        {/* Head Pose Pitch / Yaw */}
-        <div className="p-2.5 rounded-xl bg-card border border-border">
-          <div className="text-[10px] text-muted-foreground uppercase">Head Pose</div>
-          <div className="font-bold text-foreground mt-0.5">
-            P: {head_pose ? Math.round(head_pose.pitch_deg) : 0}° | Y: {head_pose ? Math.round(head_pose.yaw_deg) : 0}°
+          <div className="font-bold text-foreground text-xs truncate">
+            {pose_zone}
+          </div>
+          <div className="text-[10px] text-muted-foreground font-sans truncate">
+            {zoneInfo.hint}
           </div>
         </div>
 
-        {/* Blink Rate */}
-        <div className="p-2.5 rounded-xl bg-card border border-border">
-          <div className="text-[10px] text-muted-foreground uppercase">Blink Frequency</div>
-          <div className="font-bold text-foreground mt-0.5">
+        {/* Instrument 2: Head Pose Angles */}
+        <div className="p-2.5 rounded-xl bg-card border border-border shadow-2xs space-y-1">
+          <div className="text-[10px] text-muted-foreground uppercase flex items-center gap-1">
+            <Crosshair className="size-3 text-primary shrink-0" />
+            <span className="truncate">Head Pose</span>
+          </div>
+          <div className="font-bold text-foreground text-xs truncate">
+            P: {head_pose ? Math.round(head_pose.pitch_deg) : 0}° | Y:{" "}
+            {head_pose ? Math.round(head_pose.yaw_deg) : 0}°
+          </div>
+          <div className="text-[10px] text-muted-foreground font-sans truncate">
+            Pitch / Yaw alignment
+          </div>
+        </div>
+
+        {/* Instrument 3: Blink Rate */}
+        <div className="p-2.5 rounded-xl bg-card border border-border shadow-2xs space-y-1">
+          <div className="text-[10px] text-muted-foreground uppercase flex items-center gap-1">
+            <Eye className="size-3 text-primary shrink-0" />
+            <span className="truncate">Blink Frequency</span>
+          </div>
+          <div className="font-bold text-foreground text-xs truncate">
             {blinkRate > 0 ? `${blinkRate.toFixed(1)} /min` : "--"}
           </div>
+          <div className="text-[10px] text-muted-foreground font-sans truncate">
+            {blinkRate === 0
+              ? "Calibrating"
+              : blinkRate < 6
+              ? "Low (Eye fixation)"
+              : blinkRate > 25
+              ? "Frequent blinks"
+              : "Normal cadence"}
+          </div>
         </div>
 
-        {/* Kinematic RCR */}
-        <div className="p-2.5 rounded-xl bg-card border border-border">
-          <div className="text-[10px] text-muted-foreground uppercase">Kinematic RCR</div>
-          <div className="font-bold text-foreground mt-0.5">
-            {blinkRcr ? blinkRcr.toFixed(2) : blinkDur ? `${Math.round(blinkDur)}ms` : "N/A"}
+        {/* Instrument 4: Kinematic RCR */}
+        <div className="p-2.5 rounded-xl bg-card border border-border shadow-2xs space-y-1">
+          <div className="text-[10px] text-muted-foreground uppercase flex items-center gap-1">
+            <Timer className="size-3 text-primary shrink-0" />
+            <span className="truncate">Kinematic RCR</span>
+          </div>
+          <div className="font-bold text-foreground text-xs truncate">
+            {blinkRcr
+              ? blinkRcr.toFixed(2)
+              : blinkDur
+              ? `${Math.round(blinkDur)}ms`
+              : "Calibrating"}
+          </div>
+          <div className="text-[10px] text-muted-foreground font-sans truncate">
+            Re-open / Closure dynamics
           </div>
         </div>
       </div>
 
-      {/* Confidence Cascade Architecture Status */}
-      <div className="p-3 rounded-2xl bg-card border border-border flex items-center justify-between text-xs">
+      {/* 5. Edge AI Cascade Decision Panel */}
+      <div className="p-3 rounded-2xl bg-card border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
         <div className="flex items-center gap-2">
           <Cpu className="size-4 text-primary shrink-0" />
-          <span className="text-muted-foreground">Cascade Decision Authority:</span>
-          <Badge variant="secondary" className="font-mono text-[11px] font-bold">
+          <span className="text-muted-foreground font-medium text-[11px] sm:text-xs">
+            Cascade Decision Authority:
+          </span>
+          <Badge
+            variant={
+              cascade?.arbitration_winner === "MOBILENET_V3"
+                ? "default"
+                : "secondary"
+            }
+            className="font-mono text-[11px] font-bold"
+          >
             {cascade?.arbitration_winner || "GEOMETRY"}
           </Badge>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2 font-mono">
           {cascade?.cnn_triggered ? (
-            <Badge className="bg-primary/20 text-primary border-primary/40 text-[10px] font-mono animate-pulse">
-              <Zap className="size-3 mr-1 fill-primary" />
-              CNN ACTIVE
+            <Badge className="bg-amber-500/20 text-amber-500 border border-amber-500/40 text-[10px] font-semibold animate-pulse gap-1">
+              <Zap className="size-3 fill-amber-500" />
+              <span>CNN ACTIVE ({cascade.cnn_latency_ms?.toFixed(0) || 14}ms)</span>
             </Badge>
           ) : (
-            <Badge variant="outline" className="border-border text-muted-foreground text-[10px] font-mono">
-              GEOMETRIC FAST-PATH
+            <Badge
+              variant="outline"
+              className="border-border text-muted-foreground text-[10px] gap-1"
+            >
+              <span>GEOMETRIC FAST-PATH (&lt;2ms)</span>
             </Badge>
+          )}
+
+          {cascade?.geom_reliability !== undefined && (
+            <span className="text-[10px] text-muted-foreground hidden md:inline">
+              Reliability: {(cascade.geom_reliability * 100).toFixed(0)}%
+            </span>
           )}
         </div>
       </div>

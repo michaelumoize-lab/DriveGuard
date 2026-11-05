@@ -74,6 +74,21 @@ export interface FrameTelemetry {
   network_roundtrip_ms?: number;
 }
 
+export interface CalibrationPhase {
+  current_zone: string;
+  phase_index: number;
+  total_phases: number;
+  zone_progress_pct: number;
+  total_progress_pct: number;
+  stable_samples_count: number;
+  target_samples_count: number;
+  instruction: string;
+  is_head_in_target_zone: boolean;
+  stability_feedback: string;
+  is_completed: boolean;
+  rejection_reason?: string | null;
+}
+
 export interface ServerTelemetryMessage {
   type: "SESSION_READY" | "TELEMETRY" | "FATAL_ERROR";
   session_id?: string;
@@ -81,5 +96,5 @@ export interface ServerTelemetryMessage {
   experiment_mode?: string;
   detail?: string;
   telemetry?: FrameTelemetry;
-  calibration?: any;
+  calibration?: CalibrationPhase | null;
 }

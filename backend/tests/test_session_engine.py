@@ -10,6 +10,7 @@ import numpy as np
 from backend.app.ai.geometry import (
     FrameGeometryFeatures,
     PoseZone,
+    classify_pose_zone,
 )
 from backend.app.ai.pipeline import SessionAIEngine
 from backend.app.schemas.calibration import CalibrationPhaseDTO
@@ -52,7 +53,7 @@ class DummyMockLandmarker:
             pitch_deg=self.pitch,
             yaw_deg=self.yaw,
             roll_deg=0.0,
-            pose_zone=PoseZone.CENTER if abs(self.yaw) < 15.0 else PoseZone.LEFT_MIRROR,
+            pose_zone=classify_pose_zone(self.pitch, self.yaw),
             geometric_reliability=0.92,
         )
         return geom, None
@@ -144,8 +145,8 @@ class TestSessionAIEngine(unittest.TestCase):
 
     def test_side_by_side_comparison_mirror_check(self) -> None:
         """Lateral mirror turn should trigger mirror-check suppression without false alert."""
-        # Driver looks at left mirror (yaw = -24 deg) with apparent lower EAR (0.20)
-        mirror_landmarker = DummyMockLandmarker(ear=0.20, pitch=0.0, yaw=-24.0)
+        # Driver looks at left mirror (yaw = +24 deg) with apparent lower EAR (0.20)
+        mirror_landmarker = DummyMockLandmarker(ear=0.20, pitch=0.0, yaw=24.0)
         engine = SessionAIEngine(landmarker=mirror_landmarker)
 
         frame = np.full((120, 160, 3), 100, dtype=np.uint8)
@@ -196,8 +197,8 @@ class TestSessionAIEngine(unittest.TestCase):
         self.assertFalse(status_after_unaligned.is_head_in_target_zone)
         self.assertIn("Driver Mirror", status_after_unaligned.stability_feedback)
 
-        # Now driver turns to LEFT_MIRROR (yaw = -18.0)
-        mock_lm.yaw = -18.0
+        # Now driver turns to LEFT_MIRROR (yaw = +18.0)
+        mock_lm.yaw = 18.0
         for _ in range(6):
             dto = engine.process_frame(frame, timestamp_ms=ts)
             ts += 33.3

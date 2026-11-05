@@ -118,6 +118,11 @@ class TestDriveGuardAPI(unittest.TestCase):
         """Stream binary image frames over WebSocket and receive real-time FrameTelemetryDTO."""
         ws_sess_id = "test_ws_streaming_sess"
         with self.client.websocket_connect(f"/ws/v1/session/{ws_sess_id}?driver_id=driver_ws") as ws:
+            # 0. Initial Session Ready Handshake
+            ready_resp = ws.receive_json()
+            self.assertEqual(ready_resp["type"], "SESSION_READY")
+            self.assertEqual(ready_resp["session_id"], ws_sess_id)
+
             # 1. Test Control Command (PING)
             ws.send_text('{"action": "PING"}')
             pong_resp = ws.receive_json()

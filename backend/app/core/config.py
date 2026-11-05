@@ -12,7 +12,12 @@ class Settings(BaseSettings):
     """DriveGuard Backend Settings."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(
+            ".env",
+            "backend/.env",
+            str(Path(__file__).resolve().parents[2] / ".env"),
+            str(Path(__file__).resolve().parents[2] / "backend" / ".env"),
+        ),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -25,6 +30,11 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     DEBUG: bool = False
+
+    # LiveKit Cloud WebRTC
+    LIVEKIT_URL: str = ""
+    LIVEKIT_API_KEY: str = ""
+    LIVEKIT_API_SECRET: str = ""
 
     # CORS
     CORS_ORIGINS: List[str] = [

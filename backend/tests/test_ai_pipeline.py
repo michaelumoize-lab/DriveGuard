@@ -29,8 +29,8 @@ class TestDriveGuardPhase1Pipeline(unittest.TestCase):
     def test_four_zone_pose_classification(self) -> None:
         """Verify head pitch/yaw correctly map to CENTER, LEFT_MIRROR, RIGHT_MIRROR, DASHBOARD."""
         self.assertEqual(classify_pose_zone(0.0, 0.0), PoseZone.CENTER)
-        self.assertEqual(classify_pose_zone(0.0, -20.0), PoseZone.LEFT_MIRROR)
-        self.assertEqual(classify_pose_zone(0.0, +20.0), PoseZone.RIGHT_MIRROR)
+        self.assertEqual(classify_pose_zone(0.0, +20.0), PoseZone.LEFT_MIRROR)
+        self.assertEqual(classify_pose_zone(0.0, -20.0), PoseZone.RIGHT_MIRROR)
         self.assertEqual(classify_pose_zone(-15.0, 0.0), PoseZone.DASHBOARD)
         self.assertEqual(classify_pose_zone(0.0, 55.0), PoseZone.OUT_OF_BOUNDS)
 
