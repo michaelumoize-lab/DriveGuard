@@ -12,12 +12,42 @@ if (!BETTER_AUTH_SECRET) {
   throw new Error("BETTER_AUTH_SECRET environment variable is required");
 }
 
+const getHostFromUrl = (urlStr?: string): string[] => {
+  if (!urlStr) return [];
+  try {
+    const parsed = new URL(urlStr.includes("://") ? urlStr : `https://${urlStr}`);
+    return [parsed.host];
+  } catch {
+    return [];
+  }
+};
+
+const appHosts = [
+  ...getHostFromUrl(process.env.BETTER_AUTH_URL),
+  ...getHostFromUrl(process.env.NEXT_PUBLIC_APP_URL),
+];
+
+const allowedHosts = Array.from(
+  new Set([
+    "localhost:3000",
+    "localhost:*",
+    "127.0.0.1:3000",
+    "127.0.0.1:*",
+    "*.vercel.app",
+    ...appHosts,
+  ]),
+);
+
 export const auth = betterAuth({
   database: prismaAdapter(prisma, {
     provider: "postgresql",
   }),
   secret: BETTER_AUTH_SECRET,
-  baseURL: APP_URL,
+  baseURL: {
+    allowedHosts,
+    protocol: process.env.NODE_ENV === "production" ? "https" : "auto",
+    fallback: APP_URL,
+  },
 
   plugins: [
     admin({
@@ -29,7 +59,11 @@ export const auth = betterAuth({
     nextCookies(),
   ],
 
-  trustedOrigins: [APP_URL],
+  trustedOrigins: [
+    APP_URL,
+    "*.vercel.app",
+    "https://*.vercel.app",
+  ],
 
   emailAndPassword: {
     enabled: true,
