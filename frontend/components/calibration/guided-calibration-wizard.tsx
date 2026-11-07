@@ -474,9 +474,20 @@ export function GuidedCalibrationWizard() {
               </div>
 
               {calState?.rejection_reason && (
-                <div className="p-3 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive text-xs space-y-1">
-                  <span className="font-semibold block">⚠️ Sample Rejection:</span>
-                  <p>{calState.rejection_reason}</p>
+                <div className="p-3 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive text-xs space-y-2">
+                  <div>
+                    <span className="font-semibold block">⚠️ Calibration Session Rejected:</span>
+                    <p className="mt-0.5">{calState.rejection_reason}</p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-destructive/40 text-destructive hover:bg-destructive/10 h-7 text-xs"
+                    onClick={handleStartCalibration}
+                  >
+                    <RotateCcw className="size-3.5 mr-1" />
+                    Retry Calibration
+                  </Button>
                 </div>
               )}
 

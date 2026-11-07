@@ -51,8 +51,12 @@ class SessionManager:
                 driver_id=driver_id,
                 experiment_mode=exp_mode,
             )
-            if stored_profile_dto is not None:
-                engine.load_profile_dto(stored_profile_dto)
+            try:
+                if stored_profile_dto is not None:
+                    engine.load_profile_dto(stored_profile_dto)
+            except Exception:
+                await asyncio.to_thread(engine.close)
+                raise
 
             self._sessions[session_id] = engine
             return engine
@@ -66,12 +70,14 @@ class SessionManager:
         async with self._lock:
             engine = self._sessions.pop(session_id, None)
             if engine is not None:
-                # If profile was calibrated, auto-persist to profile store
-                if engine.profile.calibration_mode != "UNCALIBRATED_DEFAULT":
-                    profile_store.save_profile(engine.export_profile_dto())
-                summary = engine.get_session_summary()
-                await asyncio.to_thread(engine.close)
-                return summary
+                try:
+                    # If profile was calibrated, auto-persist to profile store
+                    if engine.profile.calibration_mode != "UNCALIBRATED_DEFAULT":
+                        profile_store.save_profile(engine.export_profile_dto())
+                    summary = engine.get_session_summary()
+                    return summary
+                finally:
+                    await asyncio.to_thread(engine.close)
             return None
 
     def list_active_sessions(self) -> List[Dict[str, object]]:

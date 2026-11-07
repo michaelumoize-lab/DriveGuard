@@ -146,11 +146,11 @@ export function UnifiedLiveMonitor() {
         `[Cockpit Monitor] Safety event received: ${event.previous_state} -> ${event.new_state} (ID: ${event.event_id})`
       );
       if (event.new_state === "CRITICAL") {
+        lastAlertTimeRef.current = Date.now();
         sessionStatsRef.current.criticalCount++;
         playAlertBuzzer();
 
-        if (!activeSessionCodeRef.current) return;
-
+        const sessionCode = activeSessionCodeRef.current || "LIVE_TELEMETRY";
         const earStr =
           typeof event.metrics?.ear === "number" && !isNaN(event.metrics.ear)
             ? event.metrics.ear.toFixed(3)
@@ -165,7 +165,7 @@ export function UnifiedLiveMonitor() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            sessionCode: activeSessionCodeRef.current,
+            sessionCode,
             severity: "CRITICAL",
             riskScore: typeof event.metrics?.risk_score === "number" ? event.metrics.risk_score : 0.85,
             earValue: typeof event.metrics?.ear === "number" ? event.metrics.ear : 0.15,
@@ -210,7 +210,7 @@ export function UnifiedLiveMonitor() {
     }
   }, [cameraState, isMirrored, startStreamingLoop, stopStreamingLoop, videoRef]);
 
-  // Handle telemetry updates: frames and PERCLOS accounting
+  // Handle telemetry updates: frames, PERCLOS accounting, and repeating CRITICAL alerts
   useEffect(() => {
     if (!telemetry) return;
 
@@ -219,7 +219,35 @@ export function UnifiedLiveMonitor() {
     if (perclos > sessionStatsRef.current.maxPerclos) {
       sessionStatsRef.current.maxPerclos = perclos;
     }
-  }, [telemetry]);
+
+    if (telemetry.state === "CRITICAL") {
+      const now = Date.now();
+      if (now - lastAlertTimeRef.current >= 5000) {
+        lastAlertTimeRef.current = now;
+        sessionStatsRef.current.criticalCount++;
+        playAlertBuzzer();
+
+        const sessionCode = activeSessionCodeRef.current || "LIVE_TELEMETRY";
+        const earVal = telemetry.eye_metrics?.ear_normalized ?? 0.15;
+        const perclosVal = telemetry.eye_metrics?.perclos_pct ?? 30.0;
+        fetch("/api/alerts/log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionCode,
+            severity: "CRITICAL",
+            riskScore: telemetry.risk_score ?? 0.85,
+            earValue: earVal,
+            perclosPct: perclosVal,
+            poseZone: telemetry.pose_zone ?? "CENTER",
+            reasons: telemetry.reason_codes ?? ["CRITICAL_STATE"],
+            message: `CRITICAL telemetry repeating alert: EAR ${earVal.toFixed(3)}, PERCLOS ${perclosVal.toFixed(1)}%`,
+            timestampMs: Date.now(),
+          }),
+        }).catch(() => {});
+      }
+    }
+  }, [telemetry, playAlertBuzzer]);
 
   // Auto-detect mobile device & portrait orientation on mount
   useEffect(() => {

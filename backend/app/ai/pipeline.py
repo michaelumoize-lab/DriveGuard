@@ -120,12 +120,12 @@ class SessionAIEngine:
         if target_zone:
             is_4z, is_3z = False, False
             t_zone = PoseZone(target_zone) if isinstance(target_zone, str) else target_zone
-        elif four_zone_mode is not None:
-            is_4z = bool(four_zone_mode)
-            is_3z = not is_4z and bool(three_zone_mode)
-        else:
+        elif four_zone_mode is None and three_zone_mode is None:
             # Default to full 4-Zone calibration
             is_4z, is_3z = True, False
+        else:
+            is_4z = bool(four_zone_mode)
+            is_3z = not is_4z and bool(three_zone_mode)
 
         self.calibration_session = GuidedCalibrationSession(
             driver_id=self.driver_id,

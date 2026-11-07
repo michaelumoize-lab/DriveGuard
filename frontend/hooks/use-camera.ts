@@ -252,8 +252,6 @@ export function useCamera(options: UseCameraOptions = {}) {
             actualHeight: settings.height,
             actualFps: settings.frameRate,
             facingMode: settings.facingMode,
-            deviceId: settings.deviceId,
-            label: videoTrack.label,
           });
 
           if (settings.facingMode === "environment") {

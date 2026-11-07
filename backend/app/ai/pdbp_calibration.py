@@ -416,8 +416,23 @@ class GuidedCalibrationSession:
         Verify whether the driver's head is oriented toward target_zone.
         Returns (is_aligned, feedback_instruction).
         """
-        ref_yaw = self._learned_neutral_yaw if (self._step_idx > 0 or self.target_zone is not None) else 0.0
-        ref_pitch = self._learned_neutral_pitch if (self._step_idx > 0 or self.target_zone is not None) else 0.0
+        if self.target_zone is not None and self.existing_profile is not None:
+            ref_yaw = (
+                self.existing_profile.neutral_yaw_deg
+                if getattr(self.existing_profile, "neutral_yaw_deg", None) is not None
+                else 0.0
+            )
+            ref_pitch = (
+                self.existing_profile.neutral_pitch_deg
+                if getattr(self.existing_profile, "neutral_pitch_deg", None) is not None
+                else 0.0
+            )
+        elif self._step_idx > 0:
+            ref_yaw = self._learned_neutral_yaw
+            ref_pitch = self._learned_neutral_pitch
+        else:
+            ref_yaw = 0.0
+            ref_pitch = 0.0
         rel_yaw = yaw_deg - ref_yaw
         rel_pitch = pitch_deg - ref_pitch
 
@@ -565,18 +580,23 @@ class GuidedCalibrationSession:
         current_samples = len(self._ear_samples_by_zone.get(z_key, []))
         should_advance = current_samples >= zone_target
 
-        # Timeout safety guard: if excessive frames pass in a zone without converging
-        max_zone_frames = max(50, zone_target * 3)
-        if self._total_frames_by_zone[z_key] >= max_zone_frames and not should_advance:
+        # Timeout safety guard: elapsed-time budget based on step.duration_sec and timestamp_ms
+        step_budget_sec = step.duration_sec
+        elapsed_sec = (
+            (timestamp_ms - self._step_start_ts_ms) / 1000.0
+            if self._step_start_ts_ms is not None
+            else 0.0
+        )
+        time_expired = elapsed_sec >= step_budget_sec
+        if time_expired and not should_advance:
             if current_samples >= min_required:
                 should_advance = True
             else:
-                self.is_running = False
                 self.rejection_reason = (
                     f"REJECTED_POOR_VISIBILITY: Insufficient valid observations ({current_samples}/{min_required}) in "
                     f"zone '{step.zone.value}'. Please ensure stable lighting, face target, and hold steady."
                 )
-                return None
+                should_advance = True
 
         if should_advance:
             # If Step 1 (CENTER) finishes, lock in driver's neutral posture!
@@ -669,9 +689,21 @@ class GuidedCalibrationSession:
         if self.target_zone is not None and self.existing_profile is not None:
             tz_str = self.target_zone.value if isinstance(self.target_zone, PoseZone) else str(self.target_zone)
             if tz_str in zone_baselines:
-                self.existing_profile.zone_baselines[tz_str] = zone_baselines[tz_str]
-            self.is_completed = True
-            return self.existing_profile
+                new_zb = zone_baselines[tz_str]
+                self.existing_profile.zone_baselines[tz_str] = new_zb
+                if tz_str == PoseZone.CENTER.value:
+                    self.existing_profile.center_ear_median = new_zb.ear_median
+                    self.existing_profile.center_ear_mad_scaled = new_zb.ear_mad_scaled
+                    self.existing_profile.active_center_ear_median = new_zb.ear_median
+                    self.existing_profile.neutral_pitch_deg = new_zb.pitch_median_deg
+                    self.existing_profile.neutral_yaw_deg = new_zb.yaw_median_deg
+                self.is_completed = True
+                return self.existing_profile
+            else:
+                self.rejection_reason = (
+                    f"REJECTED_CALIBRATION_FAILED: No valid baseline generated for zone '{tz_str}'."
+                )
+                return None
 
         if center_key not in zone_baselines:
             center_ears = self._ear_samples_by_zone.get(center_key, [])
