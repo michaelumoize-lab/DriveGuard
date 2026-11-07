@@ -45,7 +45,8 @@ class SessionManager:
 
             # Check if this driver has a pre-calibrated profile on disk
             stored_profile_dto = profile_store.get_profile(driver_id)
-            engine = SessionAIEngine(
+            engine = await asyncio.to_thread(
+                SessionAIEngine,
                 session_id=session_id,
                 driver_id=driver_id,
                 experiment_mode=exp_mode,
@@ -69,7 +70,7 @@ class SessionManager:
                 if engine.profile.calibration_mode != "UNCALIBRATED_DEFAULT":
                     profile_store.save_profile(engine.export_profile_dto())
                 summary = engine.get_session_summary()
-                engine.close()
+                await asyncio.to_thread(engine.close)
                 return summary
             return None
 

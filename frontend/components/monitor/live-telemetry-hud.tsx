@@ -268,22 +268,34 @@ export function LiveTelemetryHUD({
           </Badge>
 
           {/* WebRTC DataChannel RTT Badge (Exact Measurement) */}
-          {((latencyDiagnostics && latencyDiagnostics.datachannel_rtt_ms > 0) || network_roundtrip_ms !== undefined) && (
-            <Badge
-              variant="outline"
-              className={`px-2 py-0.5 rounded-lg border gap-1 ${
-                (latencyDiagnostics?.datachannel_rtt_ms ?? network_roundtrip_ms ?? 0) > 300
-                  ? "border-rose-500/40 text-rose-500 bg-rose-500/10"
-                  : (latencyDiagnostics?.datachannel_rtt_ms ?? network_roundtrip_ms ?? 0) > 120
-                  ? "border-amber-500/40 text-amber-500 bg-amber-500/10"
-                  : "border-border text-foreground"
-              }`}
-              title={`Exact WebRTC DataChannel RTT (p50: ${latencyDiagnostics?.rtt_p50 ?? 0}ms, p95: ${latencyDiagnostics?.rtt_p95 ?? 0}ms)`}
-            >
-              <Wifi className="size-3 text-primary" />
-              <span>RTT: {latencyDiagnostics?.datachannel_rtt_ms ?? network_roundtrip_ms}ms</span>
-            </Badge>
-          )}
+          {(() => {
+            const rawRtt =
+              latencyDiagnostics?.datachannel_rtt_ms && latencyDiagnostics.datachannel_rtt_ms > 0
+                ? latencyDiagnostics.datachannel_rtt_ms
+                : typeof network_roundtrip_ms === "number" && network_roundtrip_ms > 0
+                ? network_roundtrip_ms
+                : 0;
+            const selectedRtt = Math.round(rawRtt);
+
+            if (selectedRtt <= 0) return null;
+
+            return (
+              <Badge
+                variant="outline"
+                className={`px-2 py-0.5 rounded-lg border gap-1 ${
+                  selectedRtt > 300
+                    ? "border-rose-500/40 text-rose-500 bg-rose-500/10"
+                    : selectedRtt > 120
+                    ? "border-amber-500/40 text-amber-500 bg-amber-500/10"
+                    : "border-border text-foreground"
+                }`}
+                title={`Exact WebRTC DataChannel RTT (p50: ${latencyDiagnostics?.rtt_p50 && latencyDiagnostics.rtt_p50 > 0 ? latencyDiagnostics.rtt_p50 : selectedRtt}ms, p95: ${latencyDiagnostics?.rtt_p95 && latencyDiagnostics.rtt_p95 > 0 ? latencyDiagnostics.rtt_p95 : selectedRtt}ms)`}
+              >
+                <Wifi className="size-3 text-primary" />
+                <span>RTT: {selectedRtt}ms</span>
+              </Badge>
+            );
+          })()}
 
           {/* Server Ingest Queue Latency (Exact Measurement) */}
           {telemetry.timing?.queue_latency_ms !== undefined && (
@@ -297,13 +309,13 @@ export function LiveTelemetryHUD({
           )}
 
           {/* AI Inference Latency Badge (Exact Measurement) */}
-          {(telemetry.timing?.infer_duration_ms !== undefined || (inference_latency_ms !== undefined && inference_latency_ms > 0)) && (
+          {(telemetry.timing?.infer_duration_ms != null || (inference_latency_ms != null && inference_latency_ms > 0)) && (
             <Badge
               variant="outline"
               className="px-2 py-0.5 rounded-lg border-border text-muted-foreground hidden xs:inline-flex"
               title="MediaPipe + MobileNetV3 CPU pipeline inference latency"
             >
-              AI: {(telemetry.timing?.infer_duration_ms ?? inference_latency_ms).toFixed(0)}ms
+              AI: {(telemetry.timing?.infer_duration_ms != null ? telemetry.timing.infer_duration_ms : inference_latency_ms ?? 0).toFixed(0)}ms
             </Badge>
           )}
 

@@ -10,7 +10,11 @@ import unittest
 import numpy as np
 import cv2
 
-from backend.app.services.livekit_worker import LiveKitAIWorkerSession, livekit_worker_manager
+from backend.app.services.livekit_worker import (
+    LiveKitAIWorkerSession,
+    livekit_worker_manager,
+    normalize_frame_width,
+)
 from backend.app.services.session_manager import session_manager
 
 
@@ -20,45 +24,23 @@ class TestLiveKitWorkerPhase1(unittest.IsolatedAsyncioTestCase):
         """Verify normalization logic: 640px bypass, downscaling >640, upscaling <320."""
         # 1. Target standard resolution (640x480)
         img_640 = np.zeros((480, 640, 3), dtype=np.uint8)
-        raw_h, raw_w = img_640.shape[:2]
-        
-        if raw_w == 640:
-            norm_img = img_640
-        elif raw_w > 640:
-            target_w = 640
-            target_h = int(round(raw_h * (640.0 / raw_w)))
-            norm_img = cv2.resize(img_640, (target_w, target_h), interpolation=cv2.INTER_AREA)
-        else:
-            norm_img = img_640
-
+        norm_img = normalize_frame_width(img_640)
         self.assertEqual(norm_img.shape, (480, 640, 3))
         self.assertIs(norm_img, img_640, "640x480 frame should bypass resize completely (zero-copy)")
 
         # 2. Unexpected 720p resolution (1280x720)
         img_720p = np.zeros((720, 1280, 3), dtype=np.uint8)
-        raw_h, raw_w = img_720p.shape[:2]
-        if raw_w > 640:
-            target_w = 640
-            target_h = int(round(raw_h * (640.0 / raw_w)))
-            norm_720 = cv2.resize(img_720p, (target_w, target_h), interpolation=cv2.INTER_AREA)
+        norm_720 = normalize_frame_width(img_720p)
         self.assertEqual(norm_720.shape, (360, 640, 3))
 
         # 3. Unexpected 1080p resolution (1920x1080)
         img_1080p = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        raw_h, raw_w = img_1080p.shape[:2]
-        if raw_w > 640:
-            target_w = 640
-            target_h = int(round(raw_h * (640.0 / raw_w)))
-            norm_1080 = cv2.resize(img_1080p, (target_w, target_h), interpolation=cv2.INTER_AREA)
+        norm_1080 = normalize_frame_width(img_1080p)
         self.assertEqual(norm_1080.shape, (360, 640, 3))
 
         # 4. Unexpected sub-VGA resolution (240x180)
         img_sub = np.zeros((180, 240, 3), dtype=np.uint8)
-        raw_h, raw_w = img_sub.shape[:2]
-        if raw_w < 320 and raw_w > 0:
-            target_w = 480
-            target_h = int(round(raw_h * (480.0 / raw_w)))
-            norm_sub = cv2.resize(img_sub, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+        norm_sub = normalize_frame_width(img_sub)
         self.assertEqual(norm_sub.shape, (360, 480, 3))
 
     async def test_session_lifecycle_cleanup(self):

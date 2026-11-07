@@ -133,8 +133,8 @@ class SafetyEventDTO(BaseModel):
     session_id: str = Field(description="Monitoring session identifier")
     event_seq: int = Field(description="Monotonically increasing sequence number for safety events")
     event_type: str = Field(description="Event classification, e.g. 'STATE_TRANSITION'")
-    previous_state: str = Field(description="Previous FSM alert state")
-    new_state: str = Field(description="New FSM alert state")
+    previous_state: AlertStateEnum = Field(description="Previous FSM alert state")
+    new_state: AlertStateEnum = Field(description="New FSM alert state")
     timestamp: float = Field(description="Server epoch timestamp in seconds")
     metrics: dict = Field(default_factory=dict, description="Key physiological metrics triggering the event")
 

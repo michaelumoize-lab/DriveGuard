@@ -317,7 +317,11 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
                 };
                 try {
                   const ackBytes = new TextEncoder().encode(JSON.stringify(ackPayload));
-                  roomRef.current.localParticipant.publishData(ackBytes, { reliable: true });
+                  roomRef.current.localParticipant
+                    .publishData(ackBytes, { reliable: true })
+                    .catch((ackErr) => {
+                      console.warn("[DriveGuard LiveKit] Failed to send EVENT_ACK:", ackErr);
+                    });
                 } catch (ackErr) {
                   console.warn("[DriveGuard LiveKit] Failed to send EVENT_ACK:", ackErr);
                 }
@@ -409,7 +413,11 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
           };
           try {
             const payload = new TextEncoder().encode(JSON.stringify(pingMsg));
-            room.localParticipant.publishData(payload, { reliable: false });
+            room.localParticipant
+              .publishData(payload, { reliable: false })
+              .catch((pingErr) => {
+                console.debug("[DriveGuard LiveKit] PING publish dropped:", pingErr);
+              });
           } catch (_) {}
         }, 1000);
 
@@ -417,7 +425,11 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
         try {
           const syncMsg = { action: "SYNC_STATE" };
           const payload = new TextEncoder().encode(JSON.stringify(syncMsg));
-          await room.localParticipant.publishData(payload, { reliable: true });
+          room.localParticipant
+            .publishData(payload, { reliable: true })
+            .catch((syncErr) => {
+              console.warn("[DriveGuard LiveKit] SYNC_STATE publish failed:", syncErr);
+            });
         } catch (_) {}
 
         // Flush any queued commands (e.g. START_CALIBRATION requested before handshake)

@@ -31,6 +31,23 @@ logger = logging.getLogger("driveguard.livekit_worker")
 logger.setLevel(logging.INFO)
 
 
+def normalize_frame_width(img_bgr: np.ndarray) -> np.ndarray:
+    """Normalize input frame dimensions: bypass resize if 640px wide or 320<=w<640, downscale >640, upscale <320."""
+    raw_h, raw_w = img_bgr.shape[:2]
+    if raw_w == 640:
+        return img_bgr
+    elif raw_w > 640:
+        target_w = 640
+        target_h = int(round(raw_h * (640.0 / raw_w)))
+        return cv2.resize(img_bgr, (target_w, target_h), interpolation=cv2.INTER_AREA)
+    elif raw_w < 320 and raw_w > 0:
+        target_w = 480
+        target_h = int(round(raw_h * (480.0 / raw_w)))
+        return cv2.resize(img_bgr, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+    else:
+        return img_bgr
+
+
 class LiveKitAIWorkerSession:
     """Manages an autonomous Python AI participant in a single LiveKit room."""
 
@@ -232,23 +249,7 @@ class LiveKitAIWorkerSession:
 
                 # Frame dimension normalization: bypass resize if already 640px wide,
                 # with safe normalization fallbacks for unexpected camera resolutions.
-                if raw_w == 640:
-                    # Optimal zero-resize path (target resolution)
-                    norm_img = img_bgr
-                elif raw_w > 640:
-                    # Safe downscale fallback for higher resolution inputs (720p/1080p)
-                    target_w = 640
-                    target_h = int(round(raw_h * (640.0 / raw_w)))
-                    norm_img = cv2.resize(img_bgr, (target_w, target_h), interpolation=cv2.INTER_AREA)
-                elif raw_w < 320 and raw_w > 0:
-                    # Safe upscale fallback for sub-VGA devices
-                    target_w = 480
-                    target_h = int(round(raw_h * (480.0 / raw_w)))
-                    norm_img = cv2.resize(img_bgr, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
-                else:
-                    # 320 <= raw_w < 640: acceptable range, pass without resizing
-                    norm_img = img_bgr
-
+                norm_img = normalize_frame_width(img_bgr)
                 norm_h, norm_w = norm_img.shape[:2]
 
                 # Log dimension changes or first frame
@@ -353,6 +354,12 @@ class LiveKitAIWorkerSession:
                 logger.error(f"[LiveKit Worker] Inference loop error: {exc}", exc_info=True)
                 await asyncio.sleep(0.01)
 
+    def _consume_echo_ts(self) -> Optional[float]:
+        """Atomically read and clear the latest client ping timestamp."""
+        echo_ts = self._last_client_ping_ts
+        self._last_client_ping_ts = None
+        return echo_ts
+
     def _build_telemetry_payload(
         self,
         telemetry_dto: Any,
@@ -360,8 +367,7 @@ class LiveKitAIWorkerSession:
         server_total_ms: float = 0.0,
     ) -> Dict[str, Any]:
         """Build telemetry message payload and clear last client ping timestamp."""
-        echo_ts = self._last_client_ping_ts
-        self._last_client_ping_ts = None
+        echo_ts = self._consume_echo_ts()
 
         return {
             "v": 2,
@@ -499,8 +505,11 @@ class LiveKitAIWorkerSession:
             except Exception as exc:
                 logger.warning(f"[LiveKit Worker] Retry {attempt} failed: {exc}")
 
-        if event_id in self._unacknowledged_events:
-            logger.warning(f"[LiveKit Worker] Event '{event_id}' unacknowledged after 3 retries (client may be disconnected).")
+        entry = self._unacknowledged_events.pop(event_id, None)
+        if entry and self.is_running:
+            logger.warning(
+                f"[LiveKit Worker] Event '{event_id}' unacknowledged after 3 retries (client may be disconnected)."
+            )
 
     async def _send_control_ack(self, payload: dict) -> None:
         """Send reliable ACK or state change confirmation back to client."""
@@ -541,7 +550,7 @@ class LiveKitAIWorkerSession:
             if summary:
                 logger.info(
                     f"[LiveKit Worker] Session '{self.room_name}' terminated cleanly. "
-                    f"Frames processed: {summary.get('total_frames_processed', summary.get('total_frames', 0))}"
+                    f"Frames processed: {summary.get('total_frames_processed', 0)}"
                 )
         except Exception as exc:
             logger.error(f"[LiveKit Worker] Error terminating session in session_manager: {exc}")

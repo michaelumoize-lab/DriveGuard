@@ -151,6 +151,15 @@ export function UnifiedLiveMonitor() {
 
         if (!activeSessionCodeRef.current) return;
 
+        const earStr =
+          typeof event.metrics?.ear === "number" && !isNaN(event.metrics.ear)
+            ? event.metrics.ear.toFixed(3)
+            : "N/A";
+        const perclosStr =
+          typeof event.metrics?.perclos === "number" && !isNaN(event.metrics.perclos)
+            ? event.metrics.perclos.toFixed(1)
+            : "N/A";
+
         // Immediately persist critical event transition to Neon DB
         fetch("/api/alerts/log", {
           method: "POST",
@@ -158,11 +167,12 @@ export function UnifiedLiveMonitor() {
           body: JSON.stringify({
             sessionCode: activeSessionCodeRef.current,
             severity: "CRITICAL",
-            riskScore: event.metrics.risk_score ?? 0.85,
-            earValue: event.metrics.ear ?? 0.15,
-            perclosPct: event.metrics.perclos ?? 30.0,
-            poseZone: event.metrics.pose_zone ?? "CENTER",
-            reasons: event.metrics.reasons ?? ["CRITICAL_STATE"],
+            riskScore: typeof event.metrics?.risk_score === "number" ? event.metrics.risk_score : 0.85,
+            earValue: typeof event.metrics?.ear === "number" ? event.metrics.ear : 0.15,
+            perclosPct: typeof event.metrics?.perclos === "number" ? event.metrics.perclos : 30.0,
+            poseZone: event.metrics?.pose_zone ?? "CENTER",
+            reasons: event.metrics?.reasons ?? ["CRITICAL_STATE"],
+            message: `CRITICAL safety transition: EAR ${earStr}, PERCLOS ${perclosStr}%`,
             timestampMs: Math.round(event.timestamp * 1000),
           }),
         }).catch(() => {});
