@@ -72,6 +72,7 @@ export function UnifiedLiveMonitor() {
   // Session & Database Persistence Refs
   const activeSessionCodeRef = useRef<string | null>(null);
   const lastAlertTimeRef = useRef<number>(0);
+  const handledEventIdsRef = useRef<Set<string>>(new Set());
   const sessionStatsRef = useRef({
     totalFrames: 0,
     maxPerclos: 0,
@@ -142,6 +143,15 @@ export function UnifiedLiveMonitor() {
   // Reliable Safety Event Callback (Deterministic State Transitions & Alert Logging)
   const handleSafetyEvent = useCallback(
     (event: SafetyEvent) => {
+      if (handledEventIdsRef.current.has(event.event_id)) {
+        return;
+      }
+      handledEventIdsRef.current.add(event.event_id);
+      if (handledEventIdsRef.current.size > 200) {
+        const [first] = handledEventIdsRef.current;
+        handledEventIdsRef.current.delete(first);
+      }
+
       console.log(
         `[Cockpit Monitor] Safety event received: ${event.previous_state} -> ${event.new_state} (ID: ${event.event_id})`
       );
@@ -151,14 +161,14 @@ export function UnifiedLiveMonitor() {
         playAlertBuzzer();
 
         const sessionCode = activeSessionCodeRef.current || "LIVE_TELEMETRY";
-        const earStr =
+        const earNum =
           typeof event.metrics?.ear === "number" && !isNaN(event.metrics.ear)
-            ? event.metrics.ear.toFixed(3)
-            : "N/A";
-        const perclosStr =
+            ? event.metrics.ear
+            : 0.15;
+        const perclosNum =
           typeof event.metrics?.perclos === "number" && !isNaN(event.metrics.perclos)
-            ? event.metrics.perclos.toFixed(1)
-            : "N/A";
+            ? event.metrics.perclos
+            : 30.0;
 
         // Immediately persist critical event transition to Neon DB
         fetch("/api/alerts/log", {
@@ -168,11 +178,11 @@ export function UnifiedLiveMonitor() {
             sessionCode,
             severity: "CRITICAL",
             riskScore: typeof event.metrics?.risk_score === "number" ? event.metrics.risk_score : 0.85,
-            earValue: typeof event.metrics?.ear === "number" ? event.metrics.ear : 0.15,
-            perclosPct: typeof event.metrics?.perclos === "number" ? event.metrics.perclos : 30.0,
+            earValue: earNum,
+            perclosPct: perclosNum,
             poseZone: event.metrics?.pose_zone ?? "CENTER",
             reasons: event.metrics?.reasons ?? ["CRITICAL_STATE"],
-            message: `CRITICAL safety transition: EAR ${earStr}, PERCLOS ${perclosStr}%`,
+            message: `CRITICAL safety transition: EAR ${earNum.toFixed(3)}, PERCLOS ${perclosNum.toFixed(1)}%`,
             timestampMs: Math.round(event.timestamp * 1000),
           }),
         }).catch(() => {});
@@ -228,7 +238,8 @@ export function UnifiedLiveMonitor() {
         playAlertBuzzer();
 
         const sessionCode = activeSessionCodeRef.current || "LIVE_TELEMETRY";
-        const earVal = telemetry.eye_metrics?.ear_normalized ?? 0.15;
+        const earVal =
+          telemetry.eye_metrics?.ear_normalized ?? (telemetry.eye_metrics?.ear_raw ?? 0.15);
         const perclosVal = telemetry.eye_metrics?.perclos_pct ?? 30.0;
         fetch("/api/alerts/log", {
           method: "POST",

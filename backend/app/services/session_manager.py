@@ -45,21 +45,39 @@ class SessionManager:
 
             # Check if this driver has a pre-calibrated profile on disk
             stored_profile_dto = profile_store.get_profile(driver_id)
-            engine = await asyncio.to_thread(
-                SessionAIEngine,
-                session_id=session_id,
-                driver_id=driver_id,
-                experiment_mode=exp_mode,
-            )
+            engine: Optional[SessionAIEngine] = None
+            registered = False
             try:
+                construction_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        SessionAIEngine,
+                        session_id=session_id,
+                        driver_id=driver_id,
+                        experiment_mode=exp_mode,
+                    )
+                )
+                try:
+                    engine = await construction_task
+                except BaseException:
+                    if construction_task.done() and not construction_task.cancelled():
+                        try:
+                            engine = construction_task.result()
+                        except Exception:
+                            engine = None
+                    raise
+
                 if stored_profile_dto is not None:
                     engine.load_profile_dto(stored_profile_dto)
-            except Exception:
-                await asyncio.to_thread(engine.close)
-                raise
 
-            self._sessions[session_id] = engine
-            return engine
+                self._sessions[session_id] = engine
+                registered = True
+                return engine
+            finally:
+                if engine is not None and not registered:
+                    try:
+                        await asyncio.shield(asyncio.to_thread(engine.close))
+                    except Exception:
+                        pass
 
     def get_session(self, session_id: str) -> Optional[SessionAIEngine]:
         """Fetch active session by session_id without creating a new one."""

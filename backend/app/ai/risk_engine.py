@@ -267,7 +267,7 @@ class PersonalisedAdaptiveRiskEngine:
             z_perclos = 0.0
 
         # Repeated abnormal blink clusters (multiple prolonged blinks or sluggish RCR)
-        is_abnormal_cluster = getattr(kinematics, "abnormal_blink_cluster_detected", False)
+        is_abnormal_cluster = kinematics.abnormal_blink_cluster_detected
 
         # --- 4. Head Nodding & Yawning Supporting Indicators ---
         rel_pitch = geom.pitch_deg - self.profile.neutral_pitch_deg

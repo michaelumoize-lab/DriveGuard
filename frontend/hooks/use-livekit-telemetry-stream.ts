@@ -119,6 +119,9 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     isLoopActiveRef.current = false;
     lastTelemetrySeqRef.current = -1;
     latestRttRef.current = 0;
+    rttSamplesRef.current = [];
+    setLatencyDiagnostics(null);
+    setRoundtripLatencyMs(0);
 
     if (pingIntervalRef.current) {
       clearInterval(pingIntervalRef.current);
@@ -310,9 +313,6 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
               const sTotal = tel.timing?.server_total_ms ?? (qLat + infLat);
               latestTimingRef.current = { queueMs: qLat, inferMs: infLat, serverTotalMs: sTotal };
 
-              // Update server timings in latency diagnostics without recording an RTT sample
-              updateServerTimings(qLat, infLat, sTotal);
-
               // Reuse the last measured RTT when enriching telemetry.
               // Ensure no RTT is inferred from server processing time before a ping/pong match.
               const measuredRtt =
@@ -323,24 +323,27 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
                 network_roundtrip_ms: measuredRtt,
               };
 
-              // Immediately invoke callback for external synchronous listeners
+              // Immediately invoke callbacks for external synchronous listeners
               if (onTelemetryRef.current) {
                 onTelemetryRef.current(enriched);
+              }
+              if (msg.calibration && onCalibrationRef.current) {
+                onCalibrationRef.current(msg.calibration as CalibrationPhase);
               }
 
               // Throttle React state updates to ~20 FPS (max 1 update per 48ms) to prevent UI overload
               const now = performance.now();
-              if (now - lastReactUpdateRef.current >= 48) {
+              const shouldRender = now - lastReactUpdateRef.current >= 48;
+              if (shouldRender) {
                 lastReactUpdateRef.current = now;
                 setTelemetry(enriched);
-              }
-
-              if (msg.calibration) {
-                const cal = msg.calibration as CalibrationPhase;
-                setCalibration(cal);
-                if (onCalibrationRef.current) {
-                  onCalibrationRef.current(cal);
+                updateServerTimings(qLat, infLat, sTotal);
+                if (msg.calibration) {
+                  setCalibration(msg.calibration as CalibrationPhase);
                 }
+              } else if (msg.calibration && (msg.calibration as CalibrationPhase).is_completed) {
+                // Ensure calibration completion is immediately reflected in React state
+                setCalibration(msg.calibration as CalibrationPhase);
               }
             } else if (msg.type === "SAFETY_EVENT") {
               const safetyEvent = msg as SafetyEvent;

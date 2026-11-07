@@ -36,6 +36,8 @@ from backend.app.ai.geometry import (
     extract_eye_crop_with_quality,
 )
 
+logger = logging.getLogger("driveguard.landmarker")
+
 FACE_LANDMARKER_TASK_URL = (
     "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
     "face_landmarker/float16/1/face_landmarker.task"
@@ -79,9 +81,27 @@ class DriveGuardFaceLandmarker:
         self._duplicate_or_unordered_count: int = 0
         self._inference_exceptions_count: int = 0
         self._is_closed: bool = False
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
         self._initialize_mediapipe()
+
+    def _reset_clock_locked(self) -> None:
+        """Reset the landmarker session clock and re-initialize video pipeline."""
+        self._last_timestamp_ms = None
+        self._duplicate_or_unordered_count = 0
+        if self._tasks_landmarker is not None:
+            try:
+                self._tasks_landmarker.close()
+            except Exception as exc:
+                logger.warning(f"Error closing Tasks FaceLandmarker during clock reset: {exc}")
+            self._tasks_landmarker = None
+        if self.running_mode == "VIDEO":
+            self._initialize_mediapipe()
+
+    def reset_clock(self) -> None:
+        """Public thread-safe reset for landmarker session clock."""
+        with self._lock:
+            self._reset_clock_locked()
 
     def _initialize_mediapipe(self) -> None:
         import mediapipe as mp
@@ -198,6 +218,14 @@ class DriveGuardFaceLandmarker:
                     effective_ms = max(0, requested_ms)
                 elif requested_ms > self._last_timestamp_ms:
                     effective_ms = requested_ms
+                elif self._last_timestamp_ms - requested_ms > 1000:
+                    # Unrecoverable backwards jump / clock restart detected: reset session clock
+                    logger.warning(
+                        f"Unrecoverable timestamp jump detected (requested {requested_ms}ms vs last {self._last_timestamp_ms}ms). "
+                        "Resetting landmarker session clock."
+                    )
+                    self._reset_clock_locked()
+                    effective_ms = max(0, requested_ms)
                 else:
                     # Safe timestamp policy: handle duplicate or out-of-order timestamp by enforcing strict +1ms increment
                     self._duplicate_or_unordered_count += 1
@@ -212,7 +240,7 @@ class DriveGuardFaceLandmarker:
                         result = self._tasks_landmarker.detect(mp_image)
                 except Exception as exc:
                     self._inference_exceptions_count += 1
-                    print(f"[DriveGuardFaceLandmarker ERROR] MediaPipe detection failed at {effective_ms}ms: {exc}")
+                    logger.error(f"MediaPipe detection failed at {effective_ms}ms: {exc}", exc_info=True)
                     result = None
 
                 if result is not None and result.face_landmarks:
@@ -437,12 +465,12 @@ class DriveGuardFaceLandmarker:
             if self._tasks_landmarker is not None:
                 try:
                     self._tasks_landmarker.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(f"Error closing Tasks FaceLandmarker: {exc}")
                 self._tasks_landmarker = None
             if self._legacy_face_mesh is not None:
                 try:
                     self._legacy_face_mesh.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(f"Error closing legacy FaceMesh: {exc}")
                 self._legacy_face_mesh = None

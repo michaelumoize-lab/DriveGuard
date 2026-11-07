@@ -181,6 +181,7 @@ class SessionAIEngine:
                 stability_feedback="Profile Ready",
                 is_completed=True,
                 rejection_reason=self.calibration_session.rejection_reason if self.calibration_session else None,
+                quality_warnings=list(self.calibration_session.quality_warnings) if self.calibration_session else [],
             )
 
         ts = timestamp_ms or (time.perf_counter() * 1000.0)
@@ -204,6 +205,7 @@ class SessionAIEngine:
             stability_feedback=feedback,
             is_completed=self.calibration_session.is_completed,
             rejection_reason=self.calibration_session.rejection_reason,
+            quality_warnings=list(self.calibration_session.quality_warnings),
         )
 
     # --------------------------------------------------------------------------
@@ -434,6 +436,7 @@ class SessionAIEngine:
                     is_head_in_target_zone=True,
                     stability_feedback="Profile Ready",
                     is_completed=True,
+                    quality_warnings=list(self.calibration_session.quality_warnings),
                     profile=profile_dto,
                 )
                 self.calibration_session = None
@@ -451,6 +454,7 @@ class SessionAIEngine:
                     stability_feedback="Rejected",
                     is_completed=True,
                     rejection_reason=self.calibration_session.rejection_reason,
+                    quality_warnings=list(self.calibration_session.quality_warnings),
                 )
                 self.calibration_session = None
 

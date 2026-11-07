@@ -401,23 +401,27 @@ class TemporalKinematicsTracker:
                     if abs(l_val - r_val) > 0.12:
                         is_binocular = False
 
-                completed_blink = BlinkEvent(
-                    start_ts_ms=self._blink_enter_ts_ms,
-                    min_ts_ms=self._blink_min_ts_ms,
-                    end_ts_ms=exit_ts_ms,
-                    duration_ms=duration_ms,
-                    open_ear_before=self._blink_open_ear_ref,
-                    min_ear=self._blink_min_ear,
-                    amplitude=0.5 * (amp_close + amp_open),
-                    closing_velocity_per_s=v_close,
-                    reopening_velocity_per_s=v_open,
-                    rcr=rcr,
-                    classification=cls_type,
-                    is_binocular=is_binocular,
-                    left_ear_min=self._left_min_ear,
-                    right_ear_min=self._right_min_ear,
-                )
-                self.blink_history.append(completed_blink)
+                if cls_type != BlinkClassification.UNCERTAIN:
+                    completed_blink = BlinkEvent(
+                        start_ts_ms=self._blink_enter_ts_ms,
+                        min_ts_ms=self._blink_min_ts_ms,
+                        end_ts_ms=exit_ts_ms,
+                        duration_ms=duration_ms,
+                        open_ear_before=self._blink_open_ear_ref,
+                        min_ear=self._blink_min_ear,
+                        amplitude=0.5 * (amp_close + amp_open),
+                        closing_velocity_per_s=v_close,
+                        reopening_velocity_per_s=v_open,
+                        rcr=rcr,
+                        classification=cls_type,
+                        is_binocular=is_binocular,
+                        left_ear_min=self._left_min_ear,
+                        right_ear_min=self._right_min_ear,
+                    )
+                    self.blink_history.append(completed_blink)
+                else:
+                    completed_blink = None
+
                 self._state = BlinkState.OPEN
 
         elif self._state == BlinkState.REOPENING:

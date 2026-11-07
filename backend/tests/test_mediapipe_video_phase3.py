@@ -50,6 +50,10 @@ class TestMediaPipeVideoPhase3(unittest.IsolatedAsyncioTestCase):
     def test_02_sequential_frame_processing_monotonic_timestamps(self):
         """Verify sequential frames with strictly increasing timestamps process smoothly."""
         lm = DriveGuardFaceLandmarker(running_mode="VIDEO")
+        if not lm.get_diagnostics()["use_tasks_api"]:
+            lm.close()
+            self.skipTest("Tasks API is not active in this environment")
+
         timestamps = [1000.0, 1040.0, 1080.0, 1120.0]
 
         for ts in timestamps:
@@ -65,6 +69,9 @@ class TestMediaPipeVideoPhase3(unittest.IsolatedAsyncioTestCase):
     def test_03_duplicate_timestamp_handling(self):
         """Verify safe timestamp policy: duplicate timestamps must not crash MediaPipe and must increment monotonically."""
         lm = DriveGuardFaceLandmarker(running_mode="VIDEO")
+        if not lm.get_diagnostics()["use_tasks_api"]:
+            lm.close()
+            self.skipTest("Tasks API is not active in this environment")
 
         # 1. First frame at 2000ms
         lm.process_frame(self.frame, timestamp_ms=2000.0)
@@ -88,6 +95,9 @@ class TestMediaPipeVideoPhase3(unittest.IsolatedAsyncioTestCase):
     def test_04_out_of_order_timestamp_handling(self):
         """Verify that older/out-of-order timestamps do not crash or violate monotonicity."""
         lm = DriveGuardFaceLandmarker(running_mode="VIDEO")
+        if not lm.get_diagnostics()["use_tasks_api"]:
+            lm.close()
+            self.skipTest("Tasks API is not active in this environment")
 
         # Frame at 3000ms
         lm.process_frame(self.frame, timestamp_ms=3000.0)
@@ -122,6 +132,11 @@ class TestMediaPipeVideoPhase3(unittest.IsolatedAsyncioTestCase):
         # Verify independent progress
         diag_a = engine_a.landmarker.get_diagnostics()
         diag_b = engine_b.landmarker.get_diagnostics()
+
+        if not diag_a["use_tasks_api"]:
+            engine_a.close()
+            engine_b.close()
+            self.skipTest("Tasks API is not active in this environment")
 
         self.assertEqual(diag_a["last_timestamp_ms"], 1040)
         self.assertEqual(diag_b["last_timestamp_ms"], 140)
@@ -192,6 +207,10 @@ class TestMediaPipeVideoPhase3(unittest.IsolatedAsyncioTestCase):
 
         # 1. First session
         eng1 = await sm.get_or_create_session(room, "driver_orig")
+        if not eng1.landmarker.get_diagnostics()["use_tasks_api"]:
+            await sm.terminate_session(room)
+            self.skipTest("Tasks API is not active in this environment")
+
         eng1.process_frame(self.frame, timestamp_ms=10000.0)
         self.assertEqual(eng1.landmarker.get_diagnostics()["last_timestamp_ms"], 10000)
 

@@ -431,37 +431,40 @@ export function LiveTelemetryHUD({
         </div>
 
         {/* Card B: PERCLOS (Percentage Eye Closure) */}
-        <div className="p-3.5 rounded-2xl bg-card border border-border shadow-xs space-y-2.5">
-          <div className="flex items-start justify-between gap-2">
-            <div className="space-y-0.5 min-w-0">
-              <div className="flex items-center gap-1.5">
-                <Activity className="size-4 text-primary shrink-0" />
-                <span className="text-xs font-bold text-foreground truncate">
-                  PERCLOS Fatigue
-                </span>
-                <Badge
-                  variant={eye_metrics?.perclos_reliable === false ? "outline" : "secondary"}
-                  className={`text-[9px] px-1 py-0 font-mono ${
-                    eye_metrics?.perclos_reliable === false
-                      ? "border-amber-500/50 text-amber-500 bg-amber-500/10"
-                      : ""
-                  }`}
-                  title={`Observation coverage across 60s window: ${eye_metrics?.perclos_coverage_pct ?? 100}%`}
-                >
-                  {eye_metrics?.perclos_reliable === false
-                    ? `Cov ${eye_metrics?.perclos_coverage_pct ?? 0}%`
-                    : `60s`}
-                </Badge>
-              </div>
-              <div className="text-[10px] text-muted-foreground flex items-center gap-1.5">
-                <span>Time eyes closed &ge; 80%</span>
-                {eye_metrics?.perclos_reliable === false && (
-                  <span className="text-amber-500 font-medium">⚠️ Low observation coverage</span>
-                )}
-              </div>
-            </div>
+        {(() => {
+          const formattedCoveragePct = Math.round(eye_metrics?.perclos_coverage_pct ?? 100);
+          return (
+            <div className="p-3.5 rounded-2xl bg-card border border-border shadow-xs space-y-2.5">
+              <div className="flex items-start justify-between gap-2">
+                <div className="space-y-0.5 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <Activity className="size-4 text-primary shrink-0" />
+                    <span className="text-xs font-bold text-foreground truncate">
+                      PERCLOS Fatigue
+                    </span>
+                    <Badge
+                      variant={eye_metrics?.perclos_reliable === false ? "outline" : "secondary"}
+                      className={`text-[9px] px-1 py-0 font-mono ${
+                        eye_metrics?.perclos_reliable === false
+                          ? "border-amber-500/50 text-amber-500 bg-amber-500/10"
+                          : ""
+                      }`}
+                      title={`Observation coverage across 60s window: ${formattedCoveragePct}%`}
+                    >
+                      {eye_metrics?.perclos_reliable === false
+                        ? `Cov ${formattedCoveragePct}%`
+                        : `60s`}
+                    </Badge>
+                  </div>
+                  <div className="text-[10px] text-muted-foreground flex items-center gap-1.5">
+                    <span>Time eyes closed &ge; 80%</span>
+                    {eye_metrics?.perclos_reliable === false && (
+                      <span className="text-amber-500 font-medium">⚠️ Low observation coverage</span>
+                    )}
+                  </div>
+                </div>
 
-            {/* PERCLOS Level Badge */}
+                {/* PERCLOS Level Badge */}
             <span
               className={`text-xs font-mono font-bold px-2 py-0.5 rounded-lg flex items-center gap-1 shrink-0 ${
                 eye_metrics?.perclos_reliable === false
@@ -509,6 +512,8 @@ export function LiveTelemetryHUD({
             </div>
           </div>
         </div>
+      );
+    })()}
       </div>
 
       {/* 4. Cockpit Kinematics & Spatial Tracking (4 Tile Instruments) */}

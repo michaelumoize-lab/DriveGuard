@@ -28,14 +28,15 @@ const appHosts = [
 ];
 
 const allowedHosts = Array.from(
-  new Set([
-    "localhost:3000",
-    "localhost:*",
-    "127.0.0.1:3000",
-    "127.0.0.1:*",
-    "*.vercel.app",
-    ...appHosts,
-  ]),
+  new Set(
+    [
+      "localhost:3000",
+      "127.0.0.1:3000",
+      ...(process.env.VERCEL_PROJECT_PRODUCTION_URL ? [process.env.VERCEL_PROJECT_PRODUCTION_URL] : []),
+      ...(process.env.VERCEL_URL ? [process.env.VERCEL_URL] : []),
+      ...appHosts,
+    ].filter(Boolean) as string[],
+  ),
 );
 
 export const auth = betterAuth({

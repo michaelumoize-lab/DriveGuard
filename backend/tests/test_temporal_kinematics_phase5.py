@@ -90,17 +90,18 @@ class TestTemporalKinematicsPhase5(unittest.TestCase):
         tracker.update(0.0, 0.28, 0.10, 0.12, 0.20)
         tracker.update(33.3, 0.28, 0.10, 0.12, 0.20)
 
-        # Closed
+        # Closed (3 frames = ~100ms realistic blink)
         tracker.update(66.6, 0.14, 0.80, 0.12, 0.20)
-        tracker.update(100.0, 0.14, 0.80, 0.12, 0.20)
+        tracker.update(100.0, 0.12, 0.85, 0.12, 0.20)
+        tracker.update(133.3, 0.14, 0.80, 0.12, 0.20)
 
         # Reopen (emits blink)
-        snap1 = tracker.update(133.3, 0.28, 0.10, 0.12, 0.20)
+        snap1 = tracker.update(166.6, 0.28, 0.10, 0.12, 0.20)
         self.assertIsNotNone(snap1.completed_blink)
         self.assertEqual(len(tracker.blink_history), 1)
 
         # Subsequent open frame must NOT re-emit the completed blink
-        snap2 = tracker.update(166.6, 0.28, 0.10, 0.12, 0.20)
+        snap2 = tracker.update(200.0, 0.28, 0.10, 0.12, 0.20)
         self.assertIsNone(snap2.completed_blink)
         self.assertEqual(len(tracker.blink_history), 1)
 
@@ -376,6 +377,99 @@ class TestTemporalKinematicsPhase5(unittest.TestCase):
         self.assertEqual(tracker2._state, BlinkState.OPEN)
 
         self.assertNotEqual(tracker1._state, tracker2._state)
+
+    def test_rolling_window_expiration(self) -> None:
+        """Verify observation samples older than 60 seconds roll off the sliding window."""
+        tracker = TemporalKinematicsTracker(perclos_window_sec=60.0)
+
+        # Feed 70 seconds of data (from t=0s to t=70s at 100ms intervals = 701 frames)
+        for i in range(701):
+            ts = i * 100.0
+            tracker.update(ts, 0.28, 0.10, 0.12, 0.20)
+
+        # Oldest sample in _observation_samples must be >= 70,000 - 60,000 = 10,000ms
+        self.assertGreaterEqual(tracker._observation_samples[0][0], 10000.0)
+        valid_ms = sum(s[1] for s in tracker._observation_samples if s[2])
+        self.assertAlmostEqual(valid_ms, 60000.0, delta=200.0)
+
+    def test_calibrated_blink_baseline_integration(self) -> None:
+        """Verify personalized blink duration median and MAD scale the prolonged classification cutoff."""
+        tracker = TemporalKinematicsTracker(min_blink_duration_ms=50.0, prolonged_blink_duration_ms=400.0)
+
+        # Personalized baseline with naturally longer blinks (median 300ms, MAD 60ms -> cutoff 450ms)
+        tracker.set_personalized_baseline(median_duration_ms=300.0, mad_duration_ms=60.0)
+
+        # Execute a 400ms blink (12 frames at 33.3ms)
+        tracker.update(0.0, 0.28, 0.10, 0.12, 0.20)
+        ts = 33.3
+        for _ in range(12):
+            tracker.update(ts, 0.14, 0.85, 0.12, 0.20)
+            ts += 33.3
+        tracker.update(ts, 0.28, 0.10, 0.12, 0.20)
+
+        self.assertEqual(len(tracker.blink_history), 1)
+        # With cutoff at 450ms, a 400ms blink is classified as NORMAL rather than PROLONGED
+        self.assertEqual(tracker.blink_history[0].classification, BlinkClassification.NORMAL)
+
+    def test_risk_engine_perclos_unreliable_and_sampling_gap_reasons(self) -> None:
+        """
+        Verify that:
+        1. When perclos_reliable is False, PERCLOS does not contribute to risk score and
+           INSUFFICIENT_PERCLOS_OBSERVATION_COVERAGE reason is emitted.
+        2. When sampling gap is detected, OBSERVATION_SAMPLING_GAP_DETECTED is emitted.
+        3. UNCERTAIN_GAP state is excluded from triggering microsleep.
+        """
+        profile = DriverBehaviourProfile.create_default_uncalibrated("test_driver")
+        engine = PersonalisedAdaptiveRiskEngine(profile=profile)
+        cascade = ConfidenceGatedEyeCascade(mode=ExperimentMode.A_GEOMETRIC_ONLY)
+        tracker = TemporalKinematicsTracker()
+
+        dummy_crop = EyeCropQuality(
+            crop_rgb=np.zeros((32, 32, 3), dtype=np.uint8),
+            sharpness_score=0.9,
+            exposure_score=0.8,
+            glare_fraction=0.0,
+            overall_reliability=0.9,
+        )
+
+        geom = FrameGeometryFeatures(
+            timestamp_ms=100.0,
+            face_detected=True,
+            landmark_confidence=0.92,
+            left_ear=0.28,
+            right_ear=0.28,
+            yaw_weighted_ear=0.28,
+            blendshape_blink_left=0.08,
+            blendshape_blink_right=0.08,
+            blendshape_blink_mean=0.08,
+            mar=0.14,
+            pitch_deg=0.0,
+            yaw_deg=0.0,
+            roll_deg=0.0,
+            pose_zone=PoseZone.CENTER,
+            geometric_reliability=0.90,
+            left_eye_crop=dummy_crop,
+            right_eye_crop=dummy_crop,
+        )
+        c_res = cascade.evaluate(geom, 0.28, 0.20)
+
+        # 1. Low observation coverage (<50%): perclos_reliable is False
+        k_snap = tracker.update(100.0, 0.28, 0.10, 0.12, 0.20)
+        self.assertFalse(k_snap.perclos_reliable)
+        r_res = engine.evaluate(geom, c_res, k_snap)
+        self.assertIn("INSUFFICIENT_PERCLOS_OBSERVATION_COVERAGE", r_res.reasons)
+
+        # 2. Trigger a sampling gap > 250ms
+        k_snap_gap = tracker.update(500.0, 0.28, 0.10, 0.12, 0.20)
+        self.assertTrue(k_snap_gap.sampling_gap_detected)
+        r_res_gap = engine.evaluate(geom, c_res, k_snap_gap)
+        self.assertIn("OBSERVATION_SAMPLING_GAP_DETECTED", r_res_gap.reasons)
+
+        # 3. UNCERTAIN_GAP state must not trigger microsleep override
+        tracker._state = BlinkState.UNCERTAIN_GAP
+        k_snap_uncertain = tracker.update(533.3, 0.12, 0.85, 0.12, 0.20)
+        r_res_uncertain = engine.evaluate(geom, c_res, k_snap_uncertain)
+        self.assertNotIn("PROLONGED_EYE_CLOSURE_MICROSLEEP", r_res_uncertain.reasons)
 
 
 if __name__ == "__main__":

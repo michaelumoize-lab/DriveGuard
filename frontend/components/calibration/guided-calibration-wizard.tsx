@@ -85,7 +85,7 @@ export function GuidedCalibrationWizard() {
     driverId: "michael_driver",
     onCalibration: (cal) => {
       setCalState(cal);
-      if (cal.is_completed) {
+      if (cal.is_completed && !cal.rejection_reason) {
         setIsSuccess(true);
         toast.success("Calibration Completed Successfully! Personal baselines activated.");
 
@@ -108,6 +108,8 @@ export function GuidedCalibrationWizard() {
             zoneBaselines: prof?.zone_baselines ?? cal,
           }),
         }).catch((e) => console.warn("Could not save profile to DB:", e));
+      } else if (cal.is_completed && cal.rejection_reason) {
+        setIsSuccess(false);
       }
     },
   });
@@ -116,8 +118,10 @@ export function GuidedCalibrationWizard() {
   useEffect(() => {
     if (livekitCalibration) {
       setCalState(livekitCalibration);
-      if (livekitCalibration.is_completed) {
+      if (livekitCalibration.is_completed && !livekitCalibration.rejection_reason) {
         setIsSuccess(true);
+      } else if (livekitCalibration.is_completed && livekitCalibration.rejection_reason) {
+        setIsSuccess(false);
       }
     }
   }, [livekitCalibration]);

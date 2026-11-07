@@ -68,7 +68,7 @@ def run_single_session_benchmark(mode: str, frames: list) -> dict:
     prev_landmarks = None
     jitter_distances = []
 
-    cpu_start = process.cpu_percent(interval=None)
+    process.cpu_percent(interval=None)  # Prime process-wide CPU measurement interval
     t_start = time.perf_counter()
 
     for idx, frame in enumerate(frames):
@@ -85,7 +85,8 @@ def run_single_session_benchmark(mode: str, frames: list) -> dict:
             prev_landmarks = lms
 
     total_time = time.perf_counter() - t_start
-    cpu_end = process.cpu_percent(interval=None)
+    # Approximate process-wide CPU utilization across execution interval
+    approx_cpu_percent = process.cpu_percent(interval=None)
     mem_after_mb = process.memory_info().rss / (1024 * 1024)
 
     landmarker.close()
@@ -101,7 +102,7 @@ def run_single_session_benchmark(mode: str, frames: list) -> dict:
         "min_latency_ms": float(np.min(latencies)),
         "max_latency_ms": float(np.max(latencies)),
         "effective_fps": len(frames) / total_time,
-        "cpu_percent": cpu_end,
+        "cpu_percent": approx_cpu_percent,
         "mem_growth_mb": mem_after_mb - mem_before_mb,
         "mean_jitter_px": float(np.mean(jitter_distances)) if jitter_distances else 0.0,
     }

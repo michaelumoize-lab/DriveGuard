@@ -346,6 +346,7 @@ class GuidedCalibrationSession:
         self.is_running: bool = False
         self.is_completed: bool = False
         self.rejection_reason: Optional[str] = None
+        self.quality_warnings: List[str] = []
 
         self._step_idx: int = 0
         self._step_start_ts_ms: Optional[float] = None
@@ -379,6 +380,7 @@ class GuidedCalibrationSession:
         self.is_running = True
         self.is_completed = False
         self.rejection_reason = None
+        self.quality_warnings = []
         self._step_idx = 0
         self._step_start_ts_ms = timestamp_ms
         self._learned_neutral_pitch = 0.0
@@ -592,9 +594,9 @@ class GuidedCalibrationSession:
             if current_samples >= min_required:
                 should_advance = True
             else:
-                self.rejection_reason = (
-                    f"REJECTED_POOR_VISIBILITY: Insufficient valid observations ({current_samples}/{min_required}) in "
-                    f"zone '{step.zone.value}'. Please ensure stable lighting, face target, and hold steady."
+                self.quality_warnings.append(
+                    f"POOR_VISIBILITY: Insufficient valid observations ({current_samples}/{min_required}) in "
+                    f"zone '{step.zone.value}'. Zone baseline will use default/fallback thresholds."
                 )
                 should_advance = True
 

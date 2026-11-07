@@ -295,7 +295,8 @@ class LiveKitAIWorkerSession:
                         "timestamp": time.time(),
                         "metrics": {
                             "risk_score": telemetry_dto.risk_score,
-                            "ear": telemetry_dto.eye_metrics.ear_raw,
+                            "ear": telemetry_dto.eye_metrics.ear_normalized,
+                            "ear_raw": telemetry_dto.eye_metrics.ear_raw,
                             "perclos": telemetry_dto.eye_metrics.perclos_pct,
                             "pose_zone": telemetry_dto.pose_zone.value,
                             "reasons": telemetry_dto.reason_codes,
@@ -324,19 +325,32 @@ class LiveKitAIWorkerSession:
                     cal_data = cal_status.model_dump()
                     if cal_status.is_completed and not self._calibration_completion_sent:
                         self._calibration_completion_sent = True
-                        profile_dto = self.engine.export_profile_dto()
-                        profile_store.save_profile(profile_dto)
-                        print(
-                            f"[LiveKit AI] >>> Calibration complete for driver '{self.driver_id}'! "
-                            f"Center EAR={profile_dto.center_ear_median:.3f}. Sending CALIBRATION_COMPLETED event."
-                        )
-                        asyncio.create_task(
-                            self._send_control_ack({
-                                "type": "CALIBRATION_COMPLETED",
-                                "calibration": cal_data,
-                                "profile": profile_dto.model_dump(),
-                            })
-                        )
+                        if cal_status.rejection_reason:
+                            print(
+                                f"[LiveKit AI] >>> Calibration REJECTED for driver '{self.driver_id}': "
+                                f"{cal_status.rejection_reason}. Sending CALIBRATION_REJECTED event."
+                            )
+                            asyncio.create_task(
+                                self._send_control_ack({
+                                    "type": "CALIBRATION_REJECTED",
+                                    "calibration": cal_data,
+                                    "rejection_reason": cal_status.rejection_reason,
+                                })
+                            )
+                        else:
+                            profile_dto = self.engine.export_profile_dto()
+                            profile_store.save_profile(profile_dto)
+                            print(
+                                f"[LiveKit AI] >>> Calibration complete for driver '{self.driver_id}'! "
+                                f"Center EAR={profile_dto.center_ear_median:.3f}. Sending CALIBRATION_COMPLETED event."
+                            )
+                            asyncio.create_task(
+                                self._send_control_ack({
+                                    "type": "CALIBRATION_COMPLETED",
+                                    "calibration": cal_data,
+                                    "profile": profile_dto.model_dump(),
+                                })
+                            )
 
                 response_payload = self._build_telemetry_payload(
                     telemetry_dto,

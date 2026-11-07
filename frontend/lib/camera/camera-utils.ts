@@ -155,7 +155,7 @@ export function extractCameraResolution(
 
   if (track && track.getSettings) {
     const settings = track.getSettings();
-    if (settings.width && settings.height) {
+    if ((!w || !h) && settings.width && settings.height) {
       w = settings.width;
       h = settings.height;
     }
