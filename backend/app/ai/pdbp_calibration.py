@@ -53,7 +53,7 @@ def compute_robust_z(
 
 @dataclass
 class ZoneBaseline:
-    """Zone-specific EAR and head-pose baseline."""
+    """Zone-specific EAR, asymmetry, and head-pose baseline."""
 
     zone: str
     ear_median: float
@@ -61,11 +61,16 @@ class ZoneBaseline:
     pitch_median_deg: float
     yaw_median_deg: float
     sample_count: int
+    ear_left_median: Optional[float] = None
+    ear_right_median: Optional[float] = None
+    blendshape_open_median: Optional[float] = None
+    confidence_median: Optional[float] = None
 
     @property
     def dynamic_closure_threshold(self) -> float:
         """Driver-specific and zone-specific eye closure cutoff."""
-        return max(0.11, min(self.ear_median * 0.76, self.ear_median - 2.3 * self.ear_mad_scaled))
+        raw = min(self.ear_median * 0.76, self.ear_median - 2.3 * self.ear_mad_scaled)
+        return float(np.clip(raw, 0.12, 0.22))
 
 
 @dataclass
@@ -76,7 +81,7 @@ class DriverBehaviourProfile:
     """
 
     driver_id: str
-    calibration_mode: str  # "FOUR_ZONE" or "CENTER_ONLY"
+    calibration_mode: str  # "FOUR_ZONE", "THREE_ZONE", or "CENTER_ONLY"
     # Primary Center Reference Baseline (B0)
     center_ear_median: float
     center_ear_mad_scaled: float
@@ -93,6 +98,7 @@ class DriverBehaviourProfile:
     zone_baselines: Dict[str, ZoneBaseline] = field(default_factory=dict)
     # Drift-clamped active center EAR baseline (Bt)
     active_center_ear_median: Optional[float] = None
+    version: int = 1
 
     def __post_init__(self) -> None:
         if self.active_center_ear_median is None:
@@ -157,8 +163,42 @@ class DriverBehaviourProfile:
         """Load a saved driver profile from JSON."""
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         zones_raw = data.pop("zone_baselines", {})
-        zones = {k: ZoneBaseline(**v) for k, v in zones_raw.items()}
-        return cls(**data, zone_baselines=zones)
+        zones = {}
+        for k, v in zones_raw.items():
+            valid_keys = {
+                "zone",
+                "ear_median",
+                "ear_mad_scaled",
+                "pitch_median_deg",
+                "yaw_median_deg",
+                "sample_count",
+                "ear_left_median",
+                "ear_right_median",
+                "blendshape_open_median",
+                "confidence_median",
+            }
+            clean_v = {vk: vv for vk, vv in v.items() if vk in valid_keys}
+            zones[k] = ZoneBaseline(**clean_v)
+
+        valid_profile_keys = {
+            "driver_id",
+            "calibration_mode",
+            "center_ear_median",
+            "center_ear_mad_scaled",
+            "blink_duration_median_ms",
+            "blink_duration_mad_ms",
+            "blink_rcr_median",
+            "blink_rcr_mad",
+            "blink_freq_median_per_min",
+            "blink_freq_mad_per_min",
+            "neutral_pitch_deg",
+            "neutral_yaw_deg",
+            "calibration_reliability",
+            "active_center_ear_median",
+            "version",
+        }
+        clean_data = {k: v for k, v in data.items() if k in valid_profile_keys}
+        return cls(**clean_data, zone_baselines=zones)
 
     @classmethod
     def create_default_uncalibrated(cls, driver_id: str = "default_driver") -> "DriverBehaviourProfile":
@@ -250,23 +290,41 @@ CENTER_ONLY_CALIBRATION_PLAN: Tuple[CalibrationStepConfig, ...] = (
 
 class GuidedCalibrationSession:
     """
-    Manages interactive 1-zone, 3-zone, or 4-zone guided calibration, quality gating,
-    and construction of a DriverBehaviourProfile.
+    Manages interactive 4-zone (CENTER, LEFT_MIRROR, RIGHT_MIRROR, DASHBOARD) guided calibration,
+    individual zone recalibration, quality gating, and construction of a DriverBehaviourProfile.
     """
 
     def __init__(
         self,
         driver_id: str = "driver_001",
-        four_zone_mode: bool = False,  # Default to 3-Zone (Dashboard derived analytically) to prevent eyelid occlusion hanging
-        three_zone_mode: bool = True,
+        four_zone_mode: bool = True,
+        three_zone_mode: bool = False,
         step_duration_sec: Optional[float] = None,
+        target_zone: Optional[PoseZone] = None,
+        existing_profile: Optional[DriverBehaviourProfile] = None,
     ) -> None:
         self.driver_id = driver_id
         self.four_zone_mode = four_zone_mode
         self.three_zone_mode = three_zone_mode
         self.step_duration_sec = step_duration_sec
+        self.target_zone = target_zone
+        self.existing_profile = existing_profile
 
-        if four_zone_mode:
+        if target_zone is not None:
+            zone_enum = PoseZone(target_zone) if isinstance(target_zone, str) else target_zone
+            matching = [s for s in FOUR_ZONE_CALIBRATION_PLAN if s.zone == zone_enum]
+            base_steps = (
+                (matching[0],)
+                if matching
+                else (
+                    CalibrationStepConfig(
+                        zone=zone_enum,
+                        duration_sec=6.0,
+                        instruction=f"Calibrate [{zone_enum.value}]",
+                    ),
+                )
+            )
+        elif four_zone_mode:
             base_steps = FOUR_ZONE_CALIBRATION_PLAN
         elif three_zone_mode:
             base_steps = THREE_ZONE_CALIBRATION_PLAN
@@ -294,8 +352,12 @@ class GuidedCalibrationSession:
         self._total_frames_by_zone: Dict[str, int] = {s.zone.value: 0 for s in self.steps}
         self._valid_frames_by_zone: Dict[str, int] = {s.zone.value: 0 for s in self.steps}
         self._ear_samples_by_zone: Dict[str, List[float]] = {s.zone.value: [] for s in self.steps}
+        self._ear_left_by_zone: Dict[str, List[float]] = {s.zone.value: [] for s in self.steps}
+        self._ear_right_by_zone: Dict[str, List[float]] = {s.zone.value: [] for s in self.steps}
+        self._blendshape_by_zone: Dict[str, List[float]] = {s.zone.value: [] for s in self.steps}
         self._pitch_samples_by_zone: Dict[str, List[float]] = {s.zone.value: [] for s in self.steps}
         self._yaw_samples_by_zone: Dict[str, List[float]] = {s.zone.value: [] for s in self.steps}
+        self._confidence_by_zone: Dict[str, List[float]] = {s.zone.value: [] for s in self.steps}
         self._reliabilities: List[float] = []
         self._collected_blinks: List[BlinkEvent] = []
 
@@ -308,6 +370,9 @@ class GuidedCalibrationSession:
         self._learned_neutral_yaw: float = 0.0
         self._is_aligned: bool = False
         self._feedback_msg: str = "Aligning..."
+        self._last_pose_ts: Optional[float] = None
+        self._last_pitch: Optional[float] = None
+        self._last_yaw: Optional[float] = None
 
     def start(self, timestamp_ms: Optional[float] = None) -> None:
         """Start or restart the guided calibration workflow."""
@@ -325,10 +390,17 @@ class GuidedCalibrationSession:
             self._total_frames_by_zone[z] = 0
             self._valid_frames_by_zone[z] = 0
             self._ear_samples_by_zone[z] = []
+            self._ear_left_by_zone[z] = []
+            self._ear_right_by_zone[z] = []
+            self._blendshape_by_zone[z] = []
             self._pitch_samples_by_zone[z] = []
             self._yaw_samples_by_zone[z] = []
+            self._confidence_by_zone[z] = []
         self._reliabilities.clear()
         self._collected_blinks.clear()
+        self._last_pose_ts = None
+        self._last_pitch = None
+        self._last_yaw = None
 
     @property
     def current_step(self) -> CalibrationStepConfig:
@@ -344,8 +416,8 @@ class GuidedCalibrationSession:
         Verify whether the driver's head is oriented toward target_zone.
         Returns (is_aligned, feedback_instruction).
         """
-        ref_yaw = self._learned_neutral_yaw if self._step_idx > 0 else 0.0
-        ref_pitch = self._learned_neutral_pitch if self._step_idx > 0 else 0.0
+        ref_yaw = self._learned_neutral_yaw if (self._step_idx > 0 or self.target_zone is not None) else 0.0
+        ref_pitch = self._learned_neutral_pitch if (self._step_idx > 0 or self.target_zone is not None) else 0.0
         rel_yaw = yaw_deg - ref_yaw
         rel_pitch = pitch_deg - ref_pitch
 
@@ -408,10 +480,14 @@ class GuidedCalibrationSession:
         yaw_deg: float,
         is_eye_currently_closed: bool,
         completed_blink: Optional[BlinkEvent] = None,
+        left_ear: Optional[float] = None,
+        right_ear: Optional[float] = None,
+        blendshape_blink_mean: Optional[float] = None,
+        landmark_confidence: Optional[float] = None,
     ) -> Optional[DriverBehaviourProfile]:
         """
         Feed one frame of measurements into the active calibration step.
-        Progress ONLY fills when the head is actively oriented into the target zone!
+        Progress ONLY fills when the head is actively oriented into the target zone and head is steady!
         Returns the finalized `DriverBehaviourProfile` when all steps complete.
         """
         if not self.is_running:
@@ -427,6 +503,19 @@ class GuidedCalibrationSession:
         is_aligned, feedback = self.is_pose_aligned_with_target(step.zone, pitch_deg, yaw_deg)
         self._is_aligned = is_aligned
         self._feedback_msg = feedback
+
+        # Rapid head motion check (> 80 deg/s) to reject jerky frames
+        is_moving_excessively = False
+        if self._last_pose_ts is not None and self._last_pitch is not None and self._last_yaw is not None:
+            dt_s = max(1e-3, (timestamp_ms - self._last_pose_ts) / 1000.0)
+            if dt_s < 0.5:
+                ang_vel = float(np.hypot(pitch_deg - self._last_pitch, yaw_deg - self._last_yaw) / dt_s)
+                if ang_vel > 80.0:
+                    is_moving_excessively = True
+                    self._feedback_msg = "Hold head steady in target zone"
+        self._last_pose_ts = timestamp_ms
+        self._last_pitch = pitch_deg
+        self._last_yaw = yaw_deg
 
         # ONLY accumulate valid open-eye samples when head is oriented toward target!
         # For lateral mirror zones and dashboard, perspective yaw foreshortens one eye
@@ -444,7 +533,13 @@ class GuidedCalibrationSession:
             min_ear_val = 0.12
             zone_target = self.target_samples_per_zone
 
-        if face_detected and geometric_reliability >= min_geom_rel and is_aligned:
+        if (
+            face_detected
+            and geometric_reliability >= min_geom_rel
+            and (landmark_confidence is None or landmark_confidence >= 0.35)
+            and is_aligned
+            and not is_moving_excessively
+        ):
             self._valid_frames_by_zone[z_key] += 1
             self._reliabilities.append(geometric_reliability)
             # Only record open-eye EAR samples. In lateral zones, avoid letting frontal blink
@@ -452,24 +547,37 @@ class GuidedCalibrationSession:
             is_closed = is_eye_currently_closed if step.zone == PoseZone.CENTER else (ear_value < min_ear_val)
             if not is_closed and ear_value > min_ear_val:
                 self._ear_samples_by_zone[z_key].append(ear_value)
+                self._ear_left_by_zone[z_key].append(left_ear if left_ear is not None else ear_value)
+                self._ear_right_by_zone[z_key].append(right_ear if right_ear is not None else ear_value)
+                self._blendshape_by_zone[z_key].append(blendshape_blink_mean if blendshape_blink_mean is not None else 0.05)
+                self._confidence_by_zone[z_key].append(landmark_confidence if landmark_confidence is not None else geometric_reliability)
                 self._pitch_samples_by_zone[z_key].append(pitch_deg)
                 self._yaw_samples_by_zone[z_key].append(yaw_deg)
 
         if completed_blink is not None:
             self._collected_blinks.append(completed_blink)
 
-        # Step advances when required target samples are gathered, OR
-        # when the driver has held their head aligned in this zone, OR timeout fallback (prevents hanging)
+        # Minimum required valid observations per zone
+        min_required = 12 if step.zone == PoseZone.CENTER else 8
+        if self.step_duration_sec is not None and self.step_duration_sec <= 1.0:
+            min_required = max(3, int(self.step_duration_sec * 20))
+
         current_samples = len(self._ear_samples_by_zone.get(z_key, []))
-        aligned_frames = self._valid_frames_by_zone.get(z_key, 0)
-        min_aligned = min(20, max(4, int(zone_target * 0.8)))
-        max_total = min(45, max(6, int(zone_target * 2.0)))
-        should_advance = (
-            current_samples >= zone_target
-            or (current_samples >= max(2, min_aligned // 2) and aligned_frames >= min_aligned)
-            or (aligned_frames >= int(min_aligned * 1.5))
-            or (self._total_frames_by_zone[z_key] >= max_total)
-        )
+        should_advance = current_samples >= zone_target
+
+        # Timeout safety guard: if excessive frames pass in a zone without converging
+        max_zone_frames = max(50, zone_target * 3)
+        if self._total_frames_by_zone[z_key] >= max_zone_frames and not should_advance:
+            if current_samples >= min_required:
+                should_advance = True
+            else:
+                self.is_running = False
+                self.rejection_reason = (
+                    f"REJECTED_POOR_VISIBILITY: Insufficient valid observations ({current_samples}/{min_required}) in "
+                    f"zone '{step.zone.value}'. Please ensure stable lighting, face target, and hold steady."
+                )
+                return None
+
         if should_advance:
             # If Step 1 (CENTER) finishes, lock in driver's neutral posture!
             if self._step_idx == 0:
@@ -478,15 +586,6 @@ class GuidedCalibrationSession:
                 self._learned_neutral_pitch = float(np.median(p_list)) if p_list else 0.0
                 self._learned_neutral_yaw = float(np.median(y_list)) if y_list else 0.0
 
-            self._step_idx += 1
-            self._step_start_ts_ms = timestamp_ms
-            self._is_aligned = False
-            if self._step_idx >= len(self.steps):
-                return self._finalize()
-
-        # Timeout safety guard: if excessive frames pass in a zone without converging
-        max_zone_frames = max(45, zone_target * 4)
-        if self._total_frames_by_zone[z_key] >= max_zone_frames:
             self._step_idx += 1
             self._step_start_ts_ms = timestamp_ms
             self._is_aligned = False
@@ -507,23 +606,26 @@ class GuidedCalibrationSession:
         return None
 
     def _finalize(self) -> Optional[DriverBehaviourProfile]:
-        """Validate calibration quality and build the DriverBehaviourProfile."""
+        """Validate calibration quality, calculate robust baselines, and return DriverBehaviourProfile."""
         self.is_running = False
         center_key = PoseZone.CENTER.value
-        total_center = max(1, self._total_frames_by_zone.get(center_key, 0))
-        valid_center = self._valid_frames_by_zone.get(center_key, 0)
-        valid_ratio = valid_center / total_center
 
-        center_ears = self._ear_samples_by_zone.get(center_key, [])
-        min_samples = 4 if (self.step_duration_sec is not None and self.step_duration_sec < 2.0) else 15
-        if valid_ratio < 0.70 or len(center_ears) < min_samples:
-            self.rejection_reason = (
-                f"REJECTED_POOR_VISIBILITY: Valid face tracking ratio was {valid_ratio:.0%} "
-                f"({len(center_ears)} open-eye samples). Please ensure good lighting and camera framing."
-            )
-            return None
+        # If full calibration (including CENTER), verify center quality
+        if any(s.zone == PoseZone.CENTER for s in self.steps):
+            total_center = max(1, self._total_frames_by_zone.get(center_key, 0))
+            valid_center = self._valid_frames_by_zone.get(center_key, 0)
+            valid_ratio = valid_center / total_center
 
-        # Trim bottom 10% of EAR samples in each zone in case partial blink frames slipped in
+            center_ears = self._ear_samples_by_zone.get(center_key, [])
+            min_samples = 3 if (self.step_duration_sec is not None and self.step_duration_sec < 2.0) else 10
+            if valid_ratio < 0.60 or len(center_ears) < min_samples:
+                self.rejection_reason = (
+                    f"REJECTED_POOR_VISIBILITY: Center tracking ratio was {valid_ratio:.0%} "
+                    f"({len(center_ears)} open-eye samples). Please ensure good lighting and camera framing."
+                )
+                return None
+
+        # Trim bottom 10% of EAR samples in each zone to eliminate partial blink transitions
         zone_baselines: Dict[str, ZoneBaseline] = {}
         for step in self.steps:
             zk = step.zone.value
@@ -532,6 +634,18 @@ class GuidedCalibrationSession:
                 trim_idx = int(len(ears) * 0.10) if len(ears) >= 10 else 0
                 trimmed_ears = ears[trim_idx:]
                 ear_med, ear_mad = compute_median_and_scaled_mad(trimmed_ears, min_floor=0.015)
+
+                left_ears = self._ear_left_by_zone.get(zk, [])
+                right_ears = self._ear_right_by_zone.get(zk, [])
+                ear_l_med = float(np.median(left_ears)) if left_ears else ear_med
+                ear_r_med = float(np.median(right_ears)) if right_ears else ear_med
+
+                blends = self._blendshape_by_zone.get(zk, [])
+                blend_med = float(np.median(blends)) if blends else 0.05
+
+                confs = self._confidence_by_zone.get(zk, [])
+                conf_med = float(np.median(confs)) if confs else 0.85
+
                 pitch_med, _ = compute_median_and_scaled_mad(
                     self._pitch_samples_by_zone.get(zk, [0.0]), min_floor=1.5
                 )
@@ -545,9 +659,22 @@ class GuidedCalibrationSession:
                     pitch_median_deg=pitch_med,
                     yaw_median_deg=yaw_med,
                     sample_count=len(trimmed_ears),
+                    ear_left_median=ear_l_med,
+                    ear_right_median=ear_r_med,
+                    blendshape_open_median=blend_med,
+                    confidence_median=conf_med,
                 )
 
+        # Single zone recalibration merge
+        if self.target_zone is not None and self.existing_profile is not None:
+            tz_str = self.target_zone.value if isinstance(self.target_zone, PoseZone) else str(self.target_zone)
+            if tz_str in zone_baselines:
+                self.existing_profile.zone_baselines[tz_str] = zone_baselines[tz_str]
+            self.is_completed = True
+            return self.existing_profile
+
         if center_key not in zone_baselines:
+            center_ears = self._ear_samples_by_zone.get(center_key, [])
             ear_med = float(np.median(center_ears)) if center_ears else 0.28
             ear_mad = (
                 float(np.median(np.abs(np.array(center_ears) - ear_med))) * 1.4826
@@ -561,11 +688,15 @@ class GuidedCalibrationSession:
                 pitch_median_deg=0.0,
                 yaw_median_deg=0.0,
                 sample_count=len(center_ears),
+                ear_left_median=ear_med,
+                ear_right_median=ear_med,
+                blendshape_open_median=0.05,
+                confidence_median=0.85,
             )
 
         center_zb = zone_baselines[center_key]
 
-        # Backfill any missing zones relative to the primary CENTER anchor (especially DASHBOARD in 3-zone mode)
+        # Backfill any missing zones relative to the primary CENTER anchor
         if PoseZone.LEFT_MIRROR.value not in zone_baselines:
             zone_baselines[PoseZone.LEFT_MIRROR.value] = ZoneBaseline(
                 zone=PoseZone.LEFT_MIRROR.value,
@@ -574,6 +705,10 @@ class GuidedCalibrationSession:
                 pitch_median_deg=center_zb.pitch_median_deg,
                 yaw_median_deg=center_zb.yaw_median_deg + 20.0,
                 sample_count=center_zb.sample_count,
+                ear_left_median=round(center_zb.ear_median * 0.95, 4),
+                ear_right_median=round(center_zb.ear_median * 0.89, 4),
+                blendshape_open_median=0.06,
+                confidence_median=0.75,
             )
         if PoseZone.RIGHT_MIRROR.value not in zone_baselines:
             zone_baselines[PoseZone.RIGHT_MIRROR.value] = ZoneBaseline(
@@ -583,6 +718,10 @@ class GuidedCalibrationSession:
                 pitch_median_deg=center_zb.pitch_median_deg,
                 yaw_median_deg=center_zb.yaw_median_deg - 20.0,
                 sample_count=center_zb.sample_count,
+                ear_left_median=round(center_zb.ear_median * 0.89, 4),
+                ear_right_median=round(center_zb.ear_median * 0.95, 4),
+                blendshape_open_median=0.06,
+                confidence_median=0.75,
             )
         if PoseZone.DASHBOARD.value not in zone_baselines:
             zone_baselines[PoseZone.DASHBOARD.value] = ZoneBaseline(
@@ -592,6 +731,10 @@ class GuidedCalibrationSession:
                 pitch_median_deg=center_zb.pitch_median_deg - 10.0,
                 yaw_median_deg=center_zb.yaw_median_deg,
                 sample_count=center_zb.sample_count,
+                ear_left_median=round(center_zb.ear_median * 0.88, 4),
+                ear_right_median=round(center_zb.ear_median * 0.88, 4),
+                blendshape_open_median=0.08,
+                confidence_median=0.78,
             )
 
         # Blink kinematics baseline (fallback to physiological priors mingled with observed blinks if few blinks occurred)
@@ -612,7 +755,7 @@ class GuidedCalibrationSession:
 
         profile = DriverBehaviourProfile(
             driver_id=self.driver_id,
-            calibration_mode="FOUR_ZONE" if self.four_zone_mode else "CENTER_ONLY",
+            calibration_mode="FOUR_ZONE" if self.four_zone_mode else ("THREE_ZONE" if self.three_zone_mode else "CENTER_ONLY"),
             center_ear_median=center_zb.ear_median,
             center_ear_mad_scaled=center_zb.ear_mad_scaled,
             blink_duration_median_ms=dur_med,
@@ -625,6 +768,7 @@ class GuidedCalibrationSession:
             neutral_yaw_deg=center_zb.yaw_median_deg,
             calibration_reliability=mean_rel,
             zone_baselines=zone_baselines,
+            version=1,
         )
         self.is_completed = True
         return profile

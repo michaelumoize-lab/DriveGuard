@@ -396,8 +396,8 @@ class LiveKitAIWorkerSession:
 
             if action == "START_CALIBRATION":
                 self._calibration_completion_sent = False
-                four_zone = msg.get("four_zone", False)
-                three_zone = msg.get("three_zone", not four_zone)
+                four_zone = msg.get("four_zone", True)
+                three_zone = msg.get("three_zone", False)
                 duration = float(msg.get("zone_duration_sec", 5.0))
                 cal_dto = self.engine.start_calibration(
                     four_zone_mode=four_zone,
@@ -405,6 +405,17 @@ class LiveKitAIWorkerSession:
                     zone_duration_sec=duration,
                 )
                 print(f"[LiveKit Worker] Calibration started: zone={cal_dto.current_zone}, phase={cal_dto.phase_index}/{cal_dto.total_phases}")
+                await self._send_control_ack({"type": "CALIBRATION_STARTED", "calibration": cal_dto.model_dump()})
+
+            elif action == "RECALIBRATE_ZONE":
+                self._calibration_completion_sent = False
+                target_zone = msg.get("zone", "CENTER")
+                duration = float(msg.get("zone_duration_sec", 5.0))
+                cal_dto = self.engine.start_calibration(
+                    target_zone=target_zone,
+                    zone_duration_sec=duration,
+                )
+                print(f"[LiveKit Worker] Individual zone recalibration started for zone '{target_zone}'")
                 await self._send_control_ack({"type": "CALIBRATION_STARTED", "calibration": cal_dto.model_dump()})
 
             elif action == "CANCEL_CALIBRATION":
@@ -426,8 +437,9 @@ class LiveKitAIWorkerSession:
                     await self._send_control_ack({"type": "EXPERIMENT_SWITCHED", "mode": new_mode.value})
 
             elif action == "SAVE_PROFILE":
-                profile_store.save_profile(self.engine.profile)
-                await self._send_control_ack({"type": "PROFILE_SAVED", "driver_id": self.engine.profile.driver_id})
+                profile_dto = self.engine.export_profile_dto()
+                profile_store.save_profile(profile_dto)
+                await self._send_control_ack({"type": "PROFILE_SAVED", "driver_id": profile_dto.driver_id})
 
             elif action == "EVENT_ACK":
                 event_id = msg.get("event_id")

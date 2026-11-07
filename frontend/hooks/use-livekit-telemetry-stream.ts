@@ -572,6 +572,17 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     sendCommand({ action: "SKIP_CALIBRATION_STEP" });
   }, [sendCommand]);
 
+  const recalibrateZone = useCallback(
+    (zone: string, durationSec = 4.0) => {
+      sendCommand({
+        action: "RECALIBRATE_ZONE",
+        zone,
+        zone_duration_sec: durationSec,
+      });
+    },
+    [sendCommand]
+  );
+
   const saveProfile = useCallback(
     (driverName = "Driver", vehicleId = "DriveGuard-01") => {
       sendCommand({
@@ -616,6 +627,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     sendCommand,
     switchExperiment,
     startCalibration,
+    recalibrateZone,
     cancelCalibration,
     skipCalibrationStep,
     saveProfile,

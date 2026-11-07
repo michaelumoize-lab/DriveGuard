@@ -41,7 +41,7 @@ export function GuidedCalibrationWizard() {
   const [viewOrientation, setViewOrientation] = useState<"portrait" | "landscape">("landscape");
   const [framingMode, setFramingMode] = useState<"cover" | "fit">("cover");
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [calibrationMode, setCalibrationMode] = useState<"3_ZONE" | "4_ZONE">("3_ZONE");
+  const [calibrationMode, setCalibrationMode] = useState<"3_ZONE" | "4_ZONE">("4_ZONE");
   const [isSuccess, setIsSuccess] = useState(false);
   const [calState, setCalState] = useState<CalibrationPhase | null>(null);
 
@@ -75,6 +75,7 @@ export function GuidedCalibrationWizard() {
     startStreamingLoop,
     stopStreamingLoop,
     startCalibration: triggerLivekitCalibration,
+    recalibrateZone: triggerLivekitRecalibrate,
     cancelCalibration: triggerLivekitCancel,
     skipCalibrationStep: triggerLivekitSkip,
     backendType,
@@ -175,6 +176,15 @@ export function GuidedCalibrationWizard() {
   const handleSkipZone = () => {
     triggerLivekitSkip();
     toast.info("Advancing past current spatial zone...");
+  };
+
+  const handleRecalibrateZone = async (zone: string) => {
+    setIsSuccess(false);
+    if (cameraState !== "active") {
+      await startCamera();
+    }
+    triggerLivekitRecalibrate(zone, 5.0);
+    toast.info(`Recalibrating ${zone} zone...`);
   };
 
   // Directional guidance helpers
@@ -386,10 +396,22 @@ export function GuidedCalibrationWizard() {
                   <p className="text-xs text-muted-foreground max-w-sm">
                     Your personalised baselines across spatial zones have been calculated and saved to your PostgreSQL profile.
                   </p>
-                  <div className="flex items-center gap-2 pt-2">
+                  <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
                     <Button size="sm" onClick={handleStartCalibration} variant="outline">
                       <RotateCcw className="size-4 mr-1.5" />
-                      Recalibrate
+                      Full Recalibration
+                    </Button>
+                    <Button size="sm" onClick={() => handleRecalibrateZone("CENTER")} variant="ghost" className="text-xs">
+                      Repeat Center
+                    </Button>
+                    <Button size="sm" onClick={() => handleRecalibrateZone("LEFT_MIRROR")} variant="ghost" className="text-xs">
+                      Repeat Left Mirror
+                    </Button>
+                    <Button size="sm" onClick={() => handleRecalibrateZone("RIGHT_MIRROR")} variant="ghost" className="text-xs">
+                      Repeat Right Mirror
+                    </Button>
+                    <Button size="sm" onClick={() => handleRecalibrateZone("DASHBOARD")} variant="ghost" className="text-xs">
+                      Repeat Dashboard
                     </Button>
                   </div>
                 </div>
@@ -451,6 +473,13 @@ export function GuidedCalibrationWizard() {
                 </div>
               </div>
 
+              {calState?.rejection_reason && (
+                <div className="p-3 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive text-xs space-y-1">
+                  <span className="font-semibold block">⚠️ Sample Rejection:</span>
+                  <p>{calState.rejection_reason}</p>
+                </div>
+              )}
+
               {/* Spatial Alignment Status Indicator */}
               <div className="space-y-1.5">
                 <div className="flex justify-between items-center">
@@ -476,7 +505,9 @@ export function GuidedCalibrationWizard() {
                 <div className="flex justify-between font-mono">
                   <span className="text-muted-foreground">Zone Sample Acquisition:</span>
                   <span className="font-semibold text-foreground">
-                    {calState ? `${Math.round(calState.zone_progress_pct)}%` : "0%"}
+                    {calState
+                      ? `${Math.round(calState.zone_progress_pct)}% (${calState.stable_samples_count}/${calState.target_samples_count})`
+                      : "0%"}
                   </span>
                 </div>
                 <Progress value={calState?.zone_progress_pct || 0} className="h-2" />

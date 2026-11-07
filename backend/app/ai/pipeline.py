@@ -112,23 +112,28 @@ class SessionAIEngine:
         four_zone_mode: Optional[bool] = None,
         three_zone_mode: Optional[bool] = None,
         zone_duration_sec: float = 5.0,
+        target_zone: Optional[str] = None,
         timestamp_ms: Optional[float] = None,
     ) -> CalibrationPhaseDTO:
-        """Begin a new guided calibration session (3-Zone, 4-Zone, or 1-Zone)."""
-        if four_zone_mode is True:
-            is_4z, is_3z = True, False
-        elif three_zone_mode is True:
-            is_4z, is_3z = False, True
-        elif four_zone_mode is False and (three_zone_mode is False or three_zone_mode is None):
+        """Begin a new guided calibration session (4-Zone default, 3-Zone, 1-Zone, or single-zone recalibration)."""
+        t_zone = None
+        if target_zone:
             is_4z, is_3z = False, False
+            t_zone = PoseZone(target_zone) if isinstance(target_zone, str) else target_zone
+        elif four_zone_mode is not None:
+            is_4z = bool(four_zone_mode)
+            is_3z = not is_4z and bool(three_zone_mode)
         else:
-            is_4z, is_3z = False, True
+            # Default to full 4-Zone calibration
+            is_4z, is_3z = True, False
 
         self.calibration_session = GuidedCalibrationSession(
             driver_id=self.driver_id,
             four_zone_mode=is_4z,
             three_zone_mode=is_3z,
             step_duration_sec=zone_duration_sec,
+            target_zone=t_zone,
+            existing_profile=self.profile if (t_zone is not None and self.profile.calibration_mode != "UNCALIBRATED_DEFAULT") else None,
         )
         self.calibration_session.start(timestamp_ms=timestamp_ms)
         self._last_completed_calibration_dto = None
@@ -222,12 +227,17 @@ class SessionAIEngine:
                 pitch_median_deg=round(zb.pitch_median_deg, 2),
                 yaw_median_deg=round(zb.yaw_median_deg, 2),
                 sample_count=zb.sample_count,
+                ear_left_median=round(zb.ear_left_median, 4) if zb.ear_left_median is not None else None,
+                ear_right_median=round(zb.ear_right_median, 4) if zb.ear_right_median is not None else None,
+                blendshape_open_median=round(zb.blendshape_open_median, 3) if zb.blendshape_open_median is not None else None,
+                confidence_median=round(zb.confidence_median, 3) if zb.confidence_median is not None else None,
             )
 
         cal_time = getattr(self.profile, "calibrated_at", None)
         iso_time = cal_time.isoformat() if isinstance(cal_time, datetime) else datetime.now(timezone.utc).isoformat()
 
         return DriverProfileDTO(
+            version=getattr(self.profile, "version", 1),
             driver_id=self.profile.driver_id,
             calibrated_at=iso_time,
             is_calibrated=self.profile.calibration_mode != "UNCALIBRATED_DEFAULT",
@@ -254,6 +264,10 @@ class SessionAIEngine:
                 pitch_median_deg=zb_dto.pitch_median_deg,
                 yaw_median_deg=zb_dto.yaw_median_deg,
                 sample_count=zb_dto.sample_count,
+                ear_left_median=zb_dto.ear_left_median,
+                ear_right_median=zb_dto.ear_right_median,
+                blendshape_open_median=zb_dto.blendshape_open_median,
+                confidence_median=zb_dto.confidence_median,
             )
 
         center_mad = (
@@ -277,6 +291,7 @@ class SessionAIEngine:
             neutral_yaw_deg=dto.neutral_yaw_deg,
             calibration_reliability=dto.calibration_reliability,
             zone_baselines=baselines,
+            version=dto.version,
         )
         self.set_profile(new_profile)
 
@@ -387,6 +402,10 @@ class SessionAIEngine:
                 yaw_deg=geom.yaw_deg,
                 is_eye_currently_closed=kinematics_res.is_eye_closed,
                 completed_blink=kinematics_res.completed_blink,
+                left_ear=geom.left_ear,
+                right_ear=geom.right_ear,
+                blendshape_blink_mean=geom.blendshape_blink_mean,
+                landmark_confidence=geom.landmark_confidence,
             )
             if new_profile is not None:
                 total_steps = len(self.calibration_session.steps)

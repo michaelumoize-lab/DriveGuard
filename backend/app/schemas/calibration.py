@@ -29,6 +29,7 @@ class CalibrationPhaseDTO(BaseModel):
     instruction: str = Field(description="Human-readable driver instruction prompt")
     is_head_in_target_zone: bool = Field(description="True if driver's head is correctly oriented toward target zone")
     stability_feedback: str = Field(description="Real-time feedback: 'Holding Steady', 'Turn Further Left', etc.")
+    zone_quality_score: float = Field(default=1.0, description="Real-time tracking quality in this zone")
     is_completed: bool = Field(default=False, description="Whether calibration has completed successfully")
     rejection_reason: Optional[str] = Field(default=None, description="Reason if calibration was rejected")
     profile: Optional[DriverProfileDTO] = Field(default=None, description="Calibrated driver profile if completed")
@@ -41,4 +42,5 @@ class CalibrationStartRequest(BaseModel):
 
     driver_id: str = Field(default="driver_default", description="Driver identifier")
     four_zone_mode: bool = Field(default=True, description="True for 4-zone calibration, False for quick 1-zone")
-    zone_duration_sec: float = Field(default=5.0, description="Duration per zone in seconds", ge=2.0, le=30.0)
+    zone_duration_sec: float = Field(default=5.0, description="Duration per zone in seconds", ge=1.0, le=30.0)
+    recalibrate_zone: Optional[str] = Field(default=None, description="Specific zone to recalibrate individually (e.g. 'DASHBOARD')")
