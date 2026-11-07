@@ -48,3 +48,6 @@ frontend/next-env.d.ts
 Thumbs.db
 .vscode/
 .idea/
+.agents/
+*.skills-lock.json
+skills-lock.json

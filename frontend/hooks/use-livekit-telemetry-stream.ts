@@ -256,13 +256,22 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
           const videoTrack = mediaStream.getVideoTracks()[0];
 
           if (videoTrack) {
-            console.log(`[DriveGuard LiveKit] Publishing camera track (${videoTrack.label})...`);
+            const trackSettings = videoTrack.getSettings ? videoTrack.getSettings() : {};
+            console.log(`[DriveGuard LiveKit] Publishing camera track (${videoTrack.label}):`, {
+              actualWidth: trackSettings.width,
+              actualHeight: trackSettings.height,
+              actualFps: trackSettings.frameRate,
+            });
             const pub = await room.localParticipant.publishTrack(videoTrack, {
               name: "driver-camera",
               simulcast: false,
+              videoEncoding: {
+                maxBitrate: 650000,
+                maxFramerate: 25,
+              },
             });
             publishedTrackRef.current = pub.track as LocalVideoTrack;
-            console.log("[DriveGuard LiveKit] Camera track published successfully!");
+            console.log("[DriveGuard LiveKit] Camera track published successfully with 640x480@25fps encoding profile!");
           }
         }
       } catch (err: any) {
@@ -306,13 +315,24 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
           const mediaStream = videoElement.srcObject as MediaStream;
           const videoTrack = mediaStream.getVideoTracks()[0];
           if (videoTrack) {
+            const trackSettings = videoTrack.getSettings ? videoTrack.getSettings() : {};
+            console.log(`[DriveGuard LiveKit] Publishing camera track (${videoTrack.label}):`, {
+              actualWidth: trackSettings.width,
+              actualHeight: trackSettings.height,
+              actualFps: trackSettings.frameRate,
+            });
             roomRef.current.localParticipant
               .publishTrack(videoTrack, {
                 name: "driver-camera",
                 simulcast: false,
+                videoEncoding: {
+                  maxBitrate: 650000,
+                  maxFramerate: 25,
+                },
               })
               .then((pub) => {
                 publishedTrackRef.current = pub.track as LocalVideoTrack;
+                console.log("[DriveGuard LiveKit] Camera track published successfully with 640x480@25fps encoding profile!");
               })
               .catch((err) => console.warn("[DriveGuard LiveKit] Track publish error:", err));
           }

@@ -48,6 +48,8 @@ class LiveKitAIWorkerSession:
         self.engine: Optional[SessionAIEngine] = None
         self.is_running = False
         self._calibration_completion_sent = False
+        self._shutdown_task: Optional[asyncio.Task] = None
+        self._last_logged_dims: Optional[Tuple[int, int, int, int]] = None
 
         # Latest-frame queue with maxsize=1 (drops stale frames immediately)
         self.frame_queue: asyncio.Queue[Tuple[rtc.VideoFrame, float]] = asyncio.Queue(maxsize=1)
@@ -139,20 +141,33 @@ class LiveKitAIWorkerSession:
         def on_data_received(data_packet: rtc.DataPacket) -> None:
             asyncio.create_task(self._handle_client_control_message(data_packet))
 
+        @self.room.on("participant_connected")
+        def on_participant_connected(participant: rtc.RemoteParticipant) -> None:
+            logger.info(f"[LiveKit Worker] Participant '{participant.identity}' joined room '{self.room_name}'.")
+            if self._shutdown_task and not self._shutdown_task.done():
+                self._shutdown_task.cancel()
+                self._shutdown_task = None
+                logger.info(f"[LiveKit Worker] Cancelled pending shutdown for room '{self.room_name}' (participant reconnected).")
+
         @self.room.on("participant_disconnected")
         def on_participant_disconnected(participant: rtc.RemoteParticipant) -> None:
-            logger.info(f"[LiveKit Worker] Participant '{participant.identity}' left room.")
-            # If no remote participants left, we can schedule a graceful worker shutdown
+            logger.info(f"[LiveKit Worker] Participant '{participant.identity}' left room '{self.room_name}'.")
+            # If no remote participants left, schedule a graceful worker shutdown
             if len(self.room.remote_participants) == 0:
                 logger.info(f"[LiveKit Worker] No participants remain in '{self.room_name}'. Auto-closing worker in 10s...")
-                asyncio.create_task(self._auto_shutdown_if_empty(delay_sec=10))
+                if self._shutdown_task and not self._shutdown_task.done():
+                    self._shutdown_task.cancel()
+                self._shutdown_task = asyncio.create_task(self._auto_shutdown_if_empty(delay_sec=10.0))
 
     async def _auto_shutdown_if_empty(self, delay_sec: float = 10.0) -> None:
-        """Shut down the worker if room remains empty after grace period."""
-        await asyncio.sleep(delay_sec)
-        if self.is_running and len(self.room.remote_participants) == 0:
-            logger.info(f"[LiveKit Worker] Room '{self.room_name}' is still empty. Terminating worker.")
-            await self.stop()
+        """Shut down the worker and persist session if room remains empty after grace period."""
+        try:
+            await asyncio.sleep(delay_sec)
+            if self.is_running and len(self.room.remote_participants) == 0:
+                logger.info(f"[LiveKit Worker] Room '{self.room_name}' is still empty after {delay_sec}s. Terminating worker.")
+                await livekit_worker_manager.stop_worker(self.room_name)
+        except asyncio.CancelledError:
+            pass
 
     async def _ingest_video_stream(self, stream: rtc.VideoStream) -> None:
         """Asynchronously receive raw WebRTC video frames and feed the latest-frame buffer."""
@@ -196,16 +211,41 @@ class LiveKitAIWorkerSession:
                 # 3. Convert to BGR for OpenCV / DriveGuard pipeline
                 img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
 
-                # Downscale 720p/1080p frames to 640px width before inference (cuts pixel count by ~4x, boosting FPS from 8 to 20+)
-                h, w = img_bgr.shape[:2]
-                if w > 640:
+                raw_h, raw_w = img_bgr.shape[:2]
+
+                # Frame dimension normalization: bypass resize if already 640px wide,
+                # with safe normalization fallbacks for unexpected camera resolutions.
+                if raw_w == 640:
+                    # Optimal zero-resize path (target resolution)
+                    norm_img = img_bgr
+                elif raw_w > 640:
+                    # Safe downscale fallback for higher resolution inputs (720p/1080p)
                     target_w = 640
-                    target_h = int(round(h * (640.0 / w)))
-                    img_bgr = cv2.resize(img_bgr, (target_w, target_h), interpolation=cv2.INTER_AREA)
+                    target_h = int(round(raw_h * (640.0 / raw_w)))
+                    norm_img = cv2.resize(img_bgr, (target_w, target_h), interpolation=cv2.INTER_AREA)
+                elif raw_w < 320 and raw_w > 0:
+                    # Safe upscale fallback for sub-VGA devices
+                    target_w = 480
+                    target_h = int(round(raw_h * (480.0 / raw_w)))
+                    norm_img = cv2.resize(img_bgr, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+                else:
+                    # 320 <= raw_w < 640: acceptable range, pass without resizing
+                    norm_img = img_bgr
+
+                norm_h, norm_w = norm_img.shape[:2]
+
+                # Log dimension changes or first frame
+                current_dims = (raw_w, raw_h, norm_w, norm_h)
+                if self._last_logged_dims != current_dims:
+                    self._last_logged_dims = current_dims
+                    print(
+                        f"[LiveKit Worker] Ingest dimensions: raw={raw_w}x{raw_h} -> "
+                        f"normalized={norm_w}x{norm_h} (resize_bypassed={raw_w == norm_w})"
+                    )
 
                 # 4. Execute CPU-bound AI pipeline in thread pool to prevent blocking event loop
                 t_infer_start = time.perf_counter()
-                telemetry_dto = await asyncio.to_thread(self.engine.process_frame, img_bgr)
+                telemetry_dto = await asyncio.to_thread(self.engine.process_frame, norm_img, recv_timestamp * 1000.0)
                 infer_duration_ms = (time.perf_counter() - t_infer_start) * 1000.0
 
                 # 5. Calculate glass-to-decision ingestion latency
@@ -323,21 +363,40 @@ class LiveKitAIWorkerSession:
             logger.warning(f"[LiveKit Worker] Failed to send control ACK: {exc}")
 
     async def stop(self) -> None:
-        """Cleanly disconnect the worker from the LiveKit room and terminate tasks."""
+        """Cleanly disconnect the worker from the LiveKit room, terminate tasks, and flush session summaries."""
+        if not self.is_running and not self.room:
+            return
         self.is_running = False
+
+        if self._shutdown_task and not self._shutdown_task.done():
+            self._shutdown_task.cancel()
+            self._shutdown_task = None
 
         if self._ingest_task and not self._ingest_task.done():
             self._ingest_task.cancel()
+            self._ingest_task = None
 
         if self._inference_task and not self._inference_task.done():
             self._inference_task.cancel()
+            self._inference_task = None
 
         try:
             await self.room.disconnect()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f"[LiveKit Worker] Disconnect warning for '{self.room_name}': {exc}")
 
-        logger.info(f"[LiveKit Worker] Disconnected from room '{self.room_name}'.")
+        # Terminate active session in session_manager to release in-memory state and auto-persist profile
+        try:
+            summary = await session_manager.terminate_session(self.room_name)
+            if summary:
+                logger.info(
+                    f"[LiveKit Worker] Session '{self.room_name}' terminated cleanly. "
+                    f"Frames processed: {summary.get('total_frames', 0)}"
+                )
+        except Exception as exc:
+            logger.error(f"[LiveKit Worker] Error terminating session in session_manager: {exc}")
+
+        logger.info(f"[LiveKit Worker] Worker cleanly disconnected and released for room '{self.room_name}'.")
 
 
 class LiveKitWorkerManager:

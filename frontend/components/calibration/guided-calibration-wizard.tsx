@@ -60,9 +60,9 @@ export function GuidedCalibrationWizard() {
     startCamera,
     stopCamera,
   } = useCamera({
-    idealWidth: 1280,
-    idealHeight: 720,
-    idealFps: 30,
+    idealWidth: 640,
+    idealHeight: 480,
+    idealFps: 25,
     defaultFacingMode: "user",
     mirrored: true,
   });
