@@ -78,13 +78,14 @@ class SessionAIEngine:
         self.cascade = ConfidenceGatedEyeCascade(
             mode=self.experiment_mode, onnx_model_path=onnx_model_path
         )
-        self.kinematics = TemporalKinematicsTracker()
-
-        # Driver Profile & Risk Engine
         if profile is not None:
             self.profile = profile
         else:
             self.profile = DriverBehaviourProfile.create_default_uncalibrated(driver_id=driver_id)
+        self.kinematics = TemporalKinematicsTracker(
+            personalized_blink_median_ms=self.profile.blink_duration_median_ms,
+            personalized_blink_mad_ms=self.profile.blink_duration_mad_ms,
+        )
         self.risk_engine = PersonalisedAdaptiveRiskEngine(profile=self.profile, fixed_ear_threshold=0.22)
 
         # Calibration State
@@ -213,6 +214,9 @@ class SessionAIEngine:
         """Update active personal baseline profile."""
         self.profile = profile
         self.risk_engine.set_profile(profile)
+        self.kinematics.set_personalized_baseline(
+            profile.blink_duration_median_ms, profile.blink_duration_mad_ms
+        )
 
     def export_profile_dto(self) -> DriverProfileDTO:
         """Export the active driver profile as a validated Pydantic DTO."""
@@ -365,6 +369,7 @@ class SessionAIEngine:
         )
 
         if not geom.face_detected:
+            self.kinematics.handle_face_lost(ts_ms)
             latency_ms = (time.perf_counter() - t_start) * 1000.0
             return self._build_unavailable_frame(ts_ms, latency_ms=latency_ms, reason="NO_FACE_DETECTED")
 
@@ -382,13 +387,19 @@ class SessionAIEngine:
         if cascade_res.disagreement_ear_vs_blendshape > 0.40:
             self.total_disagreements += 1
 
-        # 6. Sub-Frame Blink Kinematics (Duration, RCR Velocity, Rolling 60s PERCLOS)
+        # 6. Sub-Frame Blink Kinematics (Duration, RCR Velocity, Rolling 60s PERCLOS, Gap-Aware)
         kinematics_res = self.kinematics.update(
             timestamp_ms=ts_ms,
             ear_value=geom.yaw_weighted_ear,
             fused_closure_score=cascade_res.fused_closure_score,
             mar_value=geom.mar,
             ear_close_threshold=zone_baseline.dynamic_closure_threshold,
+            left_ear=geom.left_ear,
+            right_ear=geom.right_ear,
+            left_threshold=zone_baseline.dynamic_closure_threshold,
+            right_threshold=zone_baseline.dynamic_closure_threshold,
+            landmark_confidence=geom.landmark_confidence,
+            head_yaw_deg=geom.yaw_deg,
         )
 
         # 7. Calibration Step Ingestion (if session is actively calibrating)
@@ -496,6 +507,12 @@ class SessionAIEngine:
                 blink_rcr=round(kinematics_res.completed_blink.rcr, 2) if kinematics_res.completed_blink else None,
                 blink_rate_per_min=round(kinematics_res.blink_rate_per_min, 1),
                 mar_yawn=round(geom.mar, 3),
+                blink_state=kinematics_res.blink_state.value,
+                blink_classification=kinematics_res.blink_classification.value,
+                perclos_coverage_pct=round(kinematics_res.perclos_coverage_pct, 1),
+                perclos_reliable=kinematics_res.perclos_reliable,
+                eye_closure_duration_ms=round(kinematics_res.current_closure_duration_ms, 1),
+                sampling_gap_detected=kinematics_res.sampling_gap_detected,
             ),
             cascade=CascadeStatusDTO(
                 experiment_mode=self.experiment_mode.value,
@@ -549,6 +566,12 @@ class SessionAIEngine:
                 blink_rcr=None,
                 blink_rate_per_min=0.0,
                 mar_yawn=0.0,
+                blink_state="UNCERTAIN_GAP",
+                blink_classification="UNCERTAIN",
+                perclos_coverage_pct=0.0,
+                perclos_reliable=False,
+                eye_closure_duration_ms=0.0,
+                sampling_gap_detected=True,
             ),
             cascade=CascadeStatusDTO(
                 experiment_mode=self.experiment_mode.value,

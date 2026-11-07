@@ -51,6 +51,12 @@ class EyeMetricsDTO(BaseModel):
     blink_rcr: Optional[float] = Field(default=None, description="Reopening velocity ratio of most recent blink")
     blink_rate_per_min: float = Field(default=0.0, description="Rolling blink frequency per minute", ge=0.0)
     mar_yawn: float = Field(default=0.0, description="Mouth Aspect Ratio for yawn tracking", ge=0.0)
+    blink_state: str = Field(default="OPEN", description="Temporal blink state: OPEN, CLOSING, CLOSED, REOPENING, PROLONGED_CLOSURE, UNCERTAIN_GAP")
+    blink_classification: str = Field(default="NORMAL", description="Deterministic blink classification: NORMAL, PROLONGED, REPEATED_ABNORMAL, MICROSLEEP_CANDIDATE, UNCERTAIN")
+    perclos_coverage_pct: float = Field(default=100.0, description="Observation coverage percentage across PERCLOS window", ge=0.0, le=100.0)
+    perclos_reliable: bool = Field(default=True, description="Whether PERCLOS coverage meets the reliable observation threshold")
+    eye_closure_duration_ms: float = Field(default=0.0, description="Continuous eye closure duration in ms", ge=0.0)
+    sampling_gap_detected: bool = Field(default=False, description="Whether an observation gap exceeded maximum continuous threshold")
 
 
 class CascadeStatusDTO(BaseModel):

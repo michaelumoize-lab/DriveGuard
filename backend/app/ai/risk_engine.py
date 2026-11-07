@@ -22,7 +22,11 @@ from typing import Deque, List, Optional
 
 import numpy as np
 
-from backend.app.ai.blink_kinematics import TemporalKinematicsSnapshot
+from backend.app.ai.blink_kinematics import (
+    BlinkClassification,
+    BlinkState,
+    TemporalKinematicsSnapshot,
+)
 from backend.app.ai.cascade_classifier import CascadeStageResult
 from backend.app.ai.geometry import FrameGeometryFeatures, PoseZone
 from backend.app.ai.pdbp_calibration import DriverBehaviourProfile, compute_robust_z
@@ -256,7 +260,14 @@ class PersonalisedAdaptiveRiskEngine:
             z_blink_rcr = 0.0
 
         # PERCLOS baseline for an alert driver is typically ~3-5%
-        z_perclos = max(0.0, (kinematics.perclos_60s_pct - 4.5) / 3.8)
+        # Only contribute to linear risk when observation coverage meets reliability threshold
+        if kinematics.perclos_reliable:
+            z_perclos = max(0.0, (kinematics.perclos_60s_pct - 4.5) / 3.8)
+        else:
+            z_perclos = 0.0
+
+        # Repeated abnormal blink clusters (multiple prolonged blinks or sluggish RCR)
+        is_abnormal_cluster = getattr(kinematics, "abnormal_blink_cluster_detected", False)
 
         # --- 4. Head Nodding & Yawning Supporting Indicators ---
         rel_pitch = geom.pitch_deg - self.profile.neutral_pitch_deg
@@ -277,15 +288,18 @@ class PersonalisedAdaptiveRiskEngine:
             + 0.18 * min(z_blink_rcr, 4.0)
             + 0.16 * min(z_ear, 4.0)
             + (0.35 if is_head_nodding else 0.0)
+            + (0.24 if is_abnormal_cluster else 0.0)
             + (0.20 if (kinematics.is_yawning or kinematics.yawn_count_5min >= 2) else 0.0)
         )
         # Logistic mapping centered at linear_risk = 1.45
         risk_score = float(1.0 / (1.0 + np.exp(-1.85 * (linear_risk - 1.45))))
 
         # Safety-critical microsleep override: continuous eye closure >= max(1.1s, 3.5x median blink)
+        # Observation gap periods must never fabricate or trigger a microsleep event
         microsleep_cutoff_ms = max(1100.0, 3.5 * self.profile.blink_duration_median_ms)
         is_microsleep = (
             kinematics.is_eye_closed
+            and kinematics.blink_state != BlinkState.UNCERTAIN_GAP
             and kinematics.current_closure_duration_ms >= microsleep_cutoff_ms
             and abs(geom.yaw_deg - self.profile.neutral_yaw_deg) < 28.0
         )
@@ -298,14 +312,25 @@ class PersonalisedAdaptiveRiskEngine:
         reasons: List[str] = []
         if is_microsleep:
             reasons.append("PROLONGED_EYE_CLOSURE_MICROSLEEP")
+        if is_abnormal_cluster:
+            reasons.append("REPEATED_ABNORMAL_BLINK_CLUSTER")
+        if kinematics.completed_blink and kinematics.completed_blink.classification in (
+            BlinkClassification.PROLONGED,
+            BlinkClassification.MICROSLEEP_CANDIDATE,
+        ):
+            reasons.append("PROLONGED_BLINK_DETECTED")
         if z_blink_dur >= 1.8 or (
             kinematics.is_eye_closed and kinematics.current_closure_duration_ms >= 450.0
         ):
             reasons.append("BLINK_DURATION_ABOVE_PERSONAL_BASELINE")
         if z_blink_rcr >= 1.8:
             reasons.append("EYELID_REOPENING_VELOCITY_SLOWED")
-        if z_perclos >= 1.6 or kinematics.perclos_60s_pct >= 12.0:
+        if kinematics.perclos_reliable and (z_perclos >= 1.6 or kinematics.perclos_60s_pct >= 12.0):
             reasons.append("INCREASED_PERCLOS")
+        if not kinematics.perclos_reliable and kinematics.perclos_coverage_pct < 50.0:
+            reasons.append("INSUFFICIENT_PERCLOS_OBSERVATION_COVERAGE")
+        if kinematics.sampling_gap_detected:
+            reasons.append("OBSERVATION_SAMPLING_GAP_DETECTED")
         if z_ear >= 2.0:
             reasons.append("SUSTAINED_EYE_OPENNESS_REDUCTION")
         if is_head_nodding:

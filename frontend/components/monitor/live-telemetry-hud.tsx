@@ -439,19 +439,34 @@ export function LiveTelemetryHUD({
                 <span className="text-xs font-bold text-foreground truncate">
                   PERCLOS Fatigue
                 </span>
-                <Badge variant="secondary" className="text-[9px] px-1 py-0 font-mono">
-                  60s
+                <Badge
+                  variant={eye_metrics?.perclos_reliable === false ? "outline" : "secondary"}
+                  className={`text-[9px] px-1 py-0 font-mono ${
+                    eye_metrics?.perclos_reliable === false
+                      ? "border-amber-500/50 text-amber-500 bg-amber-500/10"
+                      : ""
+                  }`}
+                  title={`Observation coverage across 60s window: ${eye_metrics?.perclos_coverage_pct ?? 100}%`}
+                >
+                  {eye_metrics?.perclos_reliable === false
+                    ? `Cov ${eye_metrics?.perclos_coverage_pct ?? 0}%`
+                    : `60s`}
                 </Badge>
               </div>
-              <div className="text-[10px] text-muted-foreground">
-                Time eyes closed &ge; 80%
+              <div className="text-[10px] text-muted-foreground flex items-center gap-1.5">
+                <span>Time eyes closed &ge; 80%</span>
+                {eye_metrics?.perclos_reliable === false && (
+                  <span className="text-amber-500 font-medium">⚠️ Low observation coverage</span>
+                )}
               </div>
             </div>
 
             {/* PERCLOS Level Badge */}
             <span
               className={`text-xs font-mono font-bold px-2 py-0.5 rounded-lg flex items-center gap-1 shrink-0 ${
-                perclos > 25
+                eye_metrics?.perclos_reliable === false
+                  ? "bg-muted text-muted-foreground border border-border"
+                  : perclos > 25
                   ? "bg-rose-500/20 text-rose-500 border border-rose-500/30"
                   : perclos > 15
                   ? "bg-amber-500/20 text-amber-500 border border-amber-500/30"
@@ -460,7 +475,13 @@ export function LiveTelemetryHUD({
             >
               <span>{perclos.toFixed(1)}%</span>
               <span className="text-[10px] uppercase font-sans">
-                {perclos > 25 ? "Critical" : perclos > 15 ? "Drowsy" : "Alert"}
+                {eye_metrics?.perclos_reliable === false
+                  ? "Uncertain"
+                  : perclos > 25
+                  ? "Critical"
+                  : perclos > 15
+                  ? "Drowsy"
+                  : "Alert"}
               </span>
             </span>
           </div>

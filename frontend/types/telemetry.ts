@@ -31,6 +31,12 @@ export interface EyeMetrics {
   blink_rcr: number | null;
   blink_rate_per_min: number;
   mar_yawn: number;
+  blink_state?: string;
+  blink_classification?: string;
+  perclos_coverage_pct?: number;
+  perclos_reliable?: boolean;
+  eye_closure_duration_ms?: number;
+  sampling_gap_detected?: boolean;
 }
 
 export interface CascadeStatus {
