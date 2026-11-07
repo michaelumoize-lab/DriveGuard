@@ -12,6 +12,10 @@ import {
   ExperimentMode,
   FrameTelemetry,
   CalibrationPhase,
+  SafetyEvent,
+  LatencyDiagnostics,
+  AlertState,
+  EventAck,
 } from "@/types/telemetry";
 
 export interface UseLivekitTelemetryStreamOptions {
@@ -19,6 +23,7 @@ export interface UseLivekitTelemetryStreamOptions {
   driverId?: string;
   defaultBackend?: "cloud" | "local";
   onTelemetry?: (telemetry: FrameTelemetry) => void;
+  onSafetyEvent?: (event: SafetyEvent) => void;
   onCalibration?: (calibration: CalibrationPhase) => void;
   onError?: (err: Error) => void;
 }
@@ -29,6 +34,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     driverId = "driver_default",
     defaultBackend,
     onTelemetry,
+    onSafetyEvent,
     onCalibration,
     onError,
   } = options;
@@ -57,6 +63,8 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     "disconnected" | "connecting" | "connected" | "reconnecting" | "error"
   >("disconnected");
   const [telemetry, setTelemetry] = useState<FrameTelemetry | null>(null);
+  const [latencyDiagnostics, setLatencyDiagnostics] = useState<LatencyDiagnostics | null>(null);
+  const [activeSafetyEvent, setActiveSafetyEvent] = useState<SafetyEvent | null>(null);
   const [calibration, setCalibration] = useState<CalibrationPhase | null>(null);
   const [roundtripLatencyMs, setRoundtripLatencyMs] = useState<number>(0);
   const [experimentMode, setExperimentMode] = useState<ExperimentMode>(
@@ -69,11 +77,25 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
   const isLoopActiveRef = useRef<boolean>(false);
   const pendingCommandsRef = useRef<Array<Record<string, any>>>([]);
 
+  // Telemetry deduplication, state guard, and latency tracking refs
+  const lastTelemetrySeqRef = useRef<number>(-1);
+  const activeStateRef = useRef<AlertState>("NORMAL");
+  const processedEventIdsRef = useRef<Set<string>>(new Set());
+  const rttSamplesRef = useRef<number[]>([]);
+  const pingSeqRef = useRef<number>(0);
+  const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const lastReactUpdateRef = useRef<number>(0);
+
   // Synchronized callback refs
   const onTelemetryRef = useRef(onTelemetry);
   useEffect(() => {
     onTelemetryRef.current = onTelemetry;
   }, [onTelemetry]);
+
+  const onSafetyEventRef = useRef(onSafetyEvent);
+  useEffect(() => {
+    onSafetyEventRef.current = onSafetyEvent;
+  }, [onSafetyEvent]);
 
   const onCalibrationRef = useRef(onCalibration);
   useEffect(() => {
@@ -89,6 +111,11 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
   const disconnectRoom = useCallback(async () => {
     isConnectingRef.current = false;
     isLoopActiveRef.current = false;
+
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current);
+      pingIntervalRef.current = null;
+    }
 
     const currentRoom = roomRef.current;
     roomRef.current = null;
@@ -174,6 +201,34 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
           }
         });
 
+        // Helper to update DataChannel RTT diagnostics and percentiles
+        const updateRttSample = (rttMs: number, queueMs = 0, inferMs = 0, serverTotalMs = 0) => {
+          if (rttMs <= 0 || isNaN(rttMs)) return;
+          const samples = rttSamplesRef.current;
+          samples.push(rttMs);
+          if (samples.length > 40) samples.shift();
+
+          const sorted = [...samples].sort((a, b) => a - b);
+          const p50 = sorted[Math.floor(sorted.length * 0.5)];
+          const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
+
+          // Estimated glass-to-decision latency: (RTT / 2) + Server Queue + Server Inference + (RTT / 2)
+          // = RTT + Server Processing Total
+          const sTotal = serverTotalMs > 0 ? serverTotalMs : queueMs + inferMs;
+          const estimatedE2E = (p50 > 0 ? p50 : rttMs) + sTotal;
+
+          setLatencyDiagnostics({
+            datachannel_rtt_ms: Math.round(rttMs),
+            queue_latency_ms: Math.round(queueMs * 10) / 10,
+            infer_duration_ms: Math.round(inferMs * 10) / 10,
+            estimated_e2e_latency_ms: Math.round(estimatedE2E),
+            rtt_p50: Math.round(p50),
+            rtt_p95: Math.round(p95),
+            last_measured_at: Date.now(),
+          });
+          setRoundtripLatencyMs(Math.round(rttMs));
+        };
+
         // Listen for real-time telemetry from Python AI worker over WebRTC Data Channel
         room.on(RoomEvent.DataReceived, (payload: Uint8Array, participant?: RemoteParticipant) => {
           try {
@@ -181,18 +236,47 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
             const msg = JSON.parse(rawText);
 
             if (msg.type === "TELEMETRY" && msg.telemetry) {
+              const seq = msg.seq ?? (msg.telemetry.frame_index ?? 0);
+              // Stale packet rejection: discard packets with older or equal sequence numbers
+              if (seq <= lastTelemetrySeqRef.current) {
+                return;
+              }
+              lastTelemetrySeqRef.current = seq;
+
               const tel = msg.telemetry as FrameTelemetry;
-              const rtt = msg.network_roundtrip_ms ?? tel.inference_latency_ms;
-              setRoundtripLatencyMs(Math.round(rtt));
+              activeStateRef.current = tel.state;
+
+              // Compute exact DataChannel RTT from echo timestamp if available
+              let measuredRtt = 0;
+              if (msg.echo_client_ts !== undefined && msg.echo_client_ts !== null) {
+                measuredRtt = Math.max(0, performance.now() - msg.echo_client_ts);
+              } else if (msg.network_roundtrip_ms) {
+                measuredRtt = msg.network_roundtrip_ms;
+              }
+
+              const qLat = tel.timing?.queue_latency_ms ?? 0;
+              const infLat = tel.timing?.infer_duration_ms ?? (tel.inference_latency_ms ?? 0);
+              const sTotal = tel.timing?.server_total_ms ?? (qLat + infLat);
+
+              if (measuredRtt > 0) {
+                updateRttSample(measuredRtt, qLat, infLat, sTotal);
+              }
 
               const enriched: FrameTelemetry = {
                 ...tel,
-                network_roundtrip_ms: rtt,
+                network_roundtrip_ms: measuredRtt > 0 ? Math.round(measuredRtt) : tel.network_roundtrip_ms,
               };
 
-              setTelemetry(enriched);
+              // Immediately invoke callback for external synchronous listeners
               if (onTelemetryRef.current) {
                 onTelemetryRef.current(enriched);
+              }
+
+              // Throttle React state updates to ~20 FPS (max 1 update per 48ms) to prevent UI overload
+              const now = performance.now();
+              if (now - lastReactUpdateRef.current >= 48) {
+                lastReactUpdateRef.current = now;
+                setTelemetry(enriched);
               }
 
               if (msg.calibration) {
@@ -201,6 +285,58 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
                 if (onCalibrationRef.current) {
                   onCalibrationRef.current(cal);
                 }
+              }
+            } else if (msg.type === "SAFETY_EVENT") {
+              const safetyEvent = msg as SafetyEvent;
+              console.log(
+                `[DriveGuard LiveKit] Safety event received: ${safetyEvent.previous_state} -> ${safetyEvent.new_state} (ID: ${safetyEvent.event_id})`
+              );
+
+              // 1. Immediately acknowledge event back to Python worker over reliable DataChannel
+              if (roomRef.current && roomRef.current.state === ConnectionState.Connected) {
+                const ackPayload: EventAck = {
+                  action: "EVENT_ACK",
+                  event_id: safetyEvent.event_id,
+                  event_seq: safetyEvent.event_seq,
+                  client_timestamp: performance.now(),
+                };
+                try {
+                  const ackBytes = new TextEncoder().encode(JSON.stringify(ackPayload));
+                  roomRef.current.localParticipant.publishData(ackBytes, { reliable: true });
+                } catch (ackErr) {
+                  console.warn("[DriveGuard LiveKit] Failed to send EVENT_ACK:", ackErr);
+                }
+              }
+
+              // 2. Idempotent deduplication (prevent re-triggering alert audio on retransmitted packets)
+              if (!processedEventIdsRef.current.has(safetyEvent.event_id)) {
+                processedEventIdsRef.current.add(safetyEvent.event_id);
+                if (processedEventIdsRef.current.size > 200) {
+                  const oldest = processedEventIdsRef.current.values().next().value;
+                  if (oldest) processedEventIdsRef.current.delete(oldest);
+                }
+
+                activeStateRef.current = safetyEvent.new_state;
+                setActiveSafetyEvent(safetyEvent);
+
+                if (onSafetyEventRef.current) {
+                  onSafetyEventRef.current(safetyEvent);
+                }
+              }
+            } else if (msg.type === "STATE_SYNC") {
+              console.log(
+                `[DriveGuard LiveKit] State synchronization received from server. Current state: ${msg.current_state}`
+              );
+              if (msg.current_state) {
+                activeStateRef.current = msg.current_state;
+              }
+              if (msg.latest_safety_event) {
+                setActiveSafetyEvent(msg.latest_safety_event as SafetyEvent);
+              }
+            } else if (msg.type === "PONG") {
+              if (msg.client_ts !== undefined && msg.client_ts !== null) {
+                const rtt = Math.max(0, performance.now() - msg.client_ts);
+                updateRttSample(rtt);
               }
             } else if (
               msg.type === "CALIBRATION_STARTED" ||
@@ -227,6 +363,10 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
 
         room.on(RoomEvent.Disconnected, () => {
           console.log("[DriveGuard LiveKit] Room disconnected.");
+          if (pingIntervalRef.current) {
+            clearInterval(pingIntervalRef.current);
+            pingIntervalRef.current = null;
+          }
           setConnectionStatus("disconnected");
         });
 
@@ -235,6 +375,31 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
         await room.connect(data.url, data.token);
         console.log(`[DriveGuard LiveKit] Successfully connected to room '${data.room_name}'!`);
         setConnectionStatus("connected");
+
+        // Start periodic RTT ping probe (every 1s) to measure exact DataChannel latency
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+        }
+        pingIntervalRef.current = setInterval(() => {
+          if (room.state !== ConnectionState.Connected) return;
+          pingSeqRef.current += 1;
+          const pingMsg = {
+            action: "PING",
+            client_ts: performance.now(),
+            ping_id: pingSeqRef.current,
+          };
+          try {
+            const payload = new TextEncoder().encode(JSON.stringify(pingMsg));
+            room.localParticipant.publishData(payload, { reliable: false });
+          } catch (_) {}
+        }, 1000);
+
+        // Request initial state synchronization from server upon connection/reconnection
+        try {
+          const syncMsg = { action: "SYNC_STATE" };
+          const payload = new TextEncoder().encode(JSON.stringify(syncMsg));
+          await room.localParticipant.publishData(payload, { reliable: true });
+        } catch (_) {}
 
         // Flush any queued commands (e.g. START_CALIBRATION requested before handshake)
         while (pendingCommandsRef.current.length > 0) {
@@ -408,6 +573,8 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     isConnected: connectionStatus === "connected",
     connectionStatus,
     telemetry,
+    latencyDiagnostics,
+    activeSafetyEvent,
     calibration,
     roundtripLatencyMs,
     experimentMode,

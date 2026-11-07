@@ -51,6 +51,13 @@ class LiveKitAIWorkerSession:
         self._shutdown_task: Optional[asyncio.Task] = None
         self._last_logged_dims: Optional[Tuple[int, int, int, int]] = None
 
+        # Phase 2: State Tracking & Reliable Safety Event Store
+        self._last_state: str = "NORMAL"
+        self._event_seq: int = 0
+        self._unacknowledged_events: Dict[str, dict] = {}
+        self._latest_safety_event: Optional[dict] = None
+        self._last_client_ping_ts: Optional[float] = None
+
         # Latest-frame queue with maxsize=1 (drops stale frames immediately)
         self.frame_queue: asyncio.Queue[Tuple[rtc.VideoFrame, float]] = asyncio.Queue(maxsize=1)
 
@@ -149,6 +156,16 @@ class LiveKitAIWorkerSession:
                 self._shutdown_task = None
                 logger.info(f"[LiveKit Worker] Cancelled pending shutdown for room '{self.room_name}' (participant reconnected).")
 
+            # Dispatch immediate state sync to reconnected participant
+            asyncio.create_task(self._send_control_ack({
+                "v": 2,
+                "type": "STATE_SYNC",
+                "session_id": self.room_name,
+                "current_state": self._last_state,
+                "latest_safety_event": self._latest_safety_event,
+                "server_time": time.time(),
+            }))
+
         @self.room.on("participant_disconnected")
         def on_participant_disconnected(participant: rtc.RemoteParticipant) -> None:
             logger.info(f"[LiveKit Worker] Participant '{participant.identity}' left room '{self.room_name}'.")
@@ -245,11 +262,47 @@ class LiveKitAIWorkerSession:
 
                 # 4. Execute CPU-bound AI pipeline in thread pool to prevent blocking event loop
                 t_infer_start = time.perf_counter()
-                telemetry_dto = await asyncio.to_thread(self.engine.process_frame, norm_img, recv_timestamp * 1000.0)
-                infer_duration_ms = (time.perf_counter() - t_infer_start) * 1000.0
+                queue_latency_ms = max(0.0, (t_infer_start - recv_timestamp) * 1000.0)
 
-                # 5. Calculate glass-to-decision ingestion latency
-                ingest_latency_ms = (time.perf_counter() - recv_timestamp) * 1000.0
+                telemetry_dto = await asyncio.to_thread(self.engine.process_frame, norm_img, recv_timestamp * 1000.0)
+                t_infer_end = time.perf_counter()
+                infer_duration_ms = (t_infer_end - t_infer_start) * 1000.0
+                server_total_ms = (t_infer_end - recv_timestamp) * 1000.0
+
+                from backend.app.schemas.telemetry import TimingBreakdownDTO
+                telemetry_dto.timing = TimingBreakdownDTO(
+                    queue_latency_ms=round(queue_latency_ms, 2),
+                    infer_duration_ms=round(infer_duration_ms, 2),
+                    server_total_ms=round(server_total_ms, 2),
+                )
+
+                # 5. Important Safety Event Detection (Reliable Delivery Trigger)
+                current_state_str = telemetry_dto.state.value
+                if current_state_str != self._last_state:
+                    import uuid
+                    event_id = f"evt_{uuid.uuid4().hex[:8]}"
+                    self._event_seq += 1
+                    safety_event_payload = {
+                        "v": 2,
+                        "type": "SAFETY_EVENT",
+                        "event_id": event_id,
+                        "session_id": self.room_name,
+                        "event_seq": self._event_seq,
+                        "event_type": "STATE_TRANSITION",
+                        "previous_state": self._last_state,
+                        "new_state": current_state_str,
+                        "timestamp": time.time(),
+                        "metrics": {
+                            "risk_score": telemetry_dto.risk_score,
+                            "ear": telemetry_dto.eye_metrics.ear_raw,
+                            "perclos": telemetry_dto.eye_metrics.perclos_pct,
+                            "pose_zone": telemetry_dto.pose_zone.value,
+                            "reasons": telemetry_dto.reason_codes,
+                        },
+                    }
+                    self._last_state = current_state_str
+                    self._latest_safety_event = safety_event_payload
+                    asyncio.create_task(self._publish_reliable_safety_event(safety_event_payload))
 
                 # 6. Periodic terminal logging (every ~1 second at 15 FPS)
                 if telemetry_dto.frame_index % 15 == 0 or telemetry_dto.frame_index == 1:
@@ -258,8 +311,9 @@ class LiveKitAIWorkerSession:
                         f"State={telemetry_dto.state.value} | "
                         f"EAR={telemetry_dto.eye_metrics.ear_raw:.3f} | "
                         f"Zone={telemetry_dto.pose_zone.value} | "
+                        f"Queue={queue_latency_ms:.1f}ms | "
                         f"Infer={infer_duration_ms:.1f}ms | "
-                        f"TotalLag={ingest_latency_ms:.1f}ms"
+                        f"ServerTotal={server_total_ms:.1f}ms"
                     )
 
                 # 7. Construct and publish telemetry payload over WebRTC Data Channel
@@ -284,10 +338,15 @@ class LiveKitAIWorkerSession:
                         )
 
                 response_payload = {
+                    "v": 2,
                     "type": "TELEMETRY",
+                    "session_id": self.room_name,
+                    "seq": telemetry_dto.frame_index,
+                    "timestamp": time.time(),
                     "telemetry": telemetry_dto.model_dump(),
                     "calibration": cal_data,
-                    "network_roundtrip_ms": round(ingest_latency_ms, 1),
+                    "echo_client_ts": self._last_client_ping_ts,
+                    "network_roundtrip_ms": round(server_total_ms, 1),
                 }
 
                 # Publish lossy/unreliable for telemetry (fastest WebRTC UDP delivery)
@@ -348,11 +407,84 @@ class LiveKitAIWorkerSession:
                 profile_store.save_profile(self.engine.profile)
                 await self._send_control_ack({"type": "PROFILE_SAVED", "driver_id": self.engine.profile.driver_id})
 
+            elif action == "EVENT_ACK":
+                event_id = msg.get("event_id")
+                if event_id:
+                    acked = self._unacknowledged_events.pop(event_id, None)
+                    if acked:
+                        ack_rtt_ms = (time.perf_counter() - acked["sent_at"]) * 1000.0
+                        logger.info(f"[LiveKit Worker] Safety event '{event_id}' ACK confirmed in {ack_rtt_ms:.1f}ms.")
+
+            elif action == "SYNC_STATE":
+                await self._send_control_ack({
+                    "v": 2,
+                    "type": "STATE_SYNC",
+                    "session_id": self.room_name,
+                    "current_state": self._last_state,
+                    "latest_safety_event": self._latest_safety_event,
+                    "server_time": time.time(),
+                })
+
             elif action == "PING":
-                await self._send_control_ack({"type": "PONG", "timestamp": time.time()})
+                client_ts = msg.get("client_ts")
+                ping_id = msg.get("ping_id")
+                if client_ts is not None:
+                    self._last_client_ping_ts = client_ts
+                await self._send_control_ack({
+                    "v": 2,
+                    "type": "PONG",
+                    "client_ts": client_ts,
+                    "ping_id": ping_id,
+                    "server_time": time.time(),
+                    "queue_depth": self.frame_queue.qsize(),
+                })
 
         except Exception as exc:
             logger.error(f"[LiveKit Worker] Control message parsing error: {exc}", exc_info=True)
+
+    async def _publish_reliable_safety_event(self, event_payload: dict) -> None:
+        """Publish important safety event with reliable DataChannel delivery and track ACK."""
+        event_id = event_payload["event_id"]
+        self._unacknowledged_events[event_id] = {
+            "payload": event_payload,
+            "retries": 0,
+            "sent_at": time.perf_counter(),
+        }
+        logger.info(
+            f"[LiveKit Worker] Emitting reliable safety event '{event_id}' "
+            f"({event_payload['previous_state']} -> {event_payload['new_state']})."
+        )
+        try:
+            payload_bytes = json.dumps(event_payload).encode("utf-8")
+            await self.room.local_participant.publish_data(payload_bytes, reliable=True)
+        except Exception as exc:
+            logger.error(f"[LiveKit Worker] Failed to publish initial safety event '{event_id}': {exc}")
+
+        # Non-blocking retry task
+        asyncio.create_task(self._retry_unacknowledged_event(event_id))
+
+    async def _retry_unacknowledged_event(self, event_id: str) -> None:
+        """Retry unacknowledged safety events with bounded backoff without blocking inference."""
+        for attempt in range(1, 4):
+            await asyncio.sleep(0.4 * attempt)
+            if not self.is_running:
+                break
+            entry = self._unacknowledged_events.get(event_id)
+            if not entry:
+                # Confirmed ACK
+                return
+            entry["retries"] += 1
+            logger.warning(
+                f"[LiveKit Worker] Retrying unacknowledged event '{event_id}' (attempt {entry['retries']}/3)..."
+            )
+            try:
+                payload_bytes = json.dumps(entry["payload"]).encode("utf-8")
+                await self.room.local_participant.publish_data(payload_bytes, reliable=True)
+            except Exception as exc:
+                logger.warning(f"[LiveKit Worker] Retry {attempt} failed: {exc}")
+
+        if event_id in self._unacknowledged_events:
+            logger.warning(f"[LiveKit Worker] Event '{event_id}' unacknowledged after 3 retries (client may be disconnected).")
 
     async def _send_control_ack(self, payload: dict) -> None:
         """Send reliable ACK or state change confirmation back to client."""

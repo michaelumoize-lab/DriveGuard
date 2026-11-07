@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { FrameTelemetry } from "@/types/telemetry";
+import { FrameTelemetry, LatencyDiagnostics } from "@/types/telemetry";
 import { CameraState } from "@/types/camera";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -36,6 +36,7 @@ interface LiveTelemetryHUDProps {
   telemetry: FrameTelemetry | null;
   cameraState?: CameraState;
   backendType?: "cloud" | "local";
+  latencyDiagnostics?: LatencyDiagnostics | null;
   className?: string;
 }
 
@@ -43,6 +44,7 @@ export function LiveTelemetryHUD({
   telemetry,
   cameraState = "not-initialized",
   backendType = "local",
+  latencyDiagnostics = null,
   className = "",
 }: LiveTelemetryHUDProps) {
   const isCameraActive = cameraState === "active";
@@ -249,7 +251,7 @@ export function LiveTelemetryHUD({
           </div>
         </div>
 
-        {/* Right: Stream Health Metrics (FPS, Network RTT, Inference) */}
+        {/* Right: Stream Health Metrics (FPS, DataChannel RTT, Server Queue, Inference, Estimated E2E) */}
         <div className="flex items-center gap-1.5 flex-wrap font-mono text-[11px]">
           {/* FPS Badge with warning color if dropped */}
           <Badge
@@ -265,32 +267,55 @@ export function LiveTelemetryHUD({
             <span>{fps.toFixed(1)} FPS</span>
           </Badge>
 
-          {/* RTT Badge with latency rating */}
-          {network_roundtrip_ms !== undefined && (
+          {/* WebRTC DataChannel RTT Badge (Exact Measurement) */}
+          {((latencyDiagnostics && latencyDiagnostics.datachannel_rtt_ms > 0) || network_roundtrip_ms !== undefined) && (
             <Badge
               variant="outline"
               className={`px-2 py-0.5 rounded-lg border gap-1 ${
-                network_roundtrip_ms > 400
+                (latencyDiagnostics?.datachannel_rtt_ms ?? network_roundtrip_ms ?? 0) > 300
                   ? "border-rose-500/40 text-rose-500 bg-rose-500/10"
-                  : network_roundtrip_ms > 150
+                  : (latencyDiagnostics?.datachannel_rtt_ms ?? network_roundtrip_ms ?? 0) > 120
                   ? "border-amber-500/40 text-amber-500 bg-amber-500/10"
                   : "border-border text-foreground"
               }`}
-              title="End-to-End WebSocket Roundtrip Latency"
+              title={`Exact WebRTC DataChannel RTT (p50: ${latencyDiagnostics?.rtt_p50 ?? 0}ms, p95: ${latencyDiagnostics?.rtt_p95 ?? 0}ms)`}
             >
               <Wifi className="size-3 text-primary" />
-              <span>{network_roundtrip_ms}ms</span>
+              <span>RTT: {latencyDiagnostics?.datachannel_rtt_ms ?? network_roundtrip_ms}ms</span>
             </Badge>
           )}
 
-          {/* AI Inference Latency Badge */}
-          {inference_latency_ms !== undefined && inference_latency_ms > 0 && (
+          {/* Server Ingest Queue Latency (Exact Measurement) */}
+          {telemetry.timing?.queue_latency_ms !== undefined && (
+            <Badge
+              variant="outline"
+              className="px-2 py-0.5 rounded-lg border-border text-muted-foreground hidden sm:inline-flex"
+              title="Server-side async frame queue dwell time before thread pool dispatch"
+            >
+              Q: {telemetry.timing.queue_latency_ms.toFixed(0)}ms
+            </Badge>
+          )}
+
+          {/* AI Inference Latency Badge (Exact Measurement) */}
+          {(telemetry.timing?.infer_duration_ms !== undefined || (inference_latency_ms !== undefined && inference_latency_ms > 0)) && (
             <Badge
               variant="outline"
               className="px-2 py-0.5 rounded-lg border-border text-muted-foreground hidden xs:inline-flex"
-              title="Edge AI Model Processing Time"
+              title="MediaPipe + MobileNetV3 CPU pipeline inference latency"
             >
-              AI: {inference_latency_ms.toFixed(0)}ms
+              AI: {(telemetry.timing?.infer_duration_ms ?? inference_latency_ms).toFixed(0)}ms
+            </Badge>
+          )}
+
+          {/* Estimated Glass-to-Decision Latency (Clearly labeled estimate) */}
+          {latencyDiagnostics && latencyDiagnostics.estimated_e2e_latency_ms > 0 && (
+            <Badge
+              variant="outline"
+              className="px-2 py-0.5 rounded-lg border-primary/30 text-primary bg-primary/5 hidden md:inline-flex"
+              title="Estimated Glass-to-Decision Latency: (DataChannel RTT / 2) + Server Queue Latency + AI Inference + (DataChannel RTT / 2)"
+            >
+              <Timer className="size-3 mr-0.5 text-primary" />
+              Est. E2E: {latencyDiagnostics.estimated_e2e_latency_ms}ms
             </Badge>
           )}
         </div>

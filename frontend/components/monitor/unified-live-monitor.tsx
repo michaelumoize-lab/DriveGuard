@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { useCamera } from "@/hooks/use-camera";
 import { useLivekitTelemetryStream } from "@/hooks/use-livekit-telemetry-stream";
 import { CapturedFrame } from "@/types/camera";
-import { ExperimentMode, FrameTelemetry } from "@/types/telemetry";
+import { ExperimentMode, FrameTelemetry, SafetyEvent } from "@/types/telemetry";
 import { CameraView } from "@/components/camera/camera-view";
 import { CameraControls } from "@/components/camera/camera-controls";
 import { CameraSelector } from "@/components/camera/camera-selector";
@@ -106,33 +106,6 @@ export function UnifiedLiveMonitor() {
     mirrored: true,
   });
 
-  // 2. Adaptive AI Telemetry LiveKit WebRTC Streaming Hook
-  const {
-    isConnected: isWsConnected,
-    connectionStatus: wsStatus,
-    telemetry,
-    roundtripLatencyMs,
-    experimentMode,
-    backendType,
-    switchBackend,
-    startStreamingLoop,
-    stopStreamingLoop,
-    switchExperiment,
-    reconnect: reconnectWs,
-  } = useLivekitTelemetryStream({
-    sessionId: stableSessionId,
-    driverId: "michael_driver",
-  });
-
-  // Reactive Stream Trigger: automatically start/stop WebSocket loop when camera becomes active
-  useEffect(() => {
-    if (cameraState === "active" && videoRef.current) {
-      startStreamingLoop(videoRef.current, isMirrored);
-    } else if (cameraState === "stopped" || cameraState === "paused") {
-      stopStreamingLoop();
-    }
-  }, [cameraState, isMirrored, startStreamingLoop, stopStreamingLoop, videoRef]);
-
   // Synthesized Web Audio Buzzer on CRITICAL Fatigue
   const playAlertBuzzer = useCallback(() => {
     if (audioMuted) return;
@@ -165,6 +138,68 @@ export function UnifiedLiveMonitor() {
       osc.stop(ctx.currentTime + 0.25);
     } catch (_) {}
   }, [audioMuted]);
+
+  // Reliable Safety Event Callback (Deterministic State Transitions & Alert Logging)
+  const handleSafetyEvent = useCallback(
+    (event: SafetyEvent) => {
+      console.log(
+        `[Cockpit Monitor] Safety event received: ${event.previous_state} -> ${event.new_state} (ID: ${event.event_id})`
+      );
+      if (event.new_state === "CRITICAL") {
+        sessionStatsRef.current.criticalCount++;
+        playAlertBuzzer();
+
+        // Immediately persist critical event transition to Neon DB with event_id deduplication
+        fetch("/api/alerts/log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionCode: activeSessionCodeRef.current || "LIVE_TELEMETRY",
+            type: "FATAL_FATIGUE",
+            severity: "CRITICAL",
+            message: `CRITICAL safety transition: EAR ${event.metrics.ear !== undefined ? event.metrics.ear.toFixed(3) : "N/A"}, PERCLOS ${event.metrics.perclos !== undefined ? event.metrics.perclos.toFixed(1) : "N/A"}%`,
+            metadata: {
+              eventId: event.event_id,
+              eventSeq: event.event_seq,
+              riskScore: event.metrics.risk_score,
+              poseZone: event.metrics.pose_zone,
+              reasons: event.metrics.reasons,
+            },
+          }),
+        }).catch(() => {});
+      }
+    },
+    [playAlertBuzzer]
+  );
+
+  // 2. Adaptive AI Telemetry LiveKit WebRTC Streaming Hook
+  const {
+    isConnected: isWsConnected,
+    connectionStatus: wsStatus,
+    telemetry,
+    latencyDiagnostics,
+    roundtripLatencyMs,
+    experimentMode,
+    backendType,
+    switchBackend,
+    startStreamingLoop,
+    stopStreamingLoop,
+    switchExperiment,
+    reconnect: reconnectWs,
+  } = useLivekitTelemetryStream({
+    sessionId: stableSessionId,
+    driverId: "michael_driver",
+    onSafetyEvent: handleSafetyEvent,
+  });
+
+  // Reactive Stream Trigger: automatically start/stop WebSocket loop when camera becomes active
+  useEffect(() => {
+    if (cameraState === "active" && videoRef.current) {
+      startStreamingLoop(videoRef.current, isMirrored);
+    } else if (cameraState === "stopped" || cameraState === "paused") {
+      stopStreamingLoop();
+    }
+  }, [cameraState, isMirrored, startStreamingLoop, stopStreamingLoop, videoRef]);
 
   // Handle telemetry updates & trigger alerts
   useEffect(() => {
@@ -580,6 +615,7 @@ export function UnifiedLiveMonitor() {
               telemetry={telemetry}
               cameraState={cameraState}
               backendType={backendType}
+              latencyDiagnostics={latencyDiagnostics}
             />
 
             {/* Hardware & Cascade Configuration Card (Tabs for Clean Vertical Space) */}

@@ -82,8 +82,18 @@ class ConventionalFixedComparisonDTO(BaseModel):
     is_mirror_check_suppressed: bool = Field(description="True if mirror check was protected from false alarms")
 
 
+class TimingBreakdownDTO(BaseModel):
+    """Instrumentation of server-side frame processing stages in milliseconds."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    queue_latency_ms: float = Field(default=0.0, description="Time frame waited in ingest queue before inference")
+    infer_duration_ms: float = Field(default=0.0, description="MediaPipe + Cascade evaluation time")
+    server_total_ms: float = Field(default=0.0, description="Total server transit and processing time")
+
+
 class FrameTelemetryDTO(BaseModel):
-    """Comprehensive per-frame telemetry payload emitted over WebSocket."""
+    """Comprehensive per-frame telemetry payload emitted over WebSocket or WebRTC DataChannel."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -109,3 +119,47 @@ class FrameTelemetryDTO(BaseModel):
     # Calibration & Engine State
     engine_mode: str = Field(default="MONITORING", description="'MONITORING' or 'CALIBRATING'")
     inference_latency_ms: float = Field(description="Total end-to-end processing latency for this frame in ms")
+    timing: Optional[TimingBreakdownDTO] = Field(default=None, description="Detailed server-side stage latencies")
+
+
+class SafetyEventDTO(BaseModel):
+    """Important safety state transition or critical alert requiring reliable transport and client ACK."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    v: int = Field(default=2, description="Telemetry protocol version")
+    type: str = Field(default="SAFETY_EVENT", description="Message discriminator")
+    event_id: str = Field(description="Unique event UUID for deduplication")
+    session_id: str = Field(description="Monitoring session identifier")
+    event_seq: int = Field(description="Monotonically increasing sequence number for safety events")
+    event_type: str = Field(description="Event classification, e.g. 'STATE_TRANSITION'")
+    previous_state: str = Field(description="Previous FSM alert state")
+    new_state: str = Field(description="New FSM alert state")
+    timestamp: float = Field(description="Server epoch timestamp in seconds")
+    metrics: dict = Field(default_factory=dict, description="Key physiological metrics triggering the event")
+
+
+class EventAckDTO(BaseModel):
+    """Client acknowledgement confirming receipt of a reliable safety event."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    action: str = Field(default="EVENT_ACK")
+    event_id: str = Field(description="ID of the event being acknowledged")
+    event_seq: int = Field(description="Sequence number of the acknowledged event")
+    client_timestamp: Optional[float] = Field(default=None, description="Client performance.now() timestamp")
+
+
+class TelemetryPacketDTO(BaseModel):
+    """High-frequency telemetry envelope for unreliable DataChannel delivery."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    v: int = Field(default=2, description="Protocol version")
+    type: str = Field(default="TELEMETRY")
+    session_id: str
+    seq: int = Field(description="Monotonically increasing frame sequence number")
+    timestamp: float = Field(description="Server epoch timestamp in seconds")
+    telemetry: FrameTelemetryDTO
+    calibration: Optional[dict] = None
+    echo_client_ts: Optional[float] = None
