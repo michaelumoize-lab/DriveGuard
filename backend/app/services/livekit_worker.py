@@ -337,6 +337,9 @@ class LiveKitAIWorkerSession:
                             })
                         )
 
+                echo_ts = self._last_client_ping_ts
+                self._last_client_ping_ts = None
+
                 response_payload = {
                     "v": 2,
                     "type": "TELEMETRY",
@@ -345,7 +348,7 @@ class LiveKitAIWorkerSession:
                     "timestamp": time.time(),
                     "telemetry": telemetry_dto.model_dump(),
                     "calibration": cal_data,
-                    "echo_client_ts": self._last_client_ping_ts,
+                    "echo_client_ts": echo_ts,
                     "network_roundtrip_ms": round(server_total_ms, 1),
                 }
 
@@ -500,9 +503,10 @@ class LiveKitAIWorkerSession:
             return
         self.is_running = False
 
-        if self._shutdown_task and not self._shutdown_task.done():
-            self._shutdown_task.cancel()
-            self._shutdown_task = None
+        shutdown_task = self._shutdown_task
+        self._shutdown_task = None
+        if shutdown_task and not shutdown_task.done() and shutdown_task is not asyncio.current_task():
+            shutdown_task.cancel()
 
         if self._ingest_task and not self._ingest_task.done():
             self._ingest_task.cancel()

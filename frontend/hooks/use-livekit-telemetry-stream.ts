@@ -85,6 +85,11 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
   const pingSeqRef = useRef<number>(0);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastReactUpdateRef = useRef<number>(0);
+  const latestTimingRef = useRef<{ queueMs: number; inferMs: number; serverTotalMs: number }>({
+    queueMs: 0,
+    inferMs: 0,
+    serverTotalMs: 0,
+  });
 
   // Synchronized callback refs
   const onTelemetryRef = useRef(onTelemetry);
@@ -111,6 +116,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
   const disconnectRoom = useCallback(async () => {
     isConnectingRef.current = false;
     isLoopActiveRef.current = false;
+    lastTelemetrySeqRef.current = -1;
 
     if (pingIntervalRef.current) {
       clearInterval(pingIntervalRef.current);
@@ -167,6 +173,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
         publishedTrackRef.current = null;
       }
 
+      lastTelemetrySeqRef.current = -1;
       isConnectingRef.current = true;
       setConnectionStatus("connecting");
 
@@ -246,25 +253,14 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
               const tel = msg.telemetry as FrameTelemetry;
               activeStateRef.current = tel.state;
 
-              // Compute exact DataChannel RTT from echo timestamp if available
-              let measuredRtt = 0;
-              if (msg.echo_client_ts !== undefined && msg.echo_client_ts !== null) {
-                measuredRtt = Math.max(0, performance.now() - msg.echo_client_ts);
-              } else if (msg.network_roundtrip_ms) {
-                measuredRtt = msg.network_roundtrip_ms;
-              }
-
               const qLat = tel.timing?.queue_latency_ms ?? 0;
               const infLat = tel.timing?.infer_duration_ms ?? (tel.inference_latency_ms ?? 0);
               const sTotal = tel.timing?.server_total_ms ?? (qLat + infLat);
-
-              if (measuredRtt > 0) {
-                updateRttSample(measuredRtt, qLat, infLat, sTotal);
-              }
+              latestTimingRef.current = { queueMs: qLat, inferMs: infLat, serverTotalMs: sTotal };
 
               const enriched: FrameTelemetry = {
                 ...tel,
-                network_roundtrip_ms: measuredRtt > 0 ? Math.round(measuredRtt) : tel.network_roundtrip_ms,
+                network_roundtrip_ms: roundtripLatencyMs > 0 ? roundtripLatencyMs : tel.network_roundtrip_ms,
               };
 
               // Immediately invoke callback for external synchronous listeners
@@ -336,7 +332,8 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
             } else if (msg.type === "PONG") {
               if (msg.client_ts !== undefined && msg.client_ts !== null) {
                 const rtt = Math.max(0, performance.now() - msg.client_ts);
-                updateRttSample(rtt);
+                const timing = latestTimingRef.current;
+                updateRttSample(rtt, timing.queueMs, timing.inferMs, timing.serverTotalMs);
               }
             } else if (
               msg.type === "CALIBRATION_STARTED" ||

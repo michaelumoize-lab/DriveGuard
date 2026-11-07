@@ -201,7 +201,7 @@ export function UnifiedLiveMonitor() {
     }
   }, [cameraState, isMirrored, startStreamingLoop, stopStreamingLoop, videoRef]);
 
-  // Handle telemetry updates & trigger alerts
+  // Handle telemetry updates: frames and PERCLOS accounting
   useEffect(() => {
     if (!telemetry) return;
 
@@ -210,33 +210,7 @@ export function UnifiedLiveMonitor() {
     if (perclos > sessionStatsRef.current.maxPerclos) {
       sessionStatsRef.current.maxPerclos = perclos;
     }
-
-    if (telemetry.state === "CRITICAL") {
-      sessionStatsRef.current.criticalCount++;
-      playAlertBuzzer();
-
-      // Log alert to database (with 5-second cooldown)
-      const now = Date.now();
-      if (now - lastAlertTimeRef.current > 5000) {
-        lastAlertTimeRef.current = now;
-        fetch("/api/alerts/log", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sessionCode: activeSessionCodeRef.current || "LIVE_TELEMETRY",
-            type: "FATAL_FATIGUE",
-            severity: "CRITICAL",
-            message: `Severe fatigue detected: PERCLOS ${perclos.toFixed(1)}%, EAR ${telemetry.eye_metrics?.ear_raw.toFixed(3)}`,
-            metadata: {
-              riskScore: telemetry.risk_score,
-              poseZone: telemetry.pose_zone,
-              perclos,
-            },
-          }),
-        }).catch(() => {});
-      }
-    }
-  }, [telemetry, playAlertBuzzer]);
+  }, [telemetry]);
 
   // Auto-detect mobile device & portrait orientation on mount
   useEffect(() => {

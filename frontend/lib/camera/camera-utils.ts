@@ -52,13 +52,17 @@ export function getRecommendedConstraints(
   idealHeight: number = 480,
   idealFps: number = 25
 ): MediaStreamConstraints {
+  const maxWidth = Math.max(1280, idealWidth);
+  const maxHeight = Math.max(720, idealHeight);
+  const maxFps = Math.max(30, idealFps);
+
   if (deviceId) {
     return {
       video: {
         deviceId: { exact: deviceId },
-        width: { ideal: idealWidth, max: 1280 },
-        height: { ideal: idealHeight, max: 720 },
-        frameRate: { ideal: idealFps, max: 30 },
+        width: { ideal: idealWidth, max: maxWidth },
+        height: { ideal: idealHeight, max: maxHeight },
+        frameRate: { ideal: idealFps, max: maxFps },
       },
       audio: false,
     };
@@ -67,9 +71,9 @@ export function getRecommendedConstraints(
   return {
     video: {
       facingMode: { ideal: facingMode },
-      width: { ideal: idealWidth, max: 1280 },
-      height: { ideal: idealHeight, max: 720 },
-      frameRate: { ideal: idealFps, max: 30 },
+      width: { ideal: idealWidth, max: maxWidth },
+      height: { ideal: idealHeight, max: maxHeight },
+      frameRate: { ideal: idealFps, max: maxFps },
     },
     audio: false,
   };

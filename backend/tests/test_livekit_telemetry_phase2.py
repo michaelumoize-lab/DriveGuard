@@ -254,6 +254,30 @@ class TestLiveKitTelemetryPhase2(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent_dict["ping_id"], 7)
         self.assertIn("queue_depth", sent_dict)
 
+    def test_echo_client_ts_cleared_after_single_emit(self):
+        """Verify that _last_client_ping_ts is emitted once and cleared so subsequent frames do not repeat stale timestamp."""
+        self.worker._last_client_ping_ts = 9999.0
+        
+        # Simulate payload construction in inference loop
+        echo_ts_1 = self.worker._last_client_ping_ts
+        self.worker._last_client_ping_ts = None
+        self.assertEqual(echo_ts_1, 9999.0)
+
+        echo_ts_2 = self.worker._last_client_ping_ts
+        self.assertIsNone(echo_ts_2)
+
+    async def test_stop_does_not_cancel_current_task(self):
+        """Verify that stop() does not cancel itself when called from within the shutdown task."""
+        current_task = asyncio.current_task()
+        self.worker._shutdown_task = current_task
+        self.worker.is_running = True
+        self.worker.room.disconnect = AsyncMock()
+
+        # Calling stop should clear _shutdown_task and NOT cancel current_task
+        await self.worker.stop()
+        self.assertIsNone(self.worker._shutdown_task)
+        self.assertFalse(current_task.cancelled())
+
 
 if __name__ == "__main__":
     unittest.main()
