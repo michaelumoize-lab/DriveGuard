@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx scripts/run-all-tests.ts",
+    "test": "tsx __tests__/audio-engine.test.ts && tsx scripts/run-all-tests.ts",
+    "test:audio": "tsx __tests__/audio-engine.test.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

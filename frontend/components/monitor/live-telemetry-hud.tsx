@@ -27,6 +27,9 @@ import {
   ShieldCheck,
   Sparkles,
   Timer,
+  Volume1,
+  Volume2,
+  VolumeX,
   Wifi,
   WifiOff,
   Zap,
@@ -38,6 +41,13 @@ interface LiveTelemetryHUDProps {
   backendType?: "cloud" | "local";
   latencyDiagnostics?: LatencyDiagnostics | null;
   className?: string;
+  isAudioUnlocked?: boolean;
+  isMuted?: boolean;
+  volume?: number;
+  audioStatus?: "ready" | "muted" | "blocked" | "unavailable";
+  onToggleMute?: () => void;
+  onSetVolume?: (volume: number) => void;
+  onUnlockAudio?: () => Promise<boolean>;
 }
 
 export function LiveTelemetryHUD({
@@ -46,6 +56,13 @@ export function LiveTelemetryHUD({
   backendType = "local",
   latencyDiagnostics = null,
   className = "",
+  isAudioUnlocked = false,
+  isMuted = false,
+  volume = 0.75,
+  audioStatus,
+  onToggleMute,
+  onSetVolume,
+  onUnlockAudio,
 }: LiveTelemetryHUDProps) {
   const isCameraActive = cameraState === "active";
 
@@ -62,12 +79,36 @@ export function LiveTelemetryHUD({
               Cockpit Telemetry HUD
             </h3>
           </div>
-          <Badge
-            variant="outline"
-            className="text-[10px] font-mono border-border text-muted-foreground"
-          >
-            {isCameraActive ? "INITIALIZING" : "STANDBY"}
-          </Badge>
+          <div className="flex items-center gap-2">
+            {audioStatus && (
+              <Badge
+                variant="outline"
+                className={`text-[10px] font-mono border-border ${
+                  audioStatus === "ready"
+                    ? "text-emerald-500 border-emerald-500/30"
+                    : audioStatus === "blocked"
+                    ? "text-amber-500 border-amber-500/30"
+                    : audioStatus === "muted"
+                    ? "text-rose-400 border-rose-500/30"
+                    : "text-muted-foreground"
+                }`}
+              >
+                {audioStatus === "ready"
+                  ? "AUDIO READY"
+                  : audioStatus === "blocked"
+                  ? "AUDIO BLOCKED"
+                  : audioStatus === "muted"
+                  ? "MUTED"
+                  : "NO AUDIO"}
+              </Badge>
+            )}
+            <Badge
+              variant="outline"
+              className="text-[10px] font-mono border-border text-muted-foreground"
+            >
+              {isCameraActive ? "INITIALIZING" : "STANDBY"}
+            </Badge>
+          </div>
         </div>
 
         {isCameraActive ? (
@@ -329,6 +370,62 @@ export function LiveTelemetryHUD({
               <Timer className="size-3 mr-0.5 text-primary" />
               Est. E2E: {latencyDiagnostics.estimated_e2e_latency_ms}ms
             </Badge>
+          )}
+
+          {/* Audio Subsystem Indicator & Controls */}
+          {audioStatus && (
+            <button
+              type="button"
+              onClick={() => {
+                if (audioStatus === "blocked" && onUnlockAudio) {
+                  onUnlockAudio();
+                } else if (onToggleMute) {
+                  onToggleMute();
+                }
+              }}
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border text-[11px] font-mono transition-colors ${
+                audioStatus === "blocked"
+                  ? "border-amber-500/40 text-amber-500 bg-amber-500/10 hover:bg-amber-500/20 cursor-pointer animate-pulse"
+                  : audioStatus === "muted" || isMuted
+                  ? "border-rose-500/40 text-rose-400 bg-rose-500/10 hover:bg-rose-500/20 cursor-pointer"
+                  : audioStatus === "ready"
+                  ? "border-emerald-500/30 text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 cursor-pointer"
+                  : "border-border text-muted-foreground cursor-not-allowed"
+              }`}
+              title={
+                audioStatus === "blocked"
+                  ? "Audio autoplay blocked by browser. Click to enable sound alerts."
+                  : audioStatus === "muted" || isMuted
+                  ? "Audio muted. Click to unmute."
+                  : `Audio active (${Math.round(volume * 100)}%). Click to mute.`
+              }
+            >
+              {audioStatus === "blocked" ? (
+                <>
+                  <VolumeX className="size-3 text-amber-500" />
+                  <span>Enable Audio</span>
+                </>
+              ) : audioStatus === "muted" || isMuted ? (
+                <>
+                  <VolumeX className="size-3 text-rose-400" />
+                  <span>Muted</span>
+                </>
+              ) : audioStatus === "ready" ? (
+                <>
+                  {volume > 0.5 ? (
+                    <Volume2 className="size-3 text-emerald-400" />
+                  ) : (
+                    <Volume1 className="size-3 text-emerald-400" />
+                  )}
+                  <span>Audio {Math.round(volume * 100)}%</span>
+                </>
+              ) : (
+                <>
+                  <VolumeX className="size-3 text-muted-foreground" />
+                  <span>Audio N/A</span>
+                </>
+              )}
+            </button>
           )}
         </div>
       </div>
