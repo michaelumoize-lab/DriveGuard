@@ -4,7 +4,7 @@ Application Configuration and Environment Settings using Pydantic Settings.
 
 from pathlib import Path
 from typing import List
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,9 +32,18 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     # LiveKit Cloud WebRTC
-    LIVEKIT_URL: str = ""
-    LIVEKIT_API_KEY: str = ""
-    LIVEKIT_API_SECRET: str = ""
+    LIVEKIT_URL: str = Field(
+        default="",
+        validation_alias=AliasChoices("LIVEKIT_URL", "NEXT_PUBLIC_LIVEKIT_URL", "livekit_url"),
+    )
+    LIVEKIT_API_KEY: str = Field(
+        default="",
+        validation_alias=AliasChoices("LIVEKIT_API_KEY", "livekit_api_key"),
+    )
+    LIVEKIT_API_SECRET: str = Field(
+        default="",
+        validation_alias=AliasChoices("LIVEKIT_API_SECRET", "livekit_api_secret"),
+    )
 
     # CORS
     CORS_ORIGINS: List[str] = [
