@@ -134,8 +134,13 @@ export function UnifiedLiveMonitor() {
         `[Cockpit Monitor] Safety event received: ${event.previous_state} -> ${event.new_state} (ID: ${event.event_id})`
       );
 
+      const eventTsMs =
+        typeof event.timestamp === "number" && !isNaN(event.timestamp)
+          ? Math.round(event.timestamp * 1000)
+          : Date.now();
+
       // Fast-path Web Audio alert dispatch: bypass UI rendering queue and preempt lower tiers immediately
-      audioEngine?.setRiskState(event.new_state, event.event_id);
+      audioEngine?.setRiskState(event.new_state, event.event_id, eventTsMs);
 
       if (event.new_state === "CRITICAL") {
         lastAlertTimeRef.current = Date.now();
@@ -213,7 +218,7 @@ export function UnifiedLiveMonitor() {
 
     // Synchronize audio subsystem with continuous telemetry state (handles WARNING, DROWSY, NORMAL, cooldowns)
     if (telemetry.state) {
-      audioEngine?.setRiskState(telemetry.state);
+      audioEngine?.setRiskState(telemetry.state, undefined, telemetry.timestamp_ms);
     }
 
     if (telemetry.state === "CRITICAL") {

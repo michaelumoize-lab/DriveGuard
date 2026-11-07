@@ -63,7 +63,7 @@ async function main() {
     where: { userId: user.id },
     create: {
       userId: user.id,
-      calibrationMode: "3_ZONE",
+      calibrationMode: "4_ZONE",
       centerEarMedian: 0.285,
       centerEarMadScaled: 0.016,
       blinkDurationMedianMs: 195.0,
@@ -78,7 +78,7 @@ async function main() {
       calibratedAt: new Date(),
     },
     update: {
-      calibrationMode: "3_ZONE",
+      calibrationMode: "4_ZONE",
       centerEarMedian: 0.285,
       centerEarMadScaled: 0.016,
       blinkDurationMedianMs: 195.0,
@@ -94,14 +94,14 @@ async function main() {
 
   assert(
     savedProfile.centerEarMedian === 0.285 && savedProfile.isCalibrated === true,
-    "DriverProfile Saved to Neon Postgres (Center EAR = 0.285, 3-Zone Baselines Active)"
+    "DriverProfile Saved to Neon Postgres (Center EAR = 0.285, 4-Zone Baselines Active)"
   );
 
   const fetchedProfile = await prisma.driverProfile.findUnique({
     where: { userId: user.id },
   });
   assert(
-    !!fetchedProfile && fetchedProfile.calibrationMode === "3_ZONE",
+    !!fetchedProfile && fetchedProfile.calibrationMode === "4_ZONE",
     "DriverProfile Retrieved & Validated from Neon Postgres"
   );
 

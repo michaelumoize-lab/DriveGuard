@@ -23,6 +23,10 @@ export interface UseDriveGuardAudioReturn {
   engine: DriveGuardAudioEngine | null;
 }
 
+// Module-level shared singleton instance & subscriber reference counter
+let sharedAudioEngine: DriveGuardAudioEngine | null = null;
+let activeHookSubscribers = 0;
+
 export function useDriveGuardAudio(
   options?: UseDriveGuardAudioOptions
 ): UseDriveGuardAudioReturn {
@@ -34,10 +38,10 @@ export function useDriveGuardAudio(
   const [volume, setVolumeState] = useState<number>(options?.masterVolume ?? 0.75);
   const [audioStatus, setAudioStatus] = useState<AudioDisplayStatus>("blocked");
 
-  // Lazy singleton initialization of the audio engine
+  // Shared singleton accessor ensuring single AudioContext across components
   const getEngine = useCallback((): DriveGuardAudioEngine => {
-    if (!engineRef.current) {
-      engineRef.current = new DriveGuardAudioEngine({
+    if (!sharedAudioEngine) {
+      sharedAudioEngine = new DriveGuardAudioEngine({
         masterVolume: options?.masterVolume ?? 0.75,
         muted: options?.muted ?? false,
         warningCooldownMs: options?.warningCooldownMs,
@@ -45,7 +49,8 @@ export function useDriveGuardAudio(
         criticalRepeatIntervalMs: options?.criticalRepeatIntervalMs,
       });
     }
-    return engineRef.current;
+    engineRef.current = sharedAudioEngine;
+    return sharedAudioEngine;
   }, [
     options?.masterVolume,
     options?.muted,
@@ -53,6 +58,11 @@ export function useDriveGuardAudio(
     options?.drowsyCooldownMs,
     options?.criticalRepeatIntervalMs,
   ]);
+
+  // Eager ref population on render
+  if (!engineRef.current) {
+    getEngine();
+  }
 
   const updateDisplayStatus = useCallback(() => {
     const engine = engineRef.current;
@@ -141,13 +151,16 @@ export function useDriveGuardAudio(
     };
   }, [getEngine, options?.autoUnlockOnGesture, updateDisplayStatus]);
 
-  // Teardown and resource disposal on unmount
+  // Teardown and resource disposal on unmount with subscriber reference counting
   useEffect(() => {
+    activeHookSubscribers++;
     return () => {
-      if (engineRef.current) {
-        engineRef.current.dispose();
-        engineRef.current = null;
+      activeHookSubscribers = Math.max(0, activeHookSubscribers - 1);
+      if (activeHookSubscribers === 0 && sharedAudioEngine) {
+        sharedAudioEngine.dispose();
+        sharedAudioEngine = null;
       }
+      engineRef.current = null;
     };
   }, []);
 

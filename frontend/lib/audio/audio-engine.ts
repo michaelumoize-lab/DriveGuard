@@ -58,6 +58,8 @@ export class DriveGuardAudioEngine {
   private readonly lastAlertTimestamps: Map<AlertTier, number> = new Map();
   private readonly handledEventIds: Set<string> = new Set();
   private readonly activeNodes: Set<AudioNode> = new Set();
+  private readonly cleanupTimerIds: Set<ReturnType<typeof setTimeout>> = new Set();
+  private lastStateTimestampMs: number | null = null;
 
   // Status & Telemetry
   private status: AudioEngineStatus = "uninitialized";
@@ -164,6 +166,7 @@ export class DriveGuardAudioEngine {
   public dispose(): void {
     this.stopCurrentAlert();
     this.stopActiveNodes();
+    this.clearCleanupTimers();
 
     if (this.masterGain) {
       try {
@@ -181,6 +184,8 @@ export class DriveGuardAudioEngine {
 
     this.handledEventIds.clear();
     this.lastAlertTimestamps.clear();
+    this.lastStateTimestampMs = null;
+    this.currentRiskState = "NORMAL";
     this.status = "uninitialized";
     this.isUnlocked = false;
   }
@@ -206,6 +211,11 @@ export class DriveGuardAudioEngine {
     }
     if (muted) {
       this.stopCurrentAlert();
+    } else if (this.currentRiskState === "CRITICAL" && !this.isCriticalLoopActive) {
+      // Unmuted while CRITICAL remains active: resume repeating alarm immediately
+      this.isCriticalLoopActive = true;
+      this.currentTier = "CRITICAL";
+      this.playCriticalSequence();
     }
   }
 
@@ -241,7 +251,19 @@ export class DriveGuardAudioEngine {
    * Sets the authoritative backend safety state, managing priority transitions,
    * alert preemption, deduplication, and recovery chimes.
    */
-  public setRiskState(newState: string, eventId?: string): boolean {
+  public setRiskState(
+    newState: string,
+    eventId?: string,
+    timestampMs?: number
+  ): boolean {
+    // 0. Stale frame rejection: if timestamp is provided and older than our latest authoritative state transition, reject
+    if (typeof timestampMs === "number" && !isNaN(timestampMs)) {
+      if (this.lastStateTimestampMs !== null && timestampMs < this.lastStateTimestampMs) {
+        return false;
+      }
+      this.lastStateTimestampMs = timestampMs;
+    }
+
     // 1. Deduplicate by event ID if supplied
     if (eventId) {
       if (this.handledEventIds.has(eventId)) {
@@ -366,6 +388,7 @@ export class DriveGuardAudioEngine {
   }
 
   private stopActiveNodes(): void {
+    this.clearCleanupTimers();
     for (const node of this.activeNodes) {
       try {
         if ("stop" in node && typeof (node as { stop: () => void }).stop === "function") {
@@ -618,7 +641,8 @@ export class DriveGuardAudioEngine {
     gain: AudioNode | null,
     delayMs: number
   ): void {
-    setTimeout(() => {
+    const timerId = setTimeout(() => {
+      this.cleanupTimerIds.delete(timerId);
       this.activeNodes.delete(osc);
       try {
         osc.disconnect();
@@ -631,5 +655,13 @@ export class DriveGuardAudioEngine {
         } catch (_) {}
       }
     }, delayMs);
+    this.cleanupTimerIds.add(timerId);
+  }
+
+  private clearCleanupTimers(): void {
+    for (const tid of this.cleanupTimerIds) {
+      clearTimeout(tid);
+    }
+    this.cleanupTimerIds.clear();
   }
 }

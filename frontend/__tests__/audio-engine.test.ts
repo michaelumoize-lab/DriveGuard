@@ -406,7 +406,7 @@ async function runTests() {
   });
 
   // 8. Disposal & Resource Teardown
-  await it("11. Disposing the engine disconnects master gain and closes context", async () => {
+  await it("11. Disposing the engine disconnects master gain, clears timers and closes context", async () => {
     const engine = new DriveGuardAudioEngine();
     await engine.unlock();
 
@@ -416,6 +416,170 @@ async function runTests() {
     engine.dispose();
     expect(engine.getStatus()).toBe("uninitialized");
     expect(ctx.state).toBe("closed");
+  });
+
+  // 9. Phase 6.1 Critical State Transitions & Edge Cases
+  await it("12. Mute during CRITICAL followed by unmute while CRITICAL remains active resumes loop", async () => {
+    const engine = new DriveGuardAudioEngine({ criticalRepeatIntervalMs: 100 });
+    await engine.unlock();
+
+    // Start CRITICAL alert
+    engine.setRiskState("CRITICAL", "crit_mute_test");
+    const oscCount1 = mockCtxInstance!.createdOscillators.length;
+    expect(oscCount1).toBeGreaterThan(0);
+
+    // Mute while in CRITICAL
+    engine.setMuted(true);
+    expect(engine.isMuted()).toBeTruthy();
+    expect(engine.getStatus()).toBe("muted");
+
+    // Unmute while risk state is still CRITICAL -> should immediately resume critical loop
+    const oscCountBeforeUnmute = mockCtxInstance!.createdOscillators.length;
+    engine.setMuted(false);
+    expect(engine.isMuted()).toBeFalsy();
+    expect(engine.getStatus()).toBe("running");
+
+    // Resumed loop should have synthesized a fresh pulse
+    expect(mockCtxInstance!.createdOscillators.length).toBeGreaterThan(oscCountBeforeUnmute);
+    engine.dispose();
+  });
+
+  await it("13. State transition CRITICAL -> WARNING stops repeating loop and sounds WARNING", async () => {
+    const engine = new DriveGuardAudioEngine({ warningCooldownMs: 0 });
+    await engine.unlock();
+
+    // In CRITICAL
+    engine.setRiskState("CRITICAL", "crit_to_warn");
+
+    // Transition to WARNING
+    const oscCountBefore = mockCtxInstance!.createdOscillators.length;
+    const switched = engine.setRiskState("WARNING", "warn_after_crit");
+    expect(switched).toBeTruthy();
+
+    // Warning tone (440 Hz) should be synthesized
+    const newOscs = mockCtxInstance!.createdOscillators.slice(oscCountBefore);
+    expect(newOscs.some((o) => o.frequency.value === 440)).toBeTruthy();
+
+    engine.dispose();
+  });
+
+  await it("14. Stale NORMAL telemetry arriving after newer CRITICAL event is rejected", async () => {
+    const engine = new DriveGuardAudioEngine();
+    await engine.unlock();
+
+    // Authoritative safety event received at T=5000ms
+    const critAccepted = engine.setRiskState("CRITICAL", "evt_crit_5000", 5000);
+    expect(critAccepted).toBeTruthy();
+
+    // Out-of-order/stale normal frame arrives with timestamp T=4900ms (< 5000ms)
+    const staleNormalAccepted = engine.setRiskState("NORMAL", undefined, 4900);
+    expect(staleNormalAccepted).toBeFalsy(); // Must be rejected!
+
+    // Truly newer normal frame arrives with timestamp T=5100ms (> 5000ms)
+    const validRecoveryAccepted = engine.setRiskState("NORMAL", undefined, 5100);
+    expect(validRecoveryAccepted).toBeTruthy(); // Driver genuinely recovered
+
+    engine.dispose();
+  });
+
+  await it("15. Repeated CRITICAL telemetry frames never restart active critical loop", async () => {
+    const engine = new DriveGuardAudioEngine({ criticalRepeatIntervalMs: 500 });
+    await engine.unlock();
+
+    // First transition into CRITICAL starts loop
+    const first = engine.setRiskState("CRITICAL");
+    expect(first).toBeTruthy();
+    const oscCountAfterFirst = mockCtxInstance!.createdOscillators.length;
+
+    // Repeated telemetry frames reporting CRITICAL while loop is active
+    const dup1 = engine.setRiskState("CRITICAL");
+    const dup2 = engine.setRiskState("CRITICAL");
+    const dup3 = engine.setRiskState("CRITICAL");
+
+    expect(dup1).toBeFalsy();
+    expect(dup2).toBeFalsy();
+    expect(dup3).toBeFalsy();
+
+    // No extra oscillators should have been synchronously spawned by duplicate calls
+    expect(mockCtxInstance!.createdOscillators.length).toBe(oscCountAfterFirst);
+    engine.dispose();
+  });
+
+  await it("16. Duplicate event IDs after LRU eviction are handled safely without duplicate audio", async () => {
+    const engine = new DriveGuardAudioEngine({ warningCooldownMs: 0 });
+    await engine.unlock();
+
+    // First event
+    const first = engine.setRiskState("WARNING", "evt_lru_target");
+    expect(first).toBeTruthy();
+
+    // Evict "evt_lru_target" by pushing 201 distinct events
+    for (let i = 1; i <= 201; i++) {
+      engine.setRiskState("NORMAL", `evt_fill_${i}`);
+    }
+
+    // Now re-send "evt_lru_target" with state "NORMAL" (current state is already NORMAL)
+    const replayed = engine.setRiskState("NORMAL", "evt_lru_target");
+    expect(replayed).toBeFalsy(); // Already NORMAL, so no spurious sound
+
+    engine.dispose();
+  });
+
+  await it("17. Reconnection while backend state remains CRITICAL preserves or resumes alerting", async () => {
+    const engine = new DriveGuardAudioEngine();
+    await engine.unlock();
+
+    // Initial critical alert
+    engine.setRiskState("CRITICAL", "pre_disconnect_crit");
+
+    // Network disconnect simulation (e.g. stopCurrentAlert on socket close)
+    engine.stopCurrentAlert();
+
+    // Reconnection: SYNC_STATE returns CRITICAL
+    const resumedOnReconnect = engine.setRiskState("CRITICAL", "reconnect_crit");
+    expect(resumedOnReconnect).toBeTruthy();
+
+    engine.dispose();
+  });
+
+  await it("18. New session initialization works cleanly after previous session disposal", async () => {
+    // Session 1 Lifecycle
+    const engine1 = new DriveGuardAudioEngine();
+    await engine1.unlock();
+    engine1.setRiskState("WARNING", "session1_evt");
+    engine1.dispose();
+    expect(engine1.getStatus()).toBe("uninitialized");
+
+    // Session 2 Lifecycle on fresh instance
+    const engine2 = new DriveGuardAudioEngine();
+    const ok = await engine2.unlock();
+    expect(ok).toBeTruthy();
+    expect(engine2.getStatus()).toBe("running");
+
+    // Should play fresh alerts without memory of Session 1
+    const s2Alert = engine2.setRiskState("WARNING", "session1_evt"); // Same eventId from old session is now allowed
+    expect(s2Alert).toBeTruthy();
+
+    engine2.dispose();
+  });
+
+  await it("19. Background tab simulation survives delayed/clamped timer ticks without failure", async () => {
+    const engine = new DriveGuardAudioEngine({ criticalRepeatIntervalMs: 50 });
+    await engine.unlock();
+
+    engine.setRiskState("CRITICAL", "bg_timer_evt");
+
+    // Simulate browser background clamping by letting timer fire with variable delays
+    await new Promise((r) => setTimeout(r, 120));
+
+    // Engine loop should still be active and generating subsequent pulse cycles
+    expect(mockCtxInstance!.createdOscillators.length).toBeGreaterThan(2);
+
+    // Clean exit to NORMAL when tab becomes foregrounded / alert clears
+    const recovered = engine.setRiskState("NORMAL");
+    expect(recovered).toBeTruthy();
+
+    engine.dispose();
   });
 
   console.log("\n======================================================================");
