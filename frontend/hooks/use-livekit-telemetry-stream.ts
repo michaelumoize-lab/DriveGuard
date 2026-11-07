@@ -210,7 +210,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
           }
         });
 
-        // Helper to update DataChannel RTT diagnostics and percentiles
+        // Helper to update DataChannel RTT diagnostics and percentiles (invoked only from PING/PONG)
         const updateRttSample = (
           rttMs: number,
           queueMs?: number,
@@ -240,16 +240,50 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
 
             // Estimated glass-to-decision latency: (RTT / 2) + Server Queue + Server Inference + (RTT / 2)
             // = RTT + Server Processing Total
-            const estimatedE2E = (p50 > 0 ? p50 : rttMs) + effectiveServerTotal;
+            const baseRtt = p50 > 0 ? p50 : (rttMs > 0 ? rttMs : 0);
+            const estimatedE2E = baseRtt > 0 ? Math.round(baseRtt + effectiveServerTotal) : 0;
 
             return {
               datachannel_rtt_ms: roundedRtt,
               queue_latency_ms: Math.round(effectiveQueue * 10) / 10,
               infer_duration_ms: Math.round(effectiveInfer * 10) / 10,
-              estimated_e2e_latency_ms: Math.round(estimatedE2E),
+              estimated_e2e_latency_ms: estimatedE2E,
               rtt_p50: Math.round(p50),
               rtt_p95: Math.round(p95),
               last_measured_at: Date.now(),
+            };
+          });
+        };
+
+        // Helper to update server timing diagnostics from telemetry frames without recording an RTT sample
+        const updateServerTimings = (
+          queueMs: number,
+          inferMs: number,
+          serverTotalMs?: number
+        ) => {
+          setLatencyDiagnostics((prev) => {
+            const effectiveQueue = Math.round(queueMs * 10) / 10;
+            const effectiveInfer = Math.round(inferMs * 10) / 10;
+            const effectiveServerTotal =
+              serverTotalMs !== undefined && serverTotalMs > 0
+                ? serverTotalMs
+                : (effectiveQueue + effectiveInfer);
+
+            const measuredRtt = latestRttRef.current;
+            const p50 = prev?.rtt_p50 ?? (measuredRtt > 0 ? measuredRtt : 0);
+            const p95 = prev?.rtt_p95 ?? (measuredRtt > 0 ? measuredRtt : 0);
+            // Ensure no RTT is inferred from server processing time before a ping/pong match
+            const effectiveRtt = p50 > 0 ? p50 : (measuredRtt > 0 ? measuredRtt : 0);
+            const estimatedE2E = effectiveRtt > 0 ? Math.round(effectiveRtt + effectiveServerTotal) : 0;
+
+            return {
+              datachannel_rtt_ms: measuredRtt,
+              queue_latency_ms: effectiveQueue,
+              infer_duration_ms: effectiveInfer,
+              estimated_e2e_latency_ms: estimatedE2E,
+              rtt_p50: Math.round(p50),
+              rtt_p95: Math.round(p95),
+              last_measured_at: prev?.last_measured_at ?? Date.now(),
             };
           });
         };
@@ -276,10 +310,17 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
               const sTotal = tel.timing?.server_total_ms ?? (qLat + infLat);
               latestTimingRef.current = { queueMs: qLat, inferMs: infLat, serverTotalMs: sTotal };
 
+              // Update server timings in latency diagnostics without recording an RTT sample
+              updateServerTimings(qLat, infLat, sTotal);
+
+              // Reuse the last measured RTT when enriching telemetry.
+              // Ensure no RTT is inferred from server processing time before a ping/pong match.
+              const measuredRtt =
+                latestRttRef.current > 0 ? latestRttRef.current : undefined;
+
               const enriched: FrameTelemetry = {
                 ...tel,
-                network_roundtrip_ms:
-                  latestRttRef.current > 0 ? latestRttRef.current : tel.network_roundtrip_ms,
+                network_roundtrip_ms: measuredRtt,
               };
 
               // Immediately invoke callback for external synchronous listeners
