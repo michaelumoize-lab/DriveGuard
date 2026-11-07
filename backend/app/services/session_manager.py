@@ -8,23 +8,21 @@ import asyncio
 from typing import Dict, List, Optional
 
 from backend.app.ai.cascade_classifier import ExperimentMode
-from backend.app.ai.landmarker import DriveGuardFaceLandmarker
+from backend.app.ai.landmarker import ensure_face_landmarker_model
 from backend.app.ai.pipeline import SessionAIEngine
 from backend.app.services.profile_store import profile_store
 
 
 class SessionManager:
-    """Thread-safe registry of active driving monitoring sessions."""
+    """Thread-safe registry of active driving monitoring sessions with per-session landmarker isolation."""
 
     def __init__(self) -> None:
         self._sessions: Dict[str, SessionAIEngine] = {}
-        self._shared_landmarker: Optional[DriveGuardFaceLandmarker] = None
         self._lock = asyncio.Lock()
 
     def preload_shared_models(self) -> None:
-        """Preload MediaPipe Face Landmarker into memory during application lifespan startup."""
-        if self._shared_landmarker is None:
-            self._shared_landmarker = DriveGuardFaceLandmarker()
+        """Verify and download MediaPipe model asset bundle if needed during application lifespan startup."""
+        ensure_face_landmarker_model()
 
     async def get_or_create_session(
         self,
@@ -32,7 +30,7 @@ class SessionManager:
         driver_id: str = "driver_default",
         experiment_mode: Optional[str] = None,
     ) -> SessionAIEngine:
-        """Retrieve an existing session or instantiate a new SessionAIEngine."""
+        """Retrieve an existing session or instantiate a new SessionAIEngine with its own isolated landmarker."""
         async with self._lock:
             if session_id in self._sessions:
                 return self._sessions[session_id]
@@ -51,7 +49,6 @@ class SessionManager:
                 session_id=session_id,
                 driver_id=driver_id,
                 experiment_mode=exp_mode,
-                landmarker=self._shared_landmarker,
             )
             if stored_profile_dto is not None:
                 engine.load_profile_dto(stored_profile_dto)
@@ -64,14 +61,16 @@ class SessionManager:
         return self._sessions.get(session_id)
 
     async def terminate_session(self, session_id: str) -> Optional[Dict[str, object]]:
-        """Remove an active session and return its final summary diagnostics."""
+        """Remove an active session, release its landmarker resources, and return final summary diagnostics."""
         async with self._lock:
             engine = self._sessions.pop(session_id, None)
             if engine is not None:
                 # If profile was calibrated, auto-persist to profile store
                 if engine.profile.calibration_mode != "UNCALIBRATED_DEFAULT":
                     profile_store.save_profile(engine.export_profile_dto())
-                return engine.get_session_summary()
+                summary = engine.get_session_summary()
+                engine.close()
+                return summary
             return None
 
     def list_active_sessions(self) -> List[Dict[str, object]]:

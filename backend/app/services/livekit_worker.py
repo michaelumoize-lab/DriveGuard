@@ -524,6 +524,7 @@ class LiveKitAIWorkerSession:
         # Terminate active session in session_manager to release in-memory state and auto-persist profile
         try:
             summary = await session_manager.terminate_session(self.room_name)
+            self.engine = None
             if summary:
                 logger.info(
                     f"[LiveKit Worker] Session '{self.room_name}' terminated cleanly. "

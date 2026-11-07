@@ -14,6 +14,7 @@ Encapsulates the complete real-time computer vision and adaptive inference pipel
 
 from __future__ import annotations
 
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -99,6 +100,8 @@ class SessionAIEngine:
         self.total_mirror_check_suppressions: int = 0
         self.total_fixed_false_alarms: int = 0
         self.latencies_ms: List[float] = []
+        self._process_lock = threading.Lock()
+        self._is_closed = False
 
     # --------------------------------------------------------------------------
     # Calibration Lifecycle Management
@@ -296,6 +299,20 @@ class SessionAIEngine:
         Returns:
             FrameTelemetryDTO containing full explainable metrics, risk score, and cascade decisions.
         """
+        with self._process_lock:
+            if self._is_closed:
+                return self._build_unavailable_frame(
+                    timestamp_ms if timestamp_ms is not None else (time.perf_counter() * 1000.0),
+                    latency_ms=0.0,
+                    reason="SESSION_CLOSED",
+                )
+            return self._process_frame_locked(frame_input, timestamp_ms)
+
+    def _process_frame_locked(
+        self,
+        frame_input: Union[np.ndarray, bytes],
+        timestamp_ms: Optional[float] = None,
+    ) -> FrameTelemetryDTO:
         t_start = time.perf_counter()
         self.frame_index += 1
 
@@ -537,6 +554,16 @@ class SessionAIEngine:
             inference_latency_ms=round(latency_ms, 2),
         )
 
+    def close(self) -> None:
+        """Cleanly release AI resources (MediaPipe FaceLandmarker, Cascade ONNX sessions)."""
+        with self._process_lock:
+            self._is_closed = True
+            if self.landmarker is not None and hasattr(self.landmarker, "close"):
+                try:
+                    self.landmarker.close()
+                except Exception:
+                    pass
+
     # --------------------------------------------------------------------------
     # Session Statistics & Diagnostics
     # --------------------------------------------------------------------------
@@ -545,7 +572,7 @@ class SessionAIEngine:
         """Return diagnostic metrics and summary for this monitoring session."""
         mean_lat = float(np.mean(self.latencies_ms)) if self.latencies_ms else 0.0
         cnn_rate = (self.total_cnn_invocations / max(1, self.frame_index)) * 100.0
-        return {
+        summary: Dict[str, object] = {
             "session_id": self.session_id,
             "driver_id": self.driver_id,
             "total_frames_processed": self.frame_index,
@@ -557,3 +584,6 @@ class SessionAIEngine:
             "is_calibrated": self.profile.calibration_mode != "UNCALIBRATED_DEFAULT",
             "active_calibration_mode": self.profile.calibration_mode,
         }
+        if hasattr(self.landmarker, "get_diagnostics"):
+            summary["landmarker_diagnostics"] = self.landmarker.get_diagnostics()
+        return summary

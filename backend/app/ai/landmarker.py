@@ -11,6 +11,8 @@ Supports:
 
 from __future__ import annotations
 
+import logging
+import threading
 import urllib.request
 from pathlib import Path
 from typing import Optional, Tuple
@@ -55,15 +57,29 @@ class DriveGuardFaceLandmarker:
     """
     Extracts 478 3D facial landmarks, blendshape eye-blink scores, head pose, and eye crops
     from RGB frames using MediaPipe Face Landmarker.
+    
+    Supports:
+      - VisionRunningMode.VIDEO (default for live tracking with temporal smoothing and per-session isolation)
+      - VisionRunningMode.IMAGE (for static benchmarking or single-frame evaluation)
     """
 
-    def __init__(self, model_path: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        model_path: Optional[Path] = None,
+        running_mode: str = "VIDEO",
+    ) -> None:
         self.model_path = model_path or DEFAULT_TASK_MODEL_PATH
+        self.running_mode = running_mode.upper()
         self._tasks_landmarker = None
         self._legacy_face_mesh = None
         self._use_tasks_api = False
         self._use_fallback_tracker = False
         self._mp = None
+        self._last_timestamp_ms: Optional[int] = None
+        self._duplicate_or_unordered_count: int = 0
+        self._inference_exceptions_count: int = 0
+        self._is_closed: bool = False
+        self._lock = threading.Lock()
 
         self._initialize_mediapipe()
 
@@ -81,9 +97,14 @@ class DriveGuardFaceLandmarker:
                 model_asset_path=str(resolved_model),
                 delegate=mp_python.BaseOptions.Delegate.CPU,
             )
+            mp_running_mode = (
+                mp_vision.RunningMode.VIDEO
+                if self.running_mode == "VIDEO"
+                else mp_vision.RunningMode.IMAGE
+            )
             options = mp_vision.FaceLandmarkerOptions(
                 base_options=base_options,
-                running_mode=mp_vision.RunningMode.IMAGE,
+                running_mode=mp_running_mode,
                 num_faces=1,
                 min_face_detection_confidence=0.50,
                 min_face_presence_confidence=0.50,
@@ -93,20 +114,20 @@ class DriveGuardFaceLandmarker:
             )
             self._tasks_landmarker = mp_vision.FaceLandmarker.create_from_options(options)
             self._use_tasks_api = True
-            print("[DriveGuardFaceLandmarker] MediaPipe Tasks API initialized successfully on CPU delegate.")
+            print(f"[DriveGuardFaceLandmarker] MediaPipe Tasks API initialized successfully in {self.running_mode} mode on CPU delegate.")
         except Exception as exc:
             print(f"[DriveGuardFaceLandmarker WARNING] Tasks API initialization failed ({exc}). Attempting legacy FaceMesh...")
             if hasattr(mp, "solutions") and hasattr(mp.solutions, "face_mesh"):
                 try:
                     self._legacy_face_mesh = mp.solutions.face_mesh.FaceMesh(
-                        static_image_mode=False,
+                        static_image_mode=(self.running_mode != "VIDEO"),
                         max_num_faces=1,
                         refine_landmarks=True,
                         min_detection_confidence=0.50,
                         min_tracking_confidence=0.50,
                     )
                     self._use_tasks_api = False
-                    print("[DriveGuardFaceLandmarker] Legacy FaceMesh initialized successfully.")
+                    print(f"[DriveGuardFaceLandmarker] Legacy FaceMesh initialized successfully in {self.running_mode} mode.")
                 except Exception as legacy_exc:
                     print(f"[DriveGuardFaceLandmarker WARNING] Legacy FaceMesh failed ({legacy_exc}). Activating Headless Tracker fallback.")
                     self._use_fallback_tracker = True
@@ -125,50 +146,97 @@ class DriveGuardFaceLandmarker:
     ) -> Tuple[FrameGeometryFeatures, Optional[np.ndarray]]:
         """
         Process a BGR video frame and return `(FrameGeometryFeatures, landmarks_pixel_xyz)`.
+        Thread-safe and guarded with monotonic timestamp enforcement.
         """
-        h, w = frame_bgr.shape[:2]
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-
-        if getattr(self, "_use_fallback_tracker", False):
-            return self._process_frame_headless_fallback(
-                frame_bgr=frame_bgr,
-                frame_rgb=frame_rgb,
-                timestamp_ms=timestamp_ms,
-                neutral_pitch_deg=neutral_pitch_deg,
-                neutral_yaw_deg=neutral_yaw_deg,
-                reference_open_ear=reference_open_ear,
-            )
-
-        landmarks_pixel_xyz: Optional[np.ndarray] = None
-        blendshape_left: Optional[float] = None
-        blendshape_right: Optional[float] = None
-        trans_matrix: Optional[np.ndarray] = None
-
-        if self._use_tasks_api and self._tasks_landmarker is not None:
-            mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=frame_rgb)
-            result = self._tasks_landmarker.detect(mp_image)
-            if result.face_landmarks:
-                lms = result.face_landmarks[0]
-                landmarks_pixel_xyz = np.array(
-                    [[lm.x * w, lm.y * h, lm.z * w] for lm in lms], dtype=np.float64
+        with self._lock:
+            if self._is_closed:
+                return (
+                    FrameGeometryFeatures(
+                        timestamp_ms=timestamp_ms,
+                        face_detected=False,
+                        landmark_confidence=0.0,
+                        left_ear=0.0,
+                        right_ear=0.0,
+                        yaw_weighted_ear=0.0,
+                        blendshape_blink_left=None,
+                        blendshape_blink_right=None,
+                        blendshape_blink_mean=None,
+                        mar=0.0,
+                        pitch_deg=0.0,
+                        yaw_deg=0.0,
+                        roll_deg=0.0,
+                        pose_zone=PoseZone.OUT_OF_BOUNDS,
+                        geometric_reliability=0.0,
+                    ),
+                    None,
                 )
-                if result.face_blendshapes:
-                    for cat in result.face_blendshapes[0]:
-                        if cat.category_name == "eyeBlinkLeft":
-                            blendshape_left = float(cat.score)
-                        elif cat.category_name == "eyeBlinkRight":
-                            blendshape_right = float(cat.score)
-                if result.facial_transformation_matrixes:
-                    trans_matrix = np.array(
-                        result.facial_transformation_matrixes[0], dtype=np.float64
+
+            h, w = frame_bgr.shape[:2]
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+            if getattr(self, "_use_fallback_tracker", False):
+                return self._process_frame_headless_fallback(
+                    frame_bgr=frame_bgr,
+                    frame_rgb=frame_rgb,
+                    timestamp_ms=timestamp_ms,
+                    neutral_pitch_deg=neutral_pitch_deg,
+                    neutral_yaw_deg=neutral_yaw_deg,
+                    reference_open_ear=reference_open_ear,
+                )
+
+            landmarks_pixel_xyz: Optional[np.ndarray] = None
+            blendshape_left: Optional[float] = None
+            blendshape_right: Optional[float] = None
+            trans_matrix: Optional[np.ndarray] = None
+
+            if self._use_tasks_api and self._tasks_landmarker is not None:
+                mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=frame_rgb)
+
+                # Monotonic timestamp resolution for VIDEO mode
+                requested_ms = int(round(timestamp_ms))
+                if self._last_timestamp_ms is None:
+                    effective_ms = max(0, requested_ms)
+                elif requested_ms > self._last_timestamp_ms:
+                    effective_ms = requested_ms
+                else:
+                    # Safe timestamp policy: handle duplicate or out-of-order timestamp by enforcing strict +1ms increment
+                    self._duplicate_or_unordered_count += 1
+                    effective_ms = self._last_timestamp_ms + 1
+
+                self._last_timestamp_ms = effective_ms
+
+                try:
+                    if self.running_mode == "VIDEO":
+                        result = self._tasks_landmarker.detect_for_video(mp_image, effective_ms)
+                    else:
+                        result = self._tasks_landmarker.detect(mp_image)
+                except Exception as exc:
+                    self._inference_exceptions_count += 1
+                    print(f"[DriveGuardFaceLandmarker ERROR] MediaPipe detection failed at {effective_ms}ms: {exc}")
+                    result = None
+
+                if result is not None and result.face_landmarks:
+                    lms = result.face_landmarks[0]
+                    landmarks_pixel_xyz = np.array(
+                        [[lm.x * w, lm.y * h, lm.z * w] for lm in lms], dtype=np.float64
                     )
-        elif self._legacy_face_mesh is not None:
-            result = self._legacy_face_mesh.process(frame_rgb)
-            if result.multi_face_landmarks:
-                lms = result.multi_face_landmarks[0].landmark
-                landmarks_pixel_xyz = np.array(
-                    [[lm.x * w, lm.y * h, lm.z * w] for lm in lms], dtype=np.float64
-                )
+                    if result.face_blendshapes:
+                        for cat in result.face_blendshapes[0]:
+                            if cat.category_name == "eyeBlinkLeft":
+                                blendshape_left = float(cat.score)
+                            elif cat.category_name == "eyeBlinkRight":
+                                blendshape_right = float(cat.score)
+                    if result.facial_transformation_matrixes:
+                        trans_matrix = np.array(
+                            result.facial_transformation_matrixes[0], dtype=np.float64
+                        )
+            elif self._legacy_face_mesh is not None:
+                result = self._legacy_face_mesh.process(frame_rgb)
+                if result.multi_face_landmarks:
+                    lms = result.multi_face_landmarks[0].landmark
+                    landmarks_pixel_xyz = np.array(
+                        [[lm.x * w, lm.y * h, lm.z * w] for lm in lms], dtype=np.float64
+                    )
 
         if landmarks_pixel_xyz is None:
             return (
@@ -349,8 +417,32 @@ class DriveGuardFaceLandmarker:
         )
         return features, None
 
+    def get_diagnostics(self) -> dict:
+        """Return operational diagnostics for this landmarker instance."""
+        with self._lock:
+            return {
+                "running_mode": self.running_mode,
+                "last_timestamp_ms": self._last_timestamp_ms,
+                "duplicate_or_unordered_count": self._duplicate_or_unordered_count,
+                "inference_exceptions_count": self._inference_exceptions_count,
+                "is_closed": self._is_closed,
+                "use_tasks_api": self._use_tasks_api,
+                "use_fallback_tracker": self._use_fallback_tracker,
+            }
+
     def close(self) -> None:
-        if self._tasks_landmarker is not None:
-            self._tasks_landmarker.close()
-        if self._legacy_face_mesh is not None:
-            self._legacy_face_mesh.close()
+        """Release underlying MediaPipe C++ graph memory and tasks instances."""
+        with self._lock:
+            self._is_closed = True
+            if self._tasks_landmarker is not None:
+                try:
+                    self._tasks_landmarker.close()
+                except Exception:
+                    pass
+                self._tasks_landmarker = None
+            if self._legacy_face_mesh is not None:
+                try:
+                    self._legacy_face_mesh.close()
+                except Exception:
+                    pass
+                self._legacy_face_mesh = None
