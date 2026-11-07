@@ -15,7 +15,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -337,20 +337,11 @@ class LiveKitAIWorkerSession:
                             })
                         )
 
-                echo_ts = self._last_client_ping_ts
-                self._last_client_ping_ts = None
-
-                response_payload = {
-                    "v": 2,
-                    "type": "TELEMETRY",
-                    "session_id": self.room_name,
-                    "seq": telemetry_dto.frame_index,
-                    "timestamp": time.time(),
-                    "telemetry": telemetry_dto.model_dump(),
-                    "calibration": cal_data,
-                    "echo_client_ts": echo_ts,
-                    "network_roundtrip_ms": round(server_total_ms, 1),
-                }
+                response_payload = self._build_telemetry_payload(
+                    telemetry_dto,
+                    cal_data=cal_data,
+                    server_total_ms=server_total_ms,
+                )
 
                 # Publish lossy/unreliable for telemetry (fastest WebRTC UDP delivery)
                 payload_bytes = json.dumps(response_payload).encode("utf-8")
@@ -361,6 +352,28 @@ class LiveKitAIWorkerSession:
             except Exception as exc:
                 logger.error(f"[LiveKit Worker] Inference loop error: {exc}", exc_info=True)
                 await asyncio.sleep(0.01)
+
+    def _build_telemetry_payload(
+        self,
+        telemetry_dto: Any,
+        cal_data: Optional[Dict[str, Any]] = None,
+        server_total_ms: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Build telemetry message payload and clear last client ping timestamp."""
+        echo_ts = self._last_client_ping_ts
+        self._last_client_ping_ts = None
+
+        return {
+            "v": 2,
+            "type": "TELEMETRY",
+            "session_id": self.room_name,
+            "seq": getattr(telemetry_dto, "frame_index", 0),
+            "timestamp": time.time(),
+            "telemetry": telemetry_dto.model_dump() if hasattr(telemetry_dto, "model_dump") else telemetry_dto,
+            "calibration": cal_data,
+            "echo_client_ts": echo_ts,
+            "network_roundtrip_ms": round(server_total_ms, 1),
+        }
 
     async def _handle_client_control_message(self, data_packet: rtc.DataPacket) -> None:
         """Handle control actions from frontend client over WebRTC Data Channel."""
@@ -528,7 +541,7 @@ class LiveKitAIWorkerSession:
             if summary:
                 logger.info(
                     f"[LiveKit Worker] Session '{self.room_name}' terminated cleanly. "
-                    f"Frames processed: {summary.get('total_frames', 0)}"
+                    f"Frames processed: {summary.get('total_frames_processed', summary.get('total_frames', 0))}"
                 )
         except Exception as exc:
             logger.error(f"[LiveKit Worker] Error terminating session in session_manager: {exc}")

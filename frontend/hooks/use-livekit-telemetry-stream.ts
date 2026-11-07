@@ -82,6 +82,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
   const activeStateRef = useRef<AlertState>("NORMAL");
   const processedEventIdsRef = useRef<Set<string>>(new Set());
   const rttSamplesRef = useRef<number[]>([]);
+  const latestRttRef = useRef<number>(0);
   const pingSeqRef = useRef<number>(0);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastReactUpdateRef = useRef<number>(0);
@@ -117,6 +118,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     isConnectingRef.current = false;
     isLoopActiveRef.current = false;
     lastTelemetrySeqRef.current = -1;
+    latestRttRef.current = 0;
 
     if (pingIntervalRef.current) {
       clearInterval(pingIntervalRef.current);
@@ -209,8 +211,17 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
         });
 
         // Helper to update DataChannel RTT diagnostics and percentiles
-        const updateRttSample = (rttMs: number, queueMs = 0, inferMs = 0, serverTotalMs = 0) => {
+        const updateRttSample = (
+          rttMs: number,
+          queueMs?: number,
+          inferMs?: number,
+          serverTotalMs?: number
+        ) => {
           if (rttMs <= 0 || isNaN(rttMs)) return;
+          const roundedRtt = Math.round(rttMs);
+          latestRttRef.current = roundedRtt;
+          setRoundtripLatencyMs(roundedRtt);
+
           const samples = rttSamplesRef.current;
           samples.push(rttMs);
           if (samples.length > 40) samples.shift();
@@ -219,21 +230,28 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
           const p50 = sorted[Math.floor(sorted.length * 0.5)];
           const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
 
-          // Estimated glass-to-decision latency: (RTT / 2) + Server Queue + Server Inference + (RTT / 2)
-          // = RTT + Server Processing Total
-          const sTotal = serverTotalMs > 0 ? serverTotalMs : queueMs + inferMs;
-          const estimatedE2E = (p50 > 0 ? p50 : rttMs) + sTotal;
+          setLatencyDiagnostics((prev) => {
+            const effectiveQueue = queueMs !== undefined ? queueMs : (prev?.queue_latency_ms ?? 0);
+            const effectiveInfer = inferMs !== undefined ? inferMs : (prev?.infer_duration_ms ?? 0);
+            const effectiveServerTotal =
+              serverTotalMs !== undefined && serverTotalMs > 0
+                ? serverTotalMs
+                : (effectiveQueue + effectiveInfer);
 
-          setLatencyDiagnostics({
-            datachannel_rtt_ms: Math.round(rttMs),
-            queue_latency_ms: Math.round(queueMs * 10) / 10,
-            infer_duration_ms: Math.round(inferMs * 10) / 10,
-            estimated_e2e_latency_ms: Math.round(estimatedE2E),
-            rtt_p50: Math.round(p50),
-            rtt_p95: Math.round(p95),
-            last_measured_at: Date.now(),
+            // Estimated glass-to-decision latency: (RTT / 2) + Server Queue + Server Inference + (RTT / 2)
+            // = RTT + Server Processing Total
+            const estimatedE2E = (p50 > 0 ? p50 : rttMs) + effectiveServerTotal;
+
+            return {
+              datachannel_rtt_ms: roundedRtt,
+              queue_latency_ms: Math.round(effectiveQueue * 10) / 10,
+              infer_duration_ms: Math.round(effectiveInfer * 10) / 10,
+              estimated_e2e_latency_ms: Math.round(estimatedE2E),
+              rtt_p50: Math.round(p50),
+              rtt_p95: Math.round(p95),
+              last_measured_at: Date.now(),
+            };
           });
-          setRoundtripLatencyMs(Math.round(rttMs));
         };
 
         // Listen for real-time telemetry from Python AI worker over WebRTC Data Channel
@@ -260,7 +278,8 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
 
               const enriched: FrameTelemetry = {
                 ...tel,
-                network_roundtrip_ms: roundtripLatencyMs > 0 ? roundtripLatencyMs : tel.network_roundtrip_ms,
+                network_roundtrip_ms:
+                  latestRttRef.current > 0 ? latestRttRef.current : tel.network_roundtrip_ms,
               };
 
               // Immediately invoke callback for external synchronous listeners
@@ -360,6 +379,8 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
 
         room.on(RoomEvent.Disconnected, () => {
           console.log("[DriveGuard LiveKit] Room disconnected.");
+          lastTelemetrySeqRef.current = -1;
+          latestRttRef.current = 0;
           if (pingIntervalRef.current) {
             clearInterval(pingIntervalRef.current);
             pingIntervalRef.current = null;
@@ -369,6 +390,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
 
         // Connect WebRTC to LiveKit Cloud
         console.log(`[DriveGuard LiveKit] Connecting to SFU: ${data.url}`);
+        lastTelemetrySeqRef.current = -1;
         await room.connect(data.url, data.token);
         console.log(`[DriveGuard LiveKit] Successfully connected to room '${data.room_name}'!`);
         setConnectionStatus("connected");

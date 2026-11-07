@@ -99,9 +99,9 @@ export function UnifiedLiveMonitor() {
     captureSnapshot,
     refreshDevices,
   } = useCamera({
-    idealWidth: 1280,
-    idealHeight: 720,
-    idealFps: 30,
+    idealWidth: 640,
+    idealHeight: 480,
+    idealFps: 25,
     defaultFacingMode: "user",
     mirrored: true,
   });
@@ -149,22 +149,21 @@ export function UnifiedLiveMonitor() {
         sessionStatsRef.current.criticalCount++;
         playAlertBuzzer();
 
-        // Immediately persist critical event transition to Neon DB with event_id deduplication
+        if (!activeSessionCodeRef.current) return;
+
+        // Immediately persist critical event transition to Neon DB
         fetch("/api/alerts/log", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            sessionCode: activeSessionCodeRef.current || "LIVE_TELEMETRY",
-            type: "FATAL_FATIGUE",
+            sessionCode: activeSessionCodeRef.current,
             severity: "CRITICAL",
-            message: `CRITICAL safety transition: EAR ${event.metrics.ear !== undefined ? event.metrics.ear.toFixed(3) : "N/A"}, PERCLOS ${event.metrics.perclos !== undefined ? event.metrics.perclos.toFixed(1) : "N/A"}%`,
-            metadata: {
-              eventId: event.event_id,
-              eventSeq: event.event_seq,
-              riskScore: event.metrics.risk_score,
-              poseZone: event.metrics.pose_zone,
-              reasons: event.metrics.reasons,
-            },
+            riskScore: event.metrics.risk_score ?? 0.85,
+            earValue: event.metrics.ear ?? 0.15,
+            perclosPct: event.metrics.perclos ?? 30.0,
+            poseZone: event.metrics.pose_zone ?? "CENTER",
+            reasons: event.metrics.reasons ?? ["CRITICAL_STATE"],
+            timestampMs: Math.round(event.timestamp * 1000),
           }),
         }).catch(() => {});
       }
