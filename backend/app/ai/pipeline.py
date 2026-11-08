@@ -71,7 +71,13 @@ class SessionAIEngine:
     ) -> None:
         self.session_id = session_id
         self.driver_id = driver_id
-        self.experiment_mode = experiment_mode
+        if isinstance(experiment_mode, str):
+            try:
+                self.experiment_mode = ExperimentMode(experiment_mode)
+            except ValueError:
+                self.experiment_mode = ExperimentMode.C_CONFIDENCE_GATED_CASCADE
+        else:
+            self.experiment_mode = experiment_mode
 
         # AI Subsystem Components
         self.landmarker = landmarker if landmarker is not None else DriveGuardFaceLandmarker()
@@ -578,7 +584,7 @@ class SessionAIEngine:
                 sampling_gap_detected=True,
             ),
             cascade=CascadeStatusDTO(
-                experiment_mode=self.experiment_mode.value,
+                experiment_mode=self.experiment_mode.value if hasattr(self.experiment_mode, "value") else str(self.experiment_mode),
                 cnn_triggered=False,
                 geom_open_prob=0.5,
                 geom_reliability=0.0,

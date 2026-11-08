@@ -628,6 +628,13 @@ export class DriveGuardAudioEngine {
     return { tier: "RECOVERY", durationMs: 150 };
   }
 
+  public getOutputLatencyEstimateMs(): number {
+    if (!this.ctx) return 0;
+    const base = typeof this.ctx.baseLatency === "number" ? this.ctx.baseLatency : 0;
+    const output = typeof (this.ctx as any).outputLatency === "number" ? (this.ctx as any).outputLatency : 0;
+    return Math.round((base + output) * 1000 * 10) / 10;
+  }
+
   // ---------------------------------------------------------------------------
   // Resource Tracking & Cleanup Helpers
   // ---------------------------------------------------------------------------

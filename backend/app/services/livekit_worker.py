@@ -12,9 +12,11 @@ Manages autonomous WebRTC room participants that:
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import json
 import logging
 import time
+import uuid
 from typing import Any, Dict, Optional, Tuple
 
 import cv2
@@ -29,6 +31,43 @@ from backend.app.services.session_manager import session_manager
 
 logger = logging.getLogger("driveguard.livekit_worker")
 logger.setLevel(logging.INFO)
+
+WORKER_BOOT_ID = uuid.uuid4().hex[:8]
+
+
+@dataclass(frozen=True)
+class FrameAccountingSnapshot:
+    """Immutable snapshot of frame accounting counters on the event loop."""
+
+    frames_received: int
+    frames_dequeued: int
+    frames_processed: int
+    frames_replaced: int
+    frames_stale_discarded: int
+    frames_errored: int
+    frames_aborted: int
+    frames_queued: int
+    frames_in_flight: int
+
+    @property
+    def total_accounted(self) -> int:
+        return (
+            self.frames_replaced
+            + self.frames_stale_discarded
+            + self.frames_errored
+            + self.frames_aborted
+            + self.frames_processed
+            + self.frames_queued
+            + self.frames_in_flight
+        )
+
+    @property
+    def is_invariant_satisfied(self) -> bool:
+        return self.frames_received == self.total_accounted
+
+    @property
+    def discrepancy(self) -> int:
+        return self.frames_received - self.total_accounted
 
 
 def normalize_frame_width(img_bgr: np.ndarray) -> np.ndarray:
@@ -68,20 +107,49 @@ class LiveKitAIWorkerSession:
         self._shutdown_task: Optional[asyncio.Task] = None
         self._last_logged_dims: Optional[Tuple[int, int, int, int]] = None
 
+        self.worker_boot_id: str = WORKER_BOOT_ID
+        self.session_epoch: str = f"{int(time.time()):x}"
+
         # Phase 2: State Tracking & Reliable Safety Event Store
         self._last_state: str = "NORMAL"
+        self._frame_seq: int = 0
         self._event_seq: int = 0
         self._unacknowledged_events: Dict[str, dict] = {}
         self._latest_safety_event: Optional[dict] = None
         self._last_client_ping_ts: Optional[float] = None
 
+        # Thread-Safe Frame Accounting Counters (owned strictly on asyncio event loop)
+        self._frames_received: int = 0
+        self._frames_dequeued: int = 0
+        self._frames_processed: int = 0
+        self._frames_replaced: int = 0
+        self._frames_stale_discarded: int = 0
+        self._frames_errored: int = 0
+        self._frames_aborted: int = 0
+        self._frames_in_flight: int = 0
+
         # Latest-frame queue with maxsize=1 (drops stale frames immediately)
-        self.frame_queue: asyncio.Queue[Tuple[rtc.VideoFrame, float]] = asyncio.Queue(maxsize=1)
+        # Tuple contains: (frame, ingest_mono_ms, frame_seq_num)
+        self.frame_queue: asyncio.Queue[Tuple[rtc.VideoFrame, float, int]] = asyncio.Queue(maxsize=1)
 
         # Worker lifecycle tasks
         self._ingest_task: Optional[asyncio.Task] = None
         self._inference_task: Optional[asyncio.Task] = None
         self._current_video_stream: Optional[rtc.VideoStream] = None
+
+    def get_frame_accounting_snapshot(self) -> FrameAccountingSnapshot:
+        """Return an immutable snapshot of all frame lifecycle counters on the event loop."""
+        return FrameAccountingSnapshot(
+            frames_received=self._frames_received,
+            frames_dequeued=self._frames_dequeued,
+            frames_processed=self._frames_processed,
+            frames_replaced=self._frames_replaced,
+            frames_stale_discarded=self._frames_stale_discarded,
+            frames_errored=self._frames_errored,
+            frames_aborted=self._frames_aborted,
+            frames_queued=self.frame_queue.qsize(),
+            frames_in_flight=self._frames_in_flight,
+        )
 
     async def start(self) -> None:
         """Connect to LiveKit room and listen for video tracks and client control messages."""
@@ -211,16 +279,20 @@ class LiveKitAIWorkerSession:
                     break
 
                 frame: rtc.VideoFrame = event.frame
-                capture_timestamp = time.perf_counter()
+                ingest_mono_ms = time.perf_counter() * 1000.0
+                self._frames_received += 1
+                self._frame_seq += 1
+                current_frame_seq = self._frame_seq
 
                 # Zero-Lag Drop: If queue has a pending frame, discard it immediately
                 if self.frame_queue.full():
                     try:
                         self.frame_queue.get_nowait()
+                        self._frames_replaced += 1
                     except asyncio.QueueEmpty:
                         pass
 
-                await self.frame_queue.put((frame, capture_timestamp))
+                await self.frame_queue.put((frame, ingest_mono_ms, current_frame_seq))
         except asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -230,141 +302,172 @@ class LiveKitAIWorkerSession:
         """Continuous AI inference worker: processes latest frame and publishes telemetry."""
         while self.is_running:
             try:
-                frame, recv_timestamp = await self.frame_queue.get()
+                frame, recv_mono_ms, frame_seq_num = await self.frame_queue.get()
                 if not self.is_running:
+                    self._frames_aborted += 1
                     break
 
-                # 1. Convert WebRTC VideoFrame to packed RGB24 bytes
-                rgb_frame = frame.convert(rtc.VideoBufferType.RGB24)
+                self._frames_dequeued += 1
+                self._frames_in_flight = 1
 
-                # 2. Map directly to NumPy array without disk/JPEG encoding overhead
-                img_rgb = np.frombuffer(rgb_frame.data, dtype=np.uint8).reshape(
-                    (rgb_frame.height, rgb_frame.width, 3)
-                )
+                try:
+                    # 1. Convert WebRTC VideoFrame to packed RGB24 bytes
+                    rgb_frame = frame.convert(rtc.VideoBufferType.RGB24)
 
-                # 3. Convert to BGR for OpenCV / DriveGuard pipeline
-                img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-
-                raw_h, raw_w = img_bgr.shape[:2]
-
-                # Frame dimension normalization: bypass resize if already 640px wide,
-                # with safe normalization fallbacks for unexpected camera resolutions.
-                norm_img = normalize_frame_width(img_bgr)
-                norm_h, norm_w = norm_img.shape[:2]
-
-                # Log dimension changes or first frame
-                current_dims = (raw_w, raw_h, norm_w, norm_h)
-                if self._last_logged_dims != current_dims:
-                    self._last_logged_dims = current_dims
-                    print(
-                        f"[LiveKit Worker] Ingest dimensions: raw={raw_w}x{raw_h} -> "
-                        f"normalized={norm_w}x{norm_h} (resize_bypassed={raw_w == norm_w})"
+                    # 2. Map directly to NumPy array without disk/JPEG encoding overhead
+                    img_rgb = np.frombuffer(rgb_frame.data, dtype=np.uint8).reshape(
+                        (rgb_frame.height, rgb_frame.width, 3)
                     )
 
-                # 4. Execute CPU-bound AI pipeline in thread pool to prevent blocking event loop
-                t_infer_start = time.perf_counter()
-                queue_latency_ms = max(0.0, (t_infer_start - recv_timestamp) * 1000.0)
+                    # 3. Convert to BGR for OpenCV / DriveGuard pipeline
+                    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
 
-                telemetry_dto = await asyncio.to_thread(self.engine.process_frame, norm_img, recv_timestamp * 1000.0)
-                t_infer_end = time.perf_counter()
-                infer_duration_ms = (t_infer_end - t_infer_start) * 1000.0
-                server_total_ms = (t_infer_end - recv_timestamp) * 1000.0
+                    raw_h, raw_w = img_bgr.shape[:2]
 
-                from backend.app.schemas.telemetry import TimingBreakdownDTO
-                telemetry_dto.timing = TimingBreakdownDTO(
-                    queue_latency_ms=round(queue_latency_ms, 2),
-                    infer_duration_ms=round(infer_duration_ms, 2),
-                    server_total_ms=round(server_total_ms, 2),
-                )
+                    # Frame dimension normalization: bypass resize if already 640px wide,
+                    # with safe normalization fallbacks for unexpected camera resolutions.
+                    norm_img = normalize_frame_width(img_bgr)
+                    norm_h, norm_w = norm_img.shape[:2]
 
-                # 5. Important Safety Event Detection (Reliable Delivery Trigger)
-                current_state_str = telemetry_dto.state.value
-                if current_state_str != self._last_state:
-                    import uuid
-                    event_id = f"evt_{uuid.uuid4().hex[:8]}"
-                    self._event_seq += 1
-                    safety_event_payload = {
-                        "v": 2,
-                        "type": "SAFETY_EVENT",
-                        "event_id": event_id,
-                        "session_id": self.room_name,
-                        "event_seq": self._event_seq,
-                        "event_type": "STATE_TRANSITION",
-                        "previous_state": self._last_state,
-                        "new_state": current_state_str,
-                        "timestamp": time.time(),
-                        "metrics": {
-                            "risk_score": telemetry_dto.risk_score,
-                            "ear": telemetry_dto.eye_metrics.ear_normalized,
-                            "ear_raw": telemetry_dto.eye_metrics.ear_raw,
-                            "perclos": telemetry_dto.eye_metrics.perclos_pct,
-                            "pose_zone": telemetry_dto.pose_zone.value,
-                            "reasons": telemetry_dto.reason_codes,
-                        },
-                    }
-                    self._last_state = current_state_str
-                    self._latest_safety_event = safety_event_payload
-                    asyncio.create_task(self._publish_reliable_safety_event(safety_event_payload))
+                    # Log dimension changes or first frame
+                    current_dims = (raw_w, raw_h, norm_w, norm_h)
+                    if self._last_logged_dims != current_dims:
+                        self._last_logged_dims = current_dims
+                        print(
+                            f"[LiveKit Worker] Ingest dimensions: raw={raw_w}x{raw_h} -> "
+                            f"normalized={norm_w}x{norm_h} (resize_bypassed={raw_w == norm_w})"
+                        )
 
-                # 6. Periodic terminal logging (every ~1 second at 15 FPS)
-                if telemetry_dto.frame_index % 15 == 0 or telemetry_dto.frame_index == 1:
-                    print(
-                        f"[LiveKit AI] Frame #{telemetry_dto.frame_index}: "
-                        f"State={telemetry_dto.state.value} | "
-                        f"EAR={telemetry_dto.eye_metrics.ear_raw:.3f} | "
-                        f"Zone={telemetry_dto.pose_zone.value} | "
-                        f"Queue={queue_latency_ms:.1f}ms | "
-                        f"Infer={infer_duration_ms:.1f}ms | "
-                        f"ServerTotal={server_total_ms:.1f}ms"
+                    # 4. Execute CPU-bound AI pipeline in thread pool to prevent blocking event loop
+                    t_infer_start = time.perf_counter()
+                    t_infer_start_ms = t_infer_start * 1000.0
+                    queue_latency_ms = max(0.0, t_infer_start_ms - recv_mono_ms)
+
+                    telemetry_dto = await asyncio.to_thread(self.engine.process_frame, norm_img, recv_mono_ms)
+                    t_infer_end = time.perf_counter()
+                    t_infer_end_ms = t_infer_end * 1000.0
+                    infer_duration_ms = max(0.0, t_infer_end_ms - t_infer_start_ms)
+                    server_total_ms = max(0.0, t_infer_end_ms - recv_mono_ms)
+                    server_publish_mono_ms = time.perf_counter() * 1000.0
+                    server_wall_epoch_ms = time.time() * 1000.0
+
+                    from backend.app.schemas.telemetry import TimingBreakdownDTO
+                    telemetry_dto.timing = TimingBreakdownDTO(
+                        queue_latency_ms=round(queue_latency_ms, 2),
+                        infer_duration_ms=round(infer_duration_ms, 2),
+                        server_total_ms=round(server_total_ms, 2),
+                        server_ingest_mono_ms=round(recv_mono_ms, 2),
+                        server_publish_mono_ms=round(server_publish_mono_ms, 2),
+                        server_wall_epoch_ms=round(server_wall_epoch_ms, 1),
+                    )
+                    telemetry_dto.frame_seq = str(frame_seq_num)
+                    telemetry_dto.worker_boot_id = self.worker_boot_id
+                    telemetry_dto.session_epoch = self.session_epoch
+
+                    # 5. Important Safety Event Detection (Reliable Delivery Trigger)
+                    current_state_str = telemetry_dto.state.value
+                    if current_state_str != self._last_state:
+                        import uuid
+                        event_id = f"evt_{uuid.uuid4().hex[:8]}"
+                        self._event_seq += 1
+                        safety_event_payload = {
+                            "v": 2,
+                            "type": "SAFETY_EVENT",
+                            "event_id": event_id,
+                            "session_id": self.room_name,
+                            "event_seq": str(self._event_seq),
+                            "frame_seq": str(frame_seq_num),
+                            "worker_boot_id": self.worker_boot_id,
+                            "session_epoch": self.session_epoch,
+                            "event_type": "STATE_TRANSITION",
+                            "previous_state": self._last_state,
+                            "new_state": current_state_str,
+                            "timestamp": time.time(),
+                            "server_wall_epoch_ms": round(server_wall_epoch_ms, 1),
+                            "metrics": {
+                                "risk_score": telemetry_dto.risk_score,
+                                "ear": telemetry_dto.eye_metrics.ear_normalized,
+                                "ear_raw": telemetry_dto.eye_metrics.ear_raw,
+                                "perclos": telemetry_dto.eye_metrics.perclos_pct,
+                                "pose_zone": telemetry_dto.pose_zone.value,
+                                "reasons": telemetry_dto.reason_codes,
+                            },
+                        }
+                        self._last_state = current_state_str
+                        self._latest_safety_event = safety_event_payload
+                        asyncio.create_task(self._publish_reliable_safety_event(safety_event_payload))
+
+                    # 6. Periodic terminal logging (every ~15 frames)
+                    if telemetry_dto.frame_index % 15 == 0 or telemetry_dto.frame_index == 1:
+                        print(
+                            f"[LiveKit AI] Frame #{telemetry_dto.frame_index} (seq={frame_seq_num}): "
+                            f"State={telemetry_dto.state.value} | "
+                            f"EAR={telemetry_dto.eye_metrics.ear_raw:.3f} | "
+                            f"Zone={telemetry_dto.pose_zone.value} | "
+                            f"Queue={queue_latency_ms:.1f}ms | "
+                            f"Infer={infer_duration_ms:.1f}ms | "
+                            f"ServerTotal={server_total_ms:.1f}ms"
+                        )
+
+                    # 7. Construct and publish telemetry payload over WebRTC Data Channel
+                    cal_status = self.engine.get_calibration_status()
+                    cal_data = None
+                    if cal_status is not None:
+                        cal_data = cal_status.model_dump()
+                        if cal_status.is_completed and not self._calibration_completion_sent:
+                            self._calibration_completion_sent = True
+                            if cal_status.rejection_reason:
+                                print(
+                                    f"[LiveKit AI] >>> Calibration REJECTED for driver '{self.driver_id}': "
+                                    f"{cal_status.rejection_reason}. Sending CALIBRATION_REJECTED event."
+                                )
+                                asyncio.create_task(
+                                    self._send_control_ack({
+                                        "type": "CALIBRATION_REJECTED",
+                                        "calibration": cal_data,
+                                        "rejection_reason": cal_status.rejection_reason,
+                                    })
+                                )
+                            else:
+                                profile_dto = self.engine.export_profile_dto()
+                                profile_store.save_profile(profile_dto)
+                                print(
+                                    f"[LiveKit AI] >>> Calibration complete for driver '{self.driver_id}'! "
+                                    f"Center EAR={profile_dto.center_ear_median:.3f}. Sending CALIBRATION_COMPLETED event."
+                                )
+                                asyncio.create_task(
+                                    self._send_control_ack({
+                                        "type": "CALIBRATION_COMPLETED",
+                                        "calibration": cal_data,
+                                        "profile": profile_dto.model_dump(),
+                                    })
+                                )
+
+                    response_payload = self._build_telemetry_payload(
+                        telemetry_dto,
+                        frame_seq_num=frame_seq_num,
+                        cal_data=cal_data,
+                        server_total_ms=server_total_ms,
                     )
 
-                # 7. Construct and publish telemetry payload over WebRTC Data Channel
-                cal_status = self.engine.get_calibration_status()
-                cal_data = None
-                if cal_status is not None:
-                    cal_data = cal_status.model_dump()
-                    if cal_status.is_completed and not self._calibration_completion_sent:
-                        self._calibration_completion_sent = True
-                        if cal_status.rejection_reason:
-                            print(
-                                f"[LiveKit AI] >>> Calibration REJECTED for driver '{self.driver_id}': "
-                                f"{cal_status.rejection_reason}. Sending CALIBRATION_REJECTED event."
-                            )
-                            asyncio.create_task(
-                                self._send_control_ack({
-                                    "type": "CALIBRATION_REJECTED",
-                                    "calibration": cal_data,
-                                    "rejection_reason": cal_status.rejection_reason,
-                                })
-                            )
-                        else:
-                            profile_dto = self.engine.export_profile_dto()
-                            profile_store.save_profile(profile_dto)
-                            print(
-                                f"[LiveKit AI] >>> Calibration complete for driver '{self.driver_id}'! "
-                                f"Center EAR={profile_dto.center_ear_median:.3f}. Sending CALIBRATION_COMPLETED event."
-                            )
-                            asyncio.create_task(
-                                self._send_control_ack({
-                                    "type": "CALIBRATION_COMPLETED",
-                                    "calibration": cal_data,
-                                    "profile": profile_dto.model_dump(),
-                                })
-                            )
+                    # Publish lossy/unreliable for telemetry (fastest WebRTC UDP delivery)
+                    payload_bytes = json.dumps(response_payload).encode("utf-8")
+                    await self.room.local_participant.publish_data(payload_bytes, reliable=False)
+                    self._frames_processed += 1
 
-                response_payload = self._build_telemetry_payload(
-                    telemetry_dto,
-                    cal_data=cal_data,
-                    server_total_ms=server_total_ms,
-                )
-
-                # Publish lossy/unreliable for telemetry (fastest WebRTC UDP delivery)
-                payload_bytes = json.dumps(response_payload).encode("utf-8")
-                await self.room.local_participant.publish_data(payload_bytes, reliable=False)
+                except Exception as exc:
+                    self._frames_errored += 1
+                    logger.error(f"[LiveKit Worker] Inference execution error: {exc}", exc_info=True)
+                finally:
+                    self._frames_in_flight = 0
 
             except asyncio.CancelledError:
+                if self._frames_in_flight > 0:
+                    self._frames_aborted += self._frames_in_flight
+                    self._frames_in_flight = 0
                 break
             except Exception as exc:
+                self._frames_errored += 1
                 logger.error(f"[LiveKit Worker] Inference loop error: {exc}", exc_info=True)
                 await asyncio.sleep(0.01)
 
@@ -377,18 +480,29 @@ class LiveKitAIWorkerSession:
     def _build_telemetry_payload(
         self,
         telemetry_dto: Any,
+        frame_seq_num: int = 0,
         cal_data: Optional[Dict[str, Any]] = None,
         server_total_ms: float = 0.0,
     ) -> Dict[str, Any]:
         """Build telemetry message payload and clear last client ping timestamp."""
         echo_ts = self._consume_echo_ts()
+        self._event_seq += 1
+
+        resolved_frame_seq = str(frame_seq_num or getattr(telemetry_dto, "frame_index", 0))
+        if hasattr(telemetry_dto, "event_seq"):
+            telemetry_dto.event_seq = str(self._event_seq)
 
         return {
             "v": 2,
             "type": "TELEMETRY",
             "session_id": self.room_name,
-            "seq": getattr(telemetry_dto, "frame_index", 0),
+            "seq": resolved_frame_seq,
+            "frame_seq": resolved_frame_seq,
+            "event_seq": str(self._event_seq),
+            "worker_boot_id": self.worker_boot_id,
+            "session_epoch": self.session_epoch,
             "timestamp": time.time(),
+            "server_wall_epoch_ms": round(time.time() * 1000.0, 1),
             "telemetry": telemetry_dto.model_dump() if hasattr(telemetry_dto, "model_dump") else telemetry_dto,
             "calibration": cal_data,
             "echo_client_ts": echo_ts,
@@ -563,6 +677,17 @@ class LiveKitAIWorkerSession:
         if self._inference_task and not self._inference_task.done():
             self._inference_task.cancel()
             self._inference_task = None
+
+        # Drain remaining frames from queue into aborted count
+        while not self.frame_queue.empty():
+            try:
+                self.frame_queue.get_nowait()
+                self._frames_aborted += 1
+            except asyncio.QueueEmpty:
+                break
+        if self._frames_in_flight > 0:
+            self._frames_aborted += self._frames_in_flight
+            self._frames_in_flight = 0
 
         try:
             await self.room.disconnect()

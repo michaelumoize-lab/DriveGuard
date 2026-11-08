@@ -64,12 +64,19 @@ export interface TimingBreakdown {
   queue_latency_ms: number;
   infer_duration_ms: number;
   server_total_ms: number;
+  server_ingest_mono_ms?: number;
+  server_publish_mono_ms?: number;
+  server_wall_epoch_ms?: number;
 }
 
 export interface FrameTelemetry {
   session_id: string;
   driver_id: string;
   frame_index: number;
+  frame_seq?: string;
+  event_seq?: string;
+  worker_boot_id?: string;
+  session_epoch?: string;
   timestamp_ms: number;
   fps: number;
   face_detected: boolean;
@@ -92,11 +99,15 @@ export interface SafetyEvent {
   type: "SAFETY_EVENT";
   event_id: string;
   session_id: string;
-  event_seq: number;
+  event_seq: string | number;
+  frame_seq?: string;
+  worker_boot_id?: string;
+  session_epoch?: string;
   event_type: string;
   previous_state: AlertState;
   new_state: AlertState;
   timestamp: number;
+  server_wall_epoch_ms?: number;
   metrics: {
     risk_score?: number;
     ear?: number;
@@ -110,7 +121,7 @@ export interface SafetyEvent {
 export interface EventAck {
   action: "EVENT_ACK";
   event_id: string;
-  event_seq: number;
+  event_seq: string | number;
   client_timestamp?: number;
 }
 
@@ -118,7 +129,12 @@ export interface TelemetryPacket {
   v: number;
   type: "TELEMETRY";
   session_id: string;
-  seq: number;
+  seq: number | string;
+  frame_seq?: string;
+  event_seq?: string;
+  worker_boot_id?: string;
+  session_epoch?: string;
+  server_wall_epoch_ms?: number;
   timestamp: number;
   telemetry: FrameTelemetry;
   calibration?: CalibrationPhase | null;
@@ -129,9 +145,11 @@ export interface LatencyDiagnostics {
   datachannel_rtt_ms: number;
   queue_latency_ms: number;
   infer_duration_ms: number;
-  estimated_e2e_latency_ms: number;
+  server_total_ms: number;
   rtt_p50: number;
   rtt_p95: number;
+  telemetry_dispatch_ms?: number;
+  audio_output_latency_estimate_ms?: number;
   last_measured_at: number;
 }
 

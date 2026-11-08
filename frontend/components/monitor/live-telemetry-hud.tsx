@@ -360,15 +360,15 @@ export function LiveTelemetryHUD({
             </Badge>
           )}
 
-          {/* Estimated Glass-to-Decision Latency (Clearly labeled estimate) */}
-          {latencyDiagnostics && latencyDiagnostics.estimated_e2e_latency_ms > 0 && (
+          {/* Server Total Processing Latency (Exact Measurement: Queue + Inference) */}
+          {latencyDiagnostics?.server_total_ms != null && latencyDiagnostics.server_total_ms > 0 && (
             <Badge
               variant="outline"
               className="px-2 py-0.5 rounded-lg border-primary/30 text-primary bg-primary/5 hidden md:inline-flex"
-              title="Estimated Glass-to-Decision Latency: (DataChannel RTT / 2) + Server Queue Latency + AI Inference + (DataChannel RTT / 2)"
+              title="Authoritative Server Processing Duration: Ingest Queue Dwell + Pipeline Inference"
             >
               <Timer className="size-3 mr-0.5 text-primary" />
-              Est. E2E: {latencyDiagnostics.estimated_e2e_latency_ms}ms
+              Server: {latencyDiagnostics.server_total_ms.toFixed(0)}ms
             </Badge>
           )}
 

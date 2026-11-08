@@ -78,7 +78,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
   const pendingCommandsRef = useRef<Array<Record<string, any>>>([]);
 
   // Telemetry deduplication, state guard, and latency tracking refs
-  const lastTelemetrySeqRef = useRef<number>(-1);
+  const lastTelemetrySeqRef = useRef<bigint>(BigInt(-1));
   const activeStateRef = useRef<AlertState>("NORMAL");
   const processedEventIdsRef = useRef<Set<string>>(new Set());
   const rttSamplesRef = useRef<number[]>([]);
@@ -117,7 +117,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
   const disconnectRoom = useCallback(async () => {
     isConnectingRef.current = false;
     isLoopActiveRef.current = false;
-    lastTelemetrySeqRef.current = -1;
+    lastTelemetrySeqRef.current = BigInt(-1);
     latestRttRef.current = 0;
     rttSamplesRef.current = [];
     setLatencyDiagnostics(null);
@@ -178,7 +178,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
         publishedTrackRef.current = null;
       }
 
-      lastTelemetrySeqRef.current = -1;
+      lastTelemetrySeqRef.current = BigInt(-1);
       isConnectingRef.current = true;
       setConnectionStatus("connecting");
 
@@ -241,16 +241,11 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
                 ? serverTotalMs
                 : (effectiveQueue + effectiveInfer);
 
-            // Estimated glass-to-decision latency: (RTT / 2) + Server Queue + Server Inference + (RTT / 2)
-            // = RTT + Server Processing Total
-            const baseRtt = p50 > 0 ? p50 : (rttMs > 0 ? rttMs : 0);
-            const estimatedE2E = baseRtt > 0 ? Math.round(baseRtt + effectiveServerTotal) : 0;
-
             return {
               datachannel_rtt_ms: roundedRtt,
               queue_latency_ms: Math.round(effectiveQueue * 10) / 10,
               infer_duration_ms: Math.round(effectiveInfer * 10) / 10,
-              estimated_e2e_latency_ms: estimatedE2E,
+              server_total_ms: Math.round(effectiveServerTotal * 10) / 10,
               rtt_p50: Math.round(p50),
               rtt_p95: Math.round(p95),
               last_measured_at: Date.now(),
@@ -275,15 +270,12 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
             const measuredRtt = latestRttRef.current;
             const p50 = prev?.rtt_p50 ?? (measuredRtt > 0 ? measuredRtt : 0);
             const p95 = prev?.rtt_p95 ?? (measuredRtt > 0 ? measuredRtt : 0);
-            // Ensure no RTT is inferred from server processing time before a ping/pong match
-            const effectiveRtt = p50 > 0 ? p50 : (measuredRtt > 0 ? measuredRtt : 0);
-            const estimatedE2E = effectiveRtt > 0 ? Math.round(effectiveRtt + effectiveServerTotal) : 0;
 
             return {
               datachannel_rtt_ms: measuredRtt,
               queue_latency_ms: effectiveQueue,
               infer_duration_ms: effectiveInfer,
-              estimated_e2e_latency_ms: estimatedE2E,
+              server_total_ms: Math.round(effectiveServerTotal * 10) / 10,
               rtt_p50: Math.round(p50),
               rtt_p95: Math.round(p95),
               last_measured_at: prev?.last_measured_at ?? Date.now(),
@@ -298,12 +290,18 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
             const msg = JSON.parse(rawText);
 
             if (msg.type === "TELEMETRY" && msg.telemetry) {
-              const seq = msg.seq ?? (msg.telemetry.frame_index ?? 0);
+              const rawSeq = msg.frame_seq ?? msg.seq ?? (msg.telemetry.frame_index ?? 0);
+              let currentSeq: bigint;
+              try {
+                currentSeq = BigInt(String(rawSeq));
+              } catch {
+                currentSeq = BigInt(0);
+              }
               // Stale packet rejection: discard packets with older or equal sequence numbers
-              if (seq <= lastTelemetrySeqRef.current) {
+              if (currentSeq <= lastTelemetrySeqRef.current) {
                 return;
               }
-              lastTelemetrySeqRef.current = seq;
+              lastTelemetrySeqRef.current = currentSeq;
 
               const tel = msg.telemetry as FrameTelemetry;
               activeStateRef.current = tel.state;
@@ -356,7 +354,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
                 const ackPayload: EventAck = {
                   action: "EVENT_ACK",
                   event_id: safetyEvent.event_id,
-                  event_seq: safetyEvent.event_seq,
+                  event_seq: String(safetyEvent.event_seq),
                   client_timestamp: performance.now(),
                 };
                 try {
@@ -427,7 +425,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
 
         room.on(RoomEvent.Disconnected, () => {
           console.log("[DriveGuard LiveKit] Room disconnected.");
-          lastTelemetrySeqRef.current = -1;
+          lastTelemetrySeqRef.current = BigInt(-1);
           latestRttRef.current = 0;
           if (pingIntervalRef.current) {
             clearInterval(pingIntervalRef.current);
@@ -438,7 +436,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
 
         // Connect WebRTC to LiveKit Cloud
         console.log(`[DriveGuard LiveKit] Connecting to SFU: ${data.url}`);
-        lastTelemetrySeqRef.current = -1;
+        lastTelemetrySeqRef.current = BigInt(-1);
         await room.connect(data.url, data.token);
         console.log(`[DriveGuard LiveKit] Successfully connected to room '${data.room_name}'!`);
         setConnectionStatus("connected");
