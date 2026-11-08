@@ -532,7 +532,11 @@ class SessionAIEngine:
                 cnn_open_prob=round(cascade_res.cnn_open_prob, 3) if cascade_res.cnn_open_prob is not None else None,
                 cnn_reliability=round(cascade_res.cnn_reliability, 3) if cascade_res.cnn_reliability is not None else None,
                 arbitration_winner=cascade_res.winning_authority,
-                disagreement_flag=cascade_res.cnn_invoked or cascade_res.disagreement_ear_vs_blendshape > 0.40,
+                disagreement_flag=bool(
+                    cascade_res.cnn_invoked
+                    and cascade_res.cnn_closed_prob is not None
+                    and abs(cascade_res.geom_closure_score - cascade_res.cnn_closed_prob) >= 0.30
+                ),
                 cnn_latency_ms=round(cascade_res.stage_latency_ms, 2),
             ),
             comparison=ConventionalFixedComparisonDTO(

@@ -628,8 +628,13 @@ export class DriveGuardAudioEngine {
     return { tier: "RECOVERY", durationMs: 150 };
   }
 
-  public getOutputLatencyEstimateMs(): number {
-    if (!this.ctx) return 0;
+  /**
+   * Returns browser-reported audio output latency estimate in milliseconds (baseLatency + outputLatency),
+   * or null if AudioContext is uninitialized, unsupported, or closed.
+   * Note: This measures the Web Audio hardware buffer latency estimate, not acoustic audible alert latency.
+   */
+  public getOutputLatencyEstimateMs(): number | null {
+    if (!this.ctx) return null;
     const base = typeof this.ctx.baseLatency === "number" ? this.ctx.baseLatency : 0;
     const output = typeof (this.ctx as any).outputLatency === "number" ? (this.ctx as any).outputLatency : 0;
     return Math.round((base + output) * 1000 * 10) / 10;

@@ -32,7 +32,7 @@ from backend.app.services.session_manager import session_manager
 logger = logging.getLogger("driveguard.livekit_worker")
 logger.setLevel(logging.INFO)
 
-WORKER_BOOT_ID = uuid.uuid4().hex[:8]
+WORKER_BOOT_ID = uuid.uuid4().hex
 
 
 @dataclass(frozen=True)
@@ -108,7 +108,8 @@ class LiveKitAIWorkerSession:
         self._last_logged_dims: Optional[Tuple[int, int, int, int]] = None
 
         self.worker_boot_id: str = WORKER_BOOT_ID
-        self.session_epoch: str = f"{int(time.time()):x}"
+        # Format: "<hex_unix_timestamp>-<hex_nonce_8char>" ensuring timestamp sortability + per-session collision resistance
+        self.session_epoch: str = f"{int(time.time()):x}-{uuid.uuid4().hex[:8]}"
 
         # Phase 2: State Tracking & Reliable Safety Event Store
         self._last_state: str = "NORMAL"
@@ -454,17 +455,21 @@ class LiveKitAIWorkerSession:
                     payload_bytes = json.dumps(response_payload).encode("utf-8")
                     await self.room.local_participant.publish_data(payload_bytes, reliable=False)
                     self._frames_processed += 1
+                    self._frames_in_flight = 0
 
+                except asyncio.CancelledError:
+                    if self._frames_in_flight > 0:
+                        self._frames_aborted += self._frames_in_flight
+                        self._frames_in_flight = 0
+                    raise
                 except Exception as exc:
                     self._frames_errored += 1
+                    self._frames_in_flight = 0
                     logger.error(f"[LiveKit Worker] Inference execution error: {exc}", exc_info=True)
                 finally:
                     self._frames_in_flight = 0
 
             except asyncio.CancelledError:
-                if self._frames_in_flight > 0:
-                    self._frames_aborted += self._frames_in_flight
-                    self._frames_in_flight = 0
                 break
             except Exception as exc:
                 self._frames_errored += 1

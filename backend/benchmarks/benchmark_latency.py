@@ -88,7 +88,7 @@ def run_latency_sample_run(
     run_id: int,
     n_samples: int = 1000,
     mode_str: str = "EXPERIMENT_C_CONFIDENCE_GATED_CASCADE",
-) -> Dict[str, any]:
+) -> Tuple[Dict[str, any], np.ndarray]:
     """Execute a single independent sample run for latency distribution analysis."""
     print(f"\n[Run #{run_id}] Collecting {n_samples} samples under {mode_str}...")
 
@@ -98,18 +98,21 @@ def run_latency_sample_run(
         experiment_mode=mode_str,
     )
 
-    # 50 warm-up frames
+    # Pre-generate cyclical frame sequence (90 frames = 2 full 45-frame blink cycles)
+    # This prevents synthetic cv2.ellipse drawing overhead from polluting inference timing.
+    cached_frames = [generate_benchmark_frame(idx) for idx in range(90)]
+
+    # 50 warm-up frames to prime MediaPipe VIDEO mode and ONNX session
     for w in range(50):
-        frame = generate_benchmark_frame(w)
+        frame = cached_frames[w % 90]
         engine.process_frame(frame, timestamp_ms=float(w * 40.0))
 
     latencies = []
     t_start = time.perf_counter()
 
     for i in range(n_samples):
-        frame_idx = 50 + i
-        frame = generate_benchmark_frame(frame_idx)
-        ts_ms = float(frame_idx * 40.0)
+        frame = cached_frames[i % 90]
+        ts_ms = float((50 + i) * 40.0)
 
         t0 = time.perf_counter()
         telemetry = engine.process_frame(frame, timestamp_ms=ts_ms)
@@ -117,11 +120,16 @@ def run_latency_sample_run(
 
         latencies.append((t1 - t0) * 1000.0)
 
+        if (i + 1) % 2000 == 0:
+            print(f"  [Run #{run_id}] Progress: {i + 1}/{n_samples} samples | Mean: {np.mean(latencies):.1f}ms", flush=True)
+
     total_wall_s = time.perf_counter() - t_start
     engine.close()
 
     arr = np.array(latencies)
-    mbb_ci = moving_block_bootstrap_ci(arr, percentiles=[50, 90, 95, 99], block_size=50)
+    mbb_ci_50 = moving_block_bootstrap_ci(arr, percentiles=[50, 90, 95, 99], block_size=50)
+    mbb_ci_25 = moving_block_bootstrap_ci(arr, percentiles=[50, 90, 95, 99], block_size=25)
+    mbb_ci_100 = moving_block_bootstrap_ci(arr, percentiles=[50, 90, 95, 99], block_size=100)
 
     run_metrics = {
         "run_id": run_id,
@@ -131,14 +139,19 @@ def run_latency_sample_run(
         "std_latency_ms": round(float(np.std(arr)), 2),
         "min_latency_ms": round(float(np.min(arr)), 2),
         "max_latency_ms": round(float(np.max(arr)), 2),
-        "percentiles_with_mbb_ci": mbb_ci,
+        "percentiles_with_mbb_ci": mbb_ci_50,
+        "sensitivity_mbb_ci": {
+            "block_size_25": mbb_ci_25,
+            "block_size_50": mbb_ci_50,
+            "block_size_100": mbb_ci_100,
+        },
     }
 
     print(
         f"  Run #{run_id} Results: "
-        f"P50 = {mbb_ci['p50']['value']}ms [{mbb_ci['p50']['ci_95_lower']}, {mbb_ci['p50']['ci_95_upper']}] | "
-        f"P95 = {mbb_ci['p95']['value']}ms [{mbb_ci['p95']['ci_95_lower']}, {mbb_ci['p95']['ci_95_upper']}] | "
-        f"P99 = {mbb_ci['p99']['value']}ms [{mbb_ci['p99']['ci_95_lower']}, {mbb_ci['p99']['ci_95_upper']}]",
+        f"P50 = {mbb_ci_50['p50']['value']}ms [{mbb_ci_50['p50']['ci_95_lower']}, {mbb_ci_50['p50']['ci_95_upper']}] | "
+        f"P95 = {mbb_ci_50['p95']['value']}ms [{mbb_ci_50['p95']['ci_95_lower']}, {mbb_ci_50['p95']['ci_95_upper']}] | "
+        f"P99 = {mbb_ci_50['p99']['value']}ms [{mbb_ci_50['p99']['ci_95_lower']}, {mbb_ci_50['p99']['ci_95_upper']}]",
         flush=True,
     )
 
@@ -196,6 +209,7 @@ def main():
     parser = argparse.ArgumentParser(description="DriveGuard Phase 7 Stage 3 Latency Benchmark")
     parser.add_argument("--samples", type=int, default=1000, help="Samples per run (default: 1000 for verification, 10000 for full)")
     parser.add_argument("--runs", type=int, default=3, help="Number of independent runs (default: 3)")
+    parser.add_argument("--out-name", type=str, default="latency_distribution_results.json", help="Output JSON filename in results/")
     args = parser.parse_args()
 
     print("=" * 70)
@@ -206,7 +220,7 @@ def main():
     # 1. Investigate LiveKit Frame Metadata
     meta_investigation = investigate_livekit_frame_metadata()
 
-    # 2. Execute 3 independent runs
+    # 2. Execute independent runs
     runs_data = []
     all_latencies = []
 
@@ -217,28 +231,37 @@ def main():
 
     # 3. Pooled analysis across all runs
     pooled_arr = np.concatenate(all_latencies)
-    pooled_mbb = moving_block_bootstrap_ci(pooled_arr, percentiles=[50, 90, 95, 99], block_size=50)
+    pooled_mbb_50 = moving_block_bootstrap_ci(pooled_arr, percentiles=[50, 90, 95, 99], block_size=50)
+    pooled_mbb_25 = moving_block_bootstrap_ci(pooled_arr, percentiles=[50, 90, 95, 99], block_size=25)
+    pooled_mbb_100 = moving_block_bootstrap_ci(pooled_arr, percentiles=[50, 90, 95, 99], block_size=100)
 
     pooled_summary = {
         "total_samples": len(pooled_arr),
         "mean_latency_ms": round(float(np.mean(pooled_arr)), 2),
         "std_latency_ms": round(float(np.std(pooled_arr)), 2),
-        "percentiles_with_mbb_ci": pooled_mbb,
+        "min_latency_ms": round(float(np.min(pooled_arr)), 2),
+        "max_latency_ms": round(float(np.max(pooled_arr)), 2),
+        "percentiles_with_mbb_ci": pooled_mbb_50,
+        "sensitivity_analysis": {
+            "block_size_25": pooled_mbb_25,
+            "block_size_50": pooled_mbb_50,
+            "block_size_100": pooled_mbb_100,
+        },
     }
 
     print("\n=======================================================")
     print("  POOLED BENCHMARK SUMMARY (All Runs Combined)")
     print(f"  Total Samples: {len(pooled_arr)}")
-    print(f"  P50: {pooled_mbb['p50']['value']} ms (95% CI: [{pooled_mbb['p50']['ci_95_lower']}, {pooled_mbb['p50']['ci_95_upper']}])")
-    print(f"  P90: {pooled_mbb['p90']['value']} ms (95% CI: [{pooled_mbb['p90']['ci_95_lower']}, {pooled_mbb['p90']['ci_95_upper']}])")
-    print(f"  P95: {pooled_mbb['p95']['value']} ms (95% CI: [{pooled_mbb['p95']['ci_95_lower']}, {pooled_mbb['p95']['ci_95_upper']}])")
-    print(f"  P99: {pooled_mbb['p99']['value']} ms (95% CI: [{pooled_mbb['p99']['ci_95_lower']}, {pooled_mbb['p99']['ci_95_upper']}])")
+    print(f"  P50: {pooled_mbb_50['p50']['value']} ms (95% CI: [{pooled_mbb_50['p50']['ci_95_lower']}, {pooled_mbb_50['p50']['ci_95_upper']}])")
+    print(f"  P90: {pooled_mbb_50['p90']['value']} ms (95% CI: [{pooled_mbb_50['p90']['ci_95_lower']}, {pooled_mbb_50['p90']['ci_95_upper']}])")
+    print(f"  P95: {pooled_mbb_50['p95']['value']} ms (95% CI: [{pooled_mbb_50['p95']['ci_95_lower']}, {pooled_mbb_50['p95']['ci_95_upper']}])")
+    print(f"  P99: {pooled_mbb_50['p99']['value']} ms (95% CI: [{pooled_mbb_50['p99']['ci_95_lower']}, {pooled_mbb_50['p99']['ci_95_upper']}])")
     print("=======================================================\n")
 
-    # 4. Save results to JSON
+    # 4. Save results to JSON and raw arrays
     out_dir = os.path.join(os.path.dirname(__file__), "results")
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "latency_distribution_results.json")
+    out_path = os.path.join(out_dir, args.out_name)
 
     final_payload = {
         "benchmark": "latency_distribution_benchmark",
@@ -251,7 +274,17 @@ def main():
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(final_payload, f, indent=2)
 
+    # Save raw samples for complete scientific reproducibility
+    stem = os.path.splitext(args.out_name)[0]
+    raw_samples_path = os.path.join(out_dir, f"{stem}_raw.npz")
+    np.savez_compressed(
+        raw_samples_path,
+        **{f"run_{r+1}": all_latencies[r] for r in range(len(all_latencies))},
+        pooled=pooled_arr,
+    )
+
     print(f"[Benchmark Complete] Latency distribution results saved to: {out_path}")
+    print(f"[Benchmark Complete] Raw sample arrays saved to: {raw_samples_path}")
 
 
 if __name__ == "__main__":

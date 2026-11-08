@@ -155,7 +155,8 @@ def run_mode_benchmark(
     p95 = float(np.percentile(total_arr, 95))
     p99 = float(np.percentile(total_arr, 99))
     mean_lat = float(np.mean(total_arr))
-    effective_fps = 1000.0 / mean_lat if mean_lat > 0 else 0.0
+    mean_latency_implied_fps = 1000.0 / mean_lat if mean_lat > 0 else 0.0
+    wall_clock_throughput_fps = (measure_count / wall_duration_s) if wall_duration_s > 0 else 0.0
     cnn_rate_pct = (cnn_triggered_count / measure_count) * 100.0
     disagree_pct = (disagreement_count / measure_count) * 100.0
     agree_pct = (agreement_count / measure_count) * 100.0
@@ -171,7 +172,9 @@ def run_mode_benchmark(
         "p99_latency_ms": round(p99, 2),
         "min_latency_ms": round(float(np.min(total_arr)), 2),
         "max_latency_ms": round(float(np.max(total_arr)), 2),
-        "effective_fps": round(effective_fps, 2),
+        "effective_fps": round(mean_latency_implied_fps, 2),
+        "mean_latency_implied_fps": round(mean_latency_implied_fps, 2),
+        "wall_clock_throughput_fps": round(wall_clock_throughput_fps, 2),
         "cpu_utilization_pct": round(cpu_pct, 1),
         "mem_before_rss_mb": round(mem_before_rss_mb, 2),
         "mem_after_rss_mb": round(mem_after_rss_mb, 2),

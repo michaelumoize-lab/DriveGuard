@@ -20,7 +20,7 @@ export interface UseDriveGuardAudioReturn {
   toggleMute: () => void;
   setVolume: (volume: number) => void;
   unlockAudio: () => Promise<boolean>;
-  getAudioLatencyEstimateMs: () => number;
+  getAudioLatencyEstimateMs: () => number | null;
   engine: DriveGuardAudioEngine | null;
 }
 
@@ -165,8 +165,8 @@ export function useDriveGuardAudio(
     };
   }, []);
 
-  const getAudioLatencyEstimateMs = useCallback((): number => {
-    return engineRef.current?.getOutputLatencyEstimateMs() ?? 0;
+  const getAudioLatencyEstimateMs = useCallback((): number | null => {
+    return engineRef.current?.getOutputLatencyEstimateMs() ?? null;
   }, []);
 
   return {
