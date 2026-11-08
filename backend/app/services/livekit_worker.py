@@ -12,6 +12,7 @@ Manages autonomous WebRTC room participants that:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 from dataclasses import dataclass
 import json
 import logging
@@ -35,6 +36,11 @@ logger.setLevel(logging.INFO)
 WORKER_BOOT_ID = uuid.uuid4().hex
 
 
+def generate_session_epoch() -> str:
+    """Generate a collision-resistant session epoch formatted as <unix_timestamp>_<128bit_uuid4_hex>."""
+    return f"{int(time.time())}_{uuid.uuid4().hex}"
+
+
 @dataclass(frozen=True)
 class FrameAccountingSnapshot:
     """Immutable snapshot of frame accounting counters on the event loop."""
@@ -48,6 +54,7 @@ class FrameAccountingSnapshot:
     frames_aborted: int
     frames_queued: int
     frames_in_flight: int
+    threads_executing: int = 0
 
     @property
     def total_accounted(self) -> int:
@@ -108,8 +115,9 @@ class LiveKitAIWorkerSession:
         self._last_logged_dims: Optional[Tuple[int, int, int, int]] = None
 
         self.worker_boot_id: str = WORKER_BOOT_ID
-        # Format: "<hex_unix_timestamp>-<hex_nonce_8char>" ensuring timestamp sortability + per-session collision resistance
-        self.session_epoch: str = f"{int(time.time()):x}-{uuid.uuid4().hex[:8]}"
+        # Format: "<unix_timestamp>_<128bit_uuid4_hex>" ensuring timestamp sortability + 128-bit collision resistance
+        self.session_id_uuid: str = uuid.uuid4().hex
+        self.session_epoch: str = f"{int(time.time())}_{self.session_id_uuid}"
 
         # Phase 2: State Tracking & Reliable Safety Event Store
         self._last_state: str = "NORMAL"
@@ -128,6 +136,15 @@ class LiveKitAIWorkerSession:
         self._frames_errored: int = 0
         self._frames_aborted: int = 0
         self._frames_in_flight: int = 0
+
+        # Dedicated single-thread worker for CPU inference to decouple from event loop
+        self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix=f"dg_infer_{self.room_name[:8]}",
+        )
+        self._active_cfut: Optional[concurrent.futures.Future] = None
+        self._threads_executing: int = 0
+        self._coro_cancelled_for_active_frame: bool = False
 
         # Latest-frame queue with maxsize=1 (drops stale frames immediately)
         # Tuple contains: (frame, ingest_mono_ms, frame_seq_num)
@@ -150,7 +167,25 @@ class LiveKitAIWorkerSession:
             frames_aborted=self._frames_aborted,
             frames_queued=self.frame_queue.qsize(),
             frames_in_flight=self._frames_in_flight,
+            threads_executing=self._threads_executing,
         )
+
+    def _on_inference_thread_done(self, fut: concurrent.futures.Future) -> None:
+        """Thread-safe callback executed on the event loop when the worker thread finishes process_frame."""
+        self._threads_executing = max(0, self._threads_executing - 1)
+        if fut is not self._active_cfut:
+            return
+        self._active_cfut = None
+        if self._coro_cancelled_for_active_frame:
+            # Coroutine was cancelled while OS thread was still executing; reconcile now that thread has terminated
+            if self._frames_in_flight > 0:
+                self._frames_in_flight -= 1
+                self._frames_aborted += 1
+            self._coro_cancelled_for_active_frame = False
+            logger.info(
+                f"[LiveKit Worker] Inference thread terminated after coroutine cancellation. "
+                f"Reconciled frame in-flight -> aborted (in_flight={self._frames_in_flight}, aborted={self._frames_aborted})."
+            )
 
     async def start(self) -> None:
         """Connect to LiveKit room and listen for video tracks and client control messages."""
@@ -344,7 +379,21 @@ class LiveKitAIWorkerSession:
                     t_infer_start_ms = t_infer_start * 1000.0
                     queue_latency_ms = max(0.0, t_infer_start_ms - recv_mono_ms)
 
-                    telemetry_dto = await asyncio.to_thread(self.engine.process_frame, norm_img, recv_mono_ms)
+                    loop = asyncio.get_running_loop()
+                    self._threads_executing = 1
+                    self._coro_cancelled_for_active_frame = False
+                    self._active_cfut = self._executor.submit(self.engine.process_frame, norm_img, recv_mono_ms)
+
+                    def _safe_dispatch_done(f: concurrent.futures.Future) -> None:
+                        if not loop.is_closed():
+                            try:
+                                loop.call_soon_threadsafe(self._on_inference_thread_done, f)
+                            except RuntimeError:
+                                pass
+
+                    self._active_cfut.add_done_callback(_safe_dispatch_done)
+                    afut = asyncio.wrap_future(self._active_cfut)
+                    telemetry_dto = await afut
                     t_infer_end = time.perf_counter()
                     t_infer_end_ms = t_infer_end * 1000.0
                     infer_duration_ms = max(0.0, t_infer_end_ms - t_infer_start_ms)
@@ -456,18 +505,33 @@ class LiveKitAIWorkerSession:
                     await self.room.local_participant.publish_data(payload_bytes, reliable=False)
                     self._frames_processed += 1
                     self._frames_in_flight = 0
+                    self._active_cfut = None
 
                 except asyncio.CancelledError:
-                    if self._frames_in_flight > 0:
-                        self._frames_aborted += self._frames_in_flight
-                        self._frames_in_flight = 0
+                    self._coro_cancelled_for_active_frame = True
+                    if self._active_cfut and not self._active_cfut.done():
+                        # The OS worker thread is STILL physically running in the background.
+                        # Retain frames_in_flight=1 so get_frame_accounting_snapshot()
+                        # never falsely reports 0 in-flight while the thread is active.
+                        # _on_inference_thread_done will reconcile when the thread terminates.
+                        logger.info(
+                            f"[LiveKit Worker] Coroutine cancelled while inference thread is still executing. "
+                            f"Retaining frames_in_flight=1 until thread completion."
+                        )
+                    else:
+                        if self._frames_in_flight > 0:
+                            self._frames_aborted += self._frames_in_flight
+                            self._frames_in_flight = 0
+                        self._active_cfut = None
                     raise
                 except Exception as exc:
                     self._frames_errored += 1
                     self._frames_in_flight = 0
+                    self._active_cfut = None
                     logger.error(f"[LiveKit Worker] Inference execution error: {exc}", exc_info=True)
                 finally:
-                    self._frames_in_flight = 0
+                    if not (self._coro_cancelled_for_active_frame and self._active_cfut and not self._active_cfut.done()):
+                        self._frames_in_flight = 0
 
             except asyncio.CancelledError:
                 break
@@ -690,9 +754,20 @@ class LiveKitAIWorkerSession:
                 self._frames_aborted += 1
             except asyncio.QueueEmpty:
                 break
-        if self._frames_in_flight > 0:
-            self._frames_aborted += self._frames_in_flight
-            self._frames_in_flight = 0
+
+        if self._active_cfut and not self._active_cfut.done():
+            self._coro_cancelled_for_active_frame = True
+            logger.info(
+                f"[LiveKit Worker] stop() called while inference thread active. "
+                f"Preserving in-flight frame ({self._frames_in_flight}) until background thread terminates."
+            )
+        else:
+            if self._frames_in_flight > 0:
+                self._frames_aborted += self._frames_in_flight
+                self._frames_in_flight = 0
+
+        if self._executor:
+            self._executor.shutdown(wait=False, cancel_futures=True)
 
         try:
             await self.room.disconnect()

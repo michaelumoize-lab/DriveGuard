@@ -32,6 +32,7 @@ from backend.app.services.livekit_worker import (
     FrameAccountingSnapshot,
     LiveKitAIWorkerSession,
     WORKER_BOOT_ID,
+    generate_session_epoch,
 )
 
 
@@ -45,6 +46,10 @@ class TestMeasurementInfrastructure(unittest.IsolatedAsyncioTestCase):
             room_name=self.session_id,
             driver_id=self.driver_id,
         )
+
+    def tearDown(self):
+        if hasattr(self, "worker") and self.worker and self.worker._executor:
+            self.worker._executor.shutdown(wait=False)
 
     def _create_sample_telemetry(self, frame_idx: int = 1) -> FrameTelemetryDTO:
         return FrameTelemetryDTO(
@@ -214,6 +219,171 @@ class TestMeasurementInfrastructure(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload2["frame_seq"], "102")
         self.assertEqual(payload2["event_seq"], "2")
         self.assertGreater(int(payload2["event_seq"]), int(payload1["event_seq"]))
+
+    def test_session_epoch_128bit_uniqueness_and_format(self):
+        """Verify session_epoch incorporates a 128-bit UUID4 hex string and has zero collisions across 10k instances."""
+        epoch_regex = re.compile(r"^[0-9]+_[0-9a-f]{32}$")
+        self.assertTrue(
+            epoch_regex.match(self.worker.session_epoch),
+            f"session_epoch '{self.worker.session_epoch}' does not match expected format <timestamp>_<32hex>",
+        )
+
+        # Uniqueness test across 10,000 generated epochs
+        epochs = {generate_session_epoch() for _ in range(10000)}
+        self.assertEqual(len(epochs), 10000, "Collision detected in 128-bit session epoch generation!")
+
+    async def test_inference_cancellation_preserves_in_flight_during_thread_execution(self):
+        """
+        Verify that cancelling an awaiting inference coroutine does NOT prematurely zero in_flight frames
+        while the underlying OS thread is still executing process_frame().
+        Verifies thread-safe event loop callback reconciliation and conservation invariant preservation.
+        """
+        worker = LiveKitAIWorkerSession(room_name="test_cancel_semantics")
+        worker.is_running = True
+
+        try:
+            # Mock engine that sleeps for 80ms in background thread
+            thread_started = asyncio.Event()
+            loop = asyncio.get_running_loop()
+
+            def slow_process_frame(norm_img, recv_mono_ms):
+                loop.call_soon_threadsafe(thread_started.set)
+                time.sleep(0.08)
+                return self._create_sample_telemetry(frame_idx=1)
+
+            mock_engine = MagicMock()
+            mock_engine.process_frame.side_effect = slow_process_frame
+            mock_engine.get_calibration_status.return_value = None
+            worker.engine = mock_engine
+
+            # Mock WebRTC room publish_data
+            worker.room = MagicMock()
+            worker.room.local_participant = MagicMock()
+            worker.room.local_participant.publish_data = AsyncMock()
+
+            # Mock VideoFrame
+            mock_frame = MagicMock()
+            mock_buffer = MagicMock()
+            mock_buffer.data = np.zeros((480, 640, 3), dtype=np.uint8).tobytes()
+            mock_buffer.width = 640
+            mock_buffer.height = 480
+            mock_frame.convert.return_value = mock_buffer
+
+            # Queue one frame
+            worker._frames_received = 1
+            await worker.frame_queue.put((mock_frame, time.perf_counter() * 1000.0, 1))
+
+            # Launch inference loop
+            task = asyncio.create_task(worker._inference_loop())
+
+            # Wait until thread actually starts executing
+            await asyncio.wait_for(thread_started.wait(), timeout=1.0)
+
+            # At this point, the thread is actively executing process_frame
+            snap_during = worker.get_frame_accounting_snapshot()
+            self.assertEqual(snap_during.frames_in_flight, 1)
+            self.assertEqual(snap_during.threads_executing, 1)
+            self.assertEqual(snap_during.frames_aborted, 0)
+            self.assertTrue(snap_during.is_invariant_satisfied)
+
+            # CANCEL the inference task while thread is still sleeping
+            task.cancel()
+            await task
+
+            # IMMEDIATELY AFTER COROUTINE CANCELLATION:
+            # The thread is STILL physically running. Verify frames_in_flight is NOT zero!
+            snap_post_cancel = worker.get_frame_accounting_snapshot()
+            self.assertEqual(
+                snap_post_cancel.frames_in_flight,
+                1,
+                "CRITICAL BUG: frames_in_flight prematurely reported 0 while worker thread was still executing!",
+            )
+            self.assertEqual(snap_post_cancel.threads_executing, 1)
+            self.assertEqual(snap_post_cancel.frames_aborted, 0)
+            self.assertTrue(snap_post_cancel.is_invariant_satisfied)
+
+            # Wait for thread to finish sleeping and for the event-loop threadsafe callback to fire
+            await asyncio.sleep(0.12)
+
+            # AFTER THREAD TERMINATION:
+            # In-flight must now be 0, aborted must be 1, zero double counting, invariant satisfied
+            snap_final = worker.get_frame_accounting_snapshot()
+            self.assertEqual(snap_final.frames_in_flight, 0)
+            self.assertEqual(snap_final.threads_executing, 0)
+            self.assertEqual(snap_final.frames_aborted, 1)
+            self.assertEqual(snap_final.frames_processed, 0)
+            self.assertTrue(snap_final.is_invariant_satisfied)
+            self.assertEqual(snap_final.discrepancy, 0)
+        finally:
+            if worker._executor:
+                worker._executor.shutdown(wait=False)
+
+    async def test_stop_worker_preserves_in_flight_until_thread_done_without_double_counting(self):
+        """Verify worker.stop() preserves in-flight status if thread is running and avoids double-counting."""
+        worker = LiveKitAIWorkerSession(room_name="test_stop_semantics")
+        worker.is_running = True
+
+        try:
+            thread_started = asyncio.Event()
+            loop = asyncio.get_running_loop()
+
+            def slow_process_frame(norm_img, recv_mono_ms):
+                loop.call_soon_threadsafe(thread_started.set)
+                time.sleep(0.08)
+                return self._create_sample_telemetry(frame_idx=1)
+
+            mock_engine = MagicMock()
+            mock_engine.process_frame.side_effect = slow_process_frame
+            mock_engine.get_calibration_status.return_value = None
+            worker.engine = mock_engine
+
+            worker.room = MagicMock()
+            worker.room.disconnect = AsyncMock()
+            worker.room.local_participant = MagicMock()
+            worker.room.local_participant.publish_data = AsyncMock()
+
+            mock_frame = MagicMock()
+            mock_buffer = MagicMock()
+            mock_buffer.data = np.zeros((480, 640, 3), dtype=np.uint8).tobytes()
+            mock_buffer.width = 640
+            mock_buffer.height = 480
+            mock_frame.convert.return_value = mock_buffer
+
+            worker._frames_received = 2
+            # Put first frame into queue
+            await worker.frame_queue.put((mock_frame, time.perf_counter() * 1000.0, 1))
+
+            worker._inference_task = asyncio.create_task(worker._inference_loop())
+            await asyncio.wait_for(thread_started.wait(), timeout=1.0)
+
+            # Queue is now empty (frame 1 dequeued into thread), so queue frame 2 without blocking maxsize=1
+            await worker.frame_queue.put((mock_frame, time.perf_counter() * 1000.0, 2))
+
+            # Call worker.stop() while thread is running
+            await worker.stop()
+
+            # At this instant:
+            # Queued frame was drained into aborted (+1).
+            # In-flight frame is STILL executing in thread (1 in-flight, aborted=1).
+            snap_after_stop = worker.get_frame_accounting_snapshot()
+            self.assertEqual(snap_after_stop.frames_in_flight, 1)
+            self.assertEqual(snap_after_stop.threads_executing, 1)
+            self.assertEqual(snap_after_stop.frames_aborted, 1)  # the queued frame
+            self.assertTrue(snap_after_stop.is_invariant_satisfied)
+
+            # Wait for thread to terminate and callback to reconcile
+            await asyncio.sleep(0.12)
+
+            snap_final = worker.get_frame_accounting_snapshot()
+            self.assertEqual(snap_final.frames_in_flight, 0)
+            self.assertEqual(snap_final.threads_executing, 0)
+            self.assertEqual(snap_final.frames_aborted, 2)  # both frames now aborted
+            self.assertEqual(snap_final.frames_processed, 0)
+            self.assertTrue(snap_final.is_invariant_satisfied)
+            self.assertEqual(snap_final.discrepancy, 0)
+        finally:
+            if worker._executor:
+                worker._executor.shutdown(wait=False)
 
 
 if __name__ == "__main__":

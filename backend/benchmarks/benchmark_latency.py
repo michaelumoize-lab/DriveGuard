@@ -84,6 +84,59 @@ def moving_block_bootstrap_ci(
     return ci_results
 
 
+def stratified_within_run_mbb_ci(
+    runs: List[np.ndarray],
+    percentiles: List[float] = [50, 90, 95, 99],
+    block_size: int = 50,
+    n_bootstrap: int = 1000,
+    alpha: float = 0.05,
+    seed: int = 42,
+) -> Dict[str, Dict[str, float]]:
+    """
+    Compute 95% Confidence Intervals using Moving Block Bootstrap (MBB) stratified within runs.
+    Guarantees blocks never cross boundaries of independent experimental runs, preserving true autocorrelation.
+    """
+    run_blocks = []
+    run_ks = []
+    for r in runs:
+        n_r = len(r)
+        b_size = block_size if n_r >= block_size * 2 else max(1, n_r // 10)
+        num_b = n_r - b_size + 1
+        blocks = [r[i : i + b_size] for i in range(num_b)]
+        run_blocks.append((blocks, num_b, n_r, b_size))
+        run_ks.append(int(np.ceil(n_r / b_size)))
+
+    rng = np.random.default_rng(seed)
+    boot_stats = {p: [] for p in percentiles}
+    all_data = np.concatenate(runs)
+
+    for _ in range(n_bootstrap):
+        resampled_runs = []
+        for (blocks, num_b, n_r, b_size), k_r in zip(run_blocks, run_ks):
+            idx = rng.integers(0, num_b, size=k_r)
+            resampled_runs.append(np.concatenate([blocks[i] for i in idx])[:n_r])
+        boot_sample = np.concatenate(resampled_runs)
+        for p in percentiles:
+            boot_stats[p].append(float(np.percentile(boot_sample, p)))
+
+    ci_results = {}
+    lower_pct = (alpha / 2.0) * 100.0
+    upper_pct = (1.0 - alpha / 2.0) * 100.0
+
+    for p in percentiles:
+        emp_value = float(np.percentile(all_data, p))
+        ci_lower = float(np.percentile(boot_stats[p], lower_pct))
+        ci_upper = float(np.percentile(boot_stats[p], upper_pct))
+        ci_results[f"p{int(p)}"] = {
+            "value": round(emp_value, 2),
+            "ci_95_lower": round(ci_lower, 2),
+            "ci_95_upper": round(ci_upper, 2),
+            "ci_width": round(ci_upper - ci_lower, 2),
+        }
+
+    return ci_results
+
+
 def run_latency_sample_run(
     run_id: int,
     n_samples: int = 1000,
@@ -229,11 +282,11 @@ def main():
         runs_data.append(run_res)
         all_latencies.append(raw_arr)
 
-    # 3. Pooled analysis across all runs
+    # 3. Pooled analysis across all runs using stratified within-run MBB
     pooled_arr = np.concatenate(all_latencies)
-    pooled_mbb_50 = moving_block_bootstrap_ci(pooled_arr, percentiles=[50, 90, 95, 99], block_size=50)
-    pooled_mbb_25 = moving_block_bootstrap_ci(pooled_arr, percentiles=[50, 90, 95, 99], block_size=25)
-    pooled_mbb_100 = moving_block_bootstrap_ci(pooled_arr, percentiles=[50, 90, 95, 99], block_size=100)
+    pooled_mbb_50 = stratified_within_run_mbb_ci(all_latencies, percentiles=[50, 90, 95, 99], block_size=50)
+    pooled_mbb_25 = stratified_within_run_mbb_ci(all_latencies, percentiles=[50, 90, 95, 99], block_size=25)
+    pooled_mbb_100 = stratified_within_run_mbb_ci(all_latencies, percentiles=[50, 90, 95, 99], block_size=100)
 
     pooled_summary = {
         "total_samples": len(pooled_arr),
