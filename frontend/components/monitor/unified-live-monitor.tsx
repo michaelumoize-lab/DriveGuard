@@ -340,6 +340,15 @@ export function UnifiedLiveMonitor({
     driverId,
     onSafetyEvent: handleSafetyEvent,
     onCalibration: (cal) => {
+      if (!cal.is_completed) {
+        calibrationToastShownRef.current = false;
+        return;
+      }
+      if (calibrationToastShownRef.current) {
+        return;
+      }
+      calibrationToastShownRef.current = true;
+
       const calWithProfile = cal as typeof cal & {
         profile?: Record<string, any>;
       };
@@ -367,11 +376,15 @@ export function UnifiedLiveMonitor({
           }),
         })
           .then(() => {
-            toast.success("4-Zone Personal Calibration saved to PostgreSQL & AI Worker!");
+            toast.success("4-Zone Personal Calibration saved to PostgreSQL & AI Worker!", {
+              id: "calibration-completed-toast",
+            });
           })
           .catch(() => {});
       } else if (cal.is_completed && cal.rejection_reason) {
-        toast.error(`Calibration rejected: ${cal.rejection_reason}`);
+        toast.error(`Calibration rejected: ${cal.rejection_reason}`, {
+          id: "calibration-rejected-toast",
+        });
       }
     },
   });
@@ -379,12 +392,13 @@ export function UnifiedLiveMonitor({
   // Sync saved PostgreSQL DriverProfile to Python FastAPI worker whenever backendType or profile is ready
   const syncProfileToWorker = useCallback(async () => {
     if (!initialDriverProfile?.isCalibrated || !driverId) return;
-    const base =
+    // In cloud mode, route through same-origin `/api/v1/profiles` proxy to avoid CORS preflight failures
+    const endpoint =
       backendType === "cloud"
-        ? process.env.NEXT_PUBLIC_FASTAPI_URL || "https://driveguard-x048.onrender.com"
-        : "http://127.0.0.1:8000";
+        ? "/api/v1/profiles"
+        : "http://127.0.0.1:8000/api/v1/profiles";
     try {
-      await fetch(`${base.replace(/\/$/, "")}/api/v1/profiles`, {
+      await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getServerSession } from "@/lib/get-session";
+import { resolveCloudFastApiUrl } from "@/lib/fastapi-url";
 import type { HealthCheckResponse } from "@/types/health";
 
 export const dynamic = "force-dynamic";
@@ -31,7 +32,7 @@ async function runHealthCheckProbe(): Promise<HealthCheckResponse> {
   nextjsStatus.latencyMs = Date.now() - nextjsStart;
 
   // 2. Real FastAPI Health Check
-  const fastApiUrl = process.env.FASTAPI_URL || "https://driveguard-x048.onrender.com";
+  const fastApiUrl = resolveCloudFastApiUrl();
   let fastApiStatus: { status: "online" | "offline" | "error"; latencyMs?: number; message?: string } = {
     status: "offline",
   };
