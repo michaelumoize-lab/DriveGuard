@@ -128,15 +128,20 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     return () => clearInterval(timer);
   }, [connectionStatus]);
 
-  // Disconnect & cleanup LiveKit room
+  // Disconnect & cleanup LiveKit room and reset all cockpit telemetry state
   const disconnectRoom = useCallback(async () => {
     isConnectingRef.current = false;
     isLoopActiveRef.current = false;
     lastTelemetrySeqRef.current = BigInt(-1);
     lastTelemetryReceivedAtRef.current = 0;
+    calibrationCompletionEmittedRef.current = false;
+    activeStateRef.current = "NORMAL";
     latestRttRef.current = 0;
     rttSamplesRef.current = [];
     setIsStale(false);
+    setTelemetry(null);
+    setActiveSafetyEvent(null);
+    setCalibration(null);
     setLatencyDiagnostics(null);
     setRoundtripLatencyMs(0);
 
@@ -152,7 +157,8 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     if (currentRoom) {
       try {
         if (currentRoom.state !== ConnectionState.Disconnected) {
-          await currentRoom.disconnect();
+          // Pass stopTracks=false so LiveKit does not kill the browser's MediaStreamTrack behind useCamera
+          await currentRoom.disconnect(false);
         }
       } catch (_) {}
       const base = backendType === "cloud" ? cloudApiBase : localApiBase;
@@ -711,20 +717,10 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
 
   const switchBackend = useCallback(
     (type: "cloud" | "local") => {
-      const wasActive = isLoopActiveRef.current;
       setBackendType(type);
-      disconnectRoom().then(() => {
-        if (wasActive && lastVideoElementRef.current) {
-          isLoopActiveRef.current = true;
-          setTimeout(() => {
-            if (lastVideoElementRef.current) {
-              connectLivekit(lastVideoElementRef.current);
-            }
-          }, 150);
-        }
-      });
+      disconnectRoom();
     },
-    [disconnectRoom, connectLivekit]
+    [disconnectRoom]
   );
 
   // Unmount cleanup

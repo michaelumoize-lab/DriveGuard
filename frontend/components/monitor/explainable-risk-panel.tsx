@@ -4,7 +4,7 @@ import React from "react";
 import { FrameTelemetry, LatencyDiagnostics, explainReasonCode } from "@/types/telemetry";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ShieldCheck, AlertTriangle, Flame, Clock, Cpu } from "lucide-react";
+import { ShieldCheck, AlertTriangle, Flame, Clock, Cpu, Info } from "lucide-react";
 
 interface ExplainableRiskPanelProps {
   telemetry: FrameTelemetry | null;
@@ -17,6 +17,17 @@ export const ExplainableRiskPanel = React.memo(function ExplainableRiskPanel({
 }: ExplainableRiskPanelProps) {
   const reasons = telemetry?.reason_codes ?? [];
   const explained = reasons.map(explainReasonCode);
+  const state = telemetry?.state ?? "NORMAL";
+
+  // Separate primary fatigue/safety reasons from passive observation/quality notes when state is NORMAL
+  const primaryReasons =
+    state === "NORMAL"
+      ? explained.filter((r) => r.subsystem !== "QUALITY" && r.severity === "CRITICAL")
+      : explained.filter((r) => r.subsystem !== "QUALITY");
+  const qualityNotes =
+    state === "NORMAL"
+      ? explained.filter((r) => !primaryReasons.includes(r))
+      : explained.filter((r) => r.subsystem === "QUALITY");
 
   const queueMs =
     latencyDiagnostics?.queue_latency_ms ?? telemetry?.timing?.queue_latency_ms ?? 0;
@@ -34,7 +45,7 @@ export const ExplainableRiskPanel = React.memo(function ExplainableRiskPanel({
       <CardHeader className="py-3 px-4 border-b border-border/60 flex flex-row items-center justify-between space-y-0">
         <CardTitle className="text-xs font-mono uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
           <Cpu className="size-3.5 text-primary" />
-          Explainable Risk Rationale & Stage Timings
+          Explainable Risk Rationale &amp; Stage Timings
         </CardTitle>
         <Badge variant="outline" className="text-[10px] font-mono tabular-nums">
           Risk: {telemetry ? `${(telemetry.risk_score * 100).toFixed(0)}%` : "—"}
@@ -46,19 +57,37 @@ export const ExplainableRiskPanel = React.memo(function ExplainableRiskPanel({
           <div className="text-xs text-muted-foreground py-2">
             Awaiting live telemetry stream to evaluate physiological risk factors.
           </div>
-        ) : explained.length === 0 ? (
-          <div className="p-2.5 rounded-lg border border-emerald-500/30 bg-emerald-500/5 flex items-center gap-2.5 text-xs">
-            <ShieldCheck className="size-4 text-emerald-500 shrink-0" />
-            <div>
-              <div className="font-semibold text-foreground">All Physiological Signals Nominal</div>
-              <div className="text-muted-foreground text-[11px]">
-                EAR, blink reopening velocity (RCR), 60s PERCLOS, and head pitch are within your calibrated zone baseline.
+        ) : primaryReasons.length === 0 ? (
+          <div className="space-y-2">
+            <div className="p-2.5 rounded-lg border border-emerald-500/30 bg-emerald-500/5 flex items-center gap-2.5 text-xs">
+              <ShieldCheck className="size-4 text-emerald-500 shrink-0" />
+              <div>
+                <div className="font-semibold text-foreground">All Physiological Signals Nominal</div>
+                <div className="text-muted-foreground text-[11px]">
+                  EAR, blink reopening velocity (RCR), 60s PERCLOS, and head pitch are within safe bounds.
+                </div>
               </div>
             </div>
+
+            {qualityNotes.length > 0 && (
+              <div className="px-2.5 py-1.5 rounded-lg bg-muted/40 border border-border/60 flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
+                <Info className="size-3.5 text-primary shrink-0" />
+                <span className="font-medium text-foreground">Diagnostic Notes:</span>
+                {qualityNotes.map((note) => (
+                  <span
+                    key={note.code}
+                    title={note.description}
+                    className="px-1.5 py-0.5 rounded bg-background border border-border text-[10px] font-mono"
+                  >
+                    {note.title}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           <div className="space-y-2">
-            {explained.map((item) => (
+            {primaryReasons.map((item) => (
               <div
                 key={item.code}
                 className={`p-2.5 rounded-lg border text-xs flex items-start gap-2.5 ${
@@ -89,6 +118,21 @@ export const ExplainableRiskPanel = React.memo(function ExplainableRiskPanel({
                 </div>
               </div>
             ))}
+
+            {qualityNotes.length > 0 && (
+              <div className="px-2.5 py-1.5 rounded-lg bg-muted/40 border border-border/60 flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
+                <Info className="size-3.5 text-primary shrink-0" />
+                {qualityNotes.map((note) => (
+                  <span
+                    key={note.code}
+                    title={note.description}
+                    className="px-1.5 py-0.5 rounded bg-background border border-border text-[10px] font-mono"
+                  >
+                    {note.title}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

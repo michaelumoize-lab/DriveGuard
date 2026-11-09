@@ -294,7 +294,13 @@ export function GuidedCalibrationWizard({
               <div className="flex items-center bg-muted/60 rounded-md p-0.5 text-[11px] font-mono border border-border">
                 <button
                   type="button"
-                  onClick={() => switchBackend("local")}
+                  onClick={() => {
+                    if (backendType !== "local") {
+                      if (cameraState === "active") handleStopCalibration();
+                      switchBackend("local");
+                      toast.info("Calibration reset. Switched AI Engine to Localhost (127.0.0.1:8000).");
+                    }
+                  }}
                   className={`px-2 py-0.5 rounded transition-colors ${
                     backendType === "local"
                       ? "bg-primary text-primary-foreground font-semibold shadow-xs"
@@ -306,7 +312,13 @@ export function GuidedCalibrationWizard({
                 </button>
                 <button
                   type="button"
-                  onClick={() => switchBackend("cloud")}
+                  onClick={() => {
+                    if (backendType !== "cloud") {
+                      if (cameraState === "active") handleStopCalibration();
+                      switchBackend("cloud");
+                      toast.info("Calibration reset. Switched AI Engine to LiveKit Cloud.");
+                    }
+                  }}
                   className={`px-2 py-0.5 rounded transition-colors ${
                     backendType === "cloud"
                       ? "bg-primary text-primary-foreground font-semibold shadow-xs"
