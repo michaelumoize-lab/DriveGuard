@@ -138,6 +138,7 @@ export function UnifiedLiveMonitor({
   const sessionStartWallMsRef = useRef<number>(0);
   const lastAlertTimeRef = useRef<number>(0);
   const handledEventIdsRef = useRef<Set<string>>(new Set());
+  const calibrationToastShownRef = useRef<boolean>(false);
   const sessionStatsRef = useRef({
     totalFrames: 0,
     normalFramesCount: 0,
