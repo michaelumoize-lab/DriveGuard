@@ -20,6 +20,10 @@ class ZoneBaselineDTO(BaseModel):
     pitch_median_deg: float = Field(default=0.0, description="Median head pitch in degrees")
     yaw_median_deg: float = Field(default=0.0, description="Median head yaw in degrees")
     sample_count: int = Field(description="Number of valid calibration frames collected in this zone", ge=0)
+    ear_left_median: Optional[float] = Field(default=None, description="Median left eye EAR in this zone")
+    ear_right_median: Optional[float] = Field(default=None, description="Median right eye EAR in this zone")
+    blendshape_open_median: Optional[float] = Field(default=None, description="Median blink blendshape score")
+    confidence_median: Optional[float] = Field(default=None, description="Median landmark confidence")
 
 
 class DriverProfileDTO(BaseModel):
@@ -27,6 +31,7 @@ class DriverProfileDTO(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
+    version: int = Field(default=1, description="Calibration format algorithm version")
     driver_id: str = Field(default="driver_default", description="Unique driver identifier")
     calibrated_at: str = Field(description="ISO timestamp of calibration completion")
     is_calibrated: bool = Field(default=False, description="Whether this profile contains learned driver baselines")

@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { useCamera } from "@/hooks/use-camera";
 import { useLivekitTelemetryStream } from "@/hooks/use-livekit-telemetry-stream";
 import { CapturedFrame } from "@/types/camera";
-import { ExperimentMode, FrameTelemetry } from "@/types/telemetry";
+import { ExperimentMode, FrameTelemetry, SafetyEvent } from "@/types/telemetry";
 import { CameraView } from "@/components/camera/camera-view";
 import { CameraControls } from "@/components/camera/camera-controls";
 import { CameraSelector } from "@/components/camera/camera-selector";
@@ -14,6 +14,7 @@ import { CameraErrorDisplay } from "@/components/camera/camera-error";
 import { CameraSnapshotPreview } from "@/components/camera/camera-snapshot-preview";
 import { LiveTelemetryHUD } from "./live-telemetry-hud";
 import { ExperimentSelector } from "./experiment-selector";
+import { useDriveGuardAudio } from "@/hooks/use-driveguard-audio";
 import {
   Card,
   CardContent,
@@ -49,14 +50,24 @@ import {
 
 export function UnifiedLiveMonitor() {
   const containerRef = useRef<HTMLDivElement>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
 
   // Layout & UI States
   const [viewOrientation, setViewOrientation] = useState<"portrait" | "landscape">("landscape");
   const [framingMode, setFramingMode] = useState<"cover" | "fit">("cover");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isMobileDevice, setIsMobileDevice] = useState(false);
-  const [audioMuted, setAudioMuted] = useState(false);
+
+  // Web Audio Alert & Sound Synthesizer Subsystem
+  const {
+    isAudioUnlocked,
+    isMuted: audioMuted,
+    volume: audioVolume,
+    audioStatus,
+    toggleMute,
+    setVolume: setAudioVolume,
+    unlockAudio,
+    engine: audioEngine,
+  } = useDriveGuardAudio({ masterVolume: 0.8 });
 
   // Snapshot modal state
   const [capturedSnapshot, setCapturedSnapshot] = useState<CapturedFrame | null>(null);
@@ -72,6 +83,7 @@ export function UnifiedLiveMonitor() {
   // Session & Database Persistence Refs
   const activeSessionCodeRef = useRef<string | null>(null);
   const lastAlertTimeRef = useRef<number>(0);
+  const handledEventIdsRef = useRef<Set<string>>(new Set());
   const sessionStatsRef = useRef({
     totalFrames: 0,
     maxPerclos: 0,
@@ -99,18 +111,78 @@ export function UnifiedLiveMonitor() {
     captureSnapshot,
     refreshDevices,
   } = useCamera({
-    idealWidth: 1280,
-    idealHeight: 720,
-    idealFps: 30,
+    idealWidth: 640,
+    idealHeight: 480,
+    idealFps: 25,
     defaultFacingMode: "user",
     mirrored: true,
   });
+
+  // Reliable Safety Event Callback (Deterministic State Transitions & Fast-Path Audio Alerting)
+  const handleSafetyEvent = useCallback(
+    (event: SafetyEvent) => {
+      if (handledEventIdsRef.current.has(event.event_id)) {
+        return;
+      }
+      handledEventIdsRef.current.add(event.event_id);
+      if (handledEventIdsRef.current.size > 200) {
+        const [first] = handledEventIdsRef.current;
+        handledEventIdsRef.current.delete(first);
+      }
+
+      console.log(
+        `[Cockpit Monitor] Safety event received: ${event.previous_state} -> ${event.new_state} (ID: ${event.event_id})`
+      );
+
+      const eventTsMs =
+        typeof event.timestamp === "number" && !isNaN(event.timestamp)
+          ? Math.round(event.timestamp * 1000)
+          : Date.now();
+
+      // Fast-path Web Audio alert dispatch: bypass UI rendering queue and preempt lower tiers immediately
+      audioEngine?.setRiskState(event.new_state, event.event_id, eventTsMs);
+
+      if (event.new_state === "CRITICAL") {
+        lastAlertTimeRef.current = Date.now();
+        sessionStatsRef.current.criticalCount++;
+
+        const sessionCode = activeSessionCodeRef.current || "LIVE_TELEMETRY";
+        const earNum =
+          typeof event.metrics?.ear === "number" && !isNaN(event.metrics.ear)
+            ? event.metrics.ear
+            : 0.15;
+        const perclosNum =
+          typeof event.metrics?.perclos === "number" && !isNaN(event.metrics.perclos)
+            ? event.metrics.perclos
+            : 30.0;
+
+        // Immediately persist critical event transition to Neon DB
+        fetch("/api/alerts/log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionCode,
+            severity: "CRITICAL",
+            riskScore: typeof event.metrics?.risk_score === "number" ? event.metrics.risk_score : 0.85,
+            earValue: earNum,
+            perclosPct: perclosNum,
+            poseZone: event.metrics?.pose_zone ?? "CENTER",
+            reasons: event.metrics?.reasons ?? ["CRITICAL_STATE"],
+            message: `CRITICAL safety transition: EAR ${earNum.toFixed(3)}, PERCLOS ${perclosNum.toFixed(1)}%`,
+            timestampMs: Math.round(event.timestamp * 1000),
+          }),
+        }).catch(() => {});
+      }
+    },
+    [audioEngine]
+  );
 
   // 2. Adaptive AI Telemetry LiveKit WebRTC Streaming Hook
   const {
     isConnected: isWsConnected,
     connectionStatus: wsStatus,
     telemetry,
+    latencyDiagnostics,
     roundtripLatencyMs,
     experimentMode,
     backendType,
@@ -122,6 +194,7 @@ export function UnifiedLiveMonitor() {
   } = useLivekitTelemetryStream({
     sessionId: stableSessionId,
     driverId: "michael_driver",
+    onSafetyEvent: handleSafetyEvent,
   });
 
   // Reactive Stream Trigger: automatically start/stop WebSocket loop when camera becomes active
@@ -133,40 +206,7 @@ export function UnifiedLiveMonitor() {
     }
   }, [cameraState, isMirrored, startStreamingLoop, stopStreamingLoop, videoRef]);
 
-  // Synthesized Web Audio Buzzer on CRITICAL Fatigue
-  const playAlertBuzzer = useCallback(() => {
-    if (audioMuted) return;
-    try {
-      if (!audioContextRef.current) {
-        const AudioCtx =
-          window.AudioContext ||
-          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-        audioContextRef.current = new AudioCtx();
-      }
-      const ctx = audioContextRef.current;
-      if (ctx.state === "suspended") {
-        ctx.resume();
-      }
-
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-
-      osc.type = "sawtooth";
-      osc.frequency.setValueAtTime(880, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.25);
-
-      gain.gain.setValueAtTime(0.3, ctx.currentTime);
-      gain.gain.linearRampToValueAtTime(0.01, ctx.currentTime + 0.25);
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-
-      osc.start();
-      osc.stop(ctx.currentTime + 0.25);
-    } catch (_) {}
-  }, [audioMuted]);
-
-  // Handle telemetry updates & trigger alerts
+  // Handle telemetry updates: frames, PERCLOS accounting, and audio alert state synchronization
   useEffect(() => {
     if (!telemetry) return;
 
@@ -176,32 +216,39 @@ export function UnifiedLiveMonitor() {
       sessionStatsRef.current.maxPerclos = perclos;
     }
 
-    if (telemetry.state === "CRITICAL") {
-      sessionStatsRef.current.criticalCount++;
-      playAlertBuzzer();
+    // Synchronize audio subsystem with continuous telemetry state (handles WARNING, DROWSY, NORMAL, cooldowns)
+    if (telemetry.state) {
+      audioEngine?.setRiskState(telemetry.state, undefined, telemetry.timestamp_ms);
+    }
 
-      // Log alert to database (with 5-second cooldown)
+    if (telemetry.state === "CRITICAL") {
       const now = Date.now();
-      if (now - lastAlertTimeRef.current > 5000) {
+      if (now - lastAlertTimeRef.current >= 5000) {
         lastAlertTimeRef.current = now;
+        sessionStatsRef.current.criticalCount++;
+
+        const sessionCode = activeSessionCodeRef.current || "LIVE_TELEMETRY";
+        const earVal =
+          telemetry.eye_metrics?.ear_normalized ?? (telemetry.eye_metrics?.ear_raw ?? 0.15);
+        const perclosVal = telemetry.eye_metrics?.perclos_pct ?? 30.0;
         fetch("/api/alerts/log", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            sessionCode: activeSessionCodeRef.current || "LIVE_TELEMETRY",
-            type: "FATAL_FATIGUE",
+            sessionCode,
             severity: "CRITICAL",
-            message: `Severe fatigue detected: PERCLOS ${perclos.toFixed(1)}%, EAR ${telemetry.eye_metrics?.ear_raw.toFixed(3)}`,
-            metadata: {
-              riskScore: telemetry.risk_score,
-              poseZone: telemetry.pose_zone,
-              perclos,
-            },
+            riskScore: telemetry.risk_score ?? 0.85,
+            earValue: earVal,
+            perclosPct: perclosVal,
+            poseZone: telemetry.pose_zone ?? "CENTER",
+            reasons: telemetry.reason_codes ?? ["CRITICAL_STATE"],
+            message: `CRITICAL telemetry repeating alert: EAR ${earVal.toFixed(3)}, PERCLOS ${perclosVal.toFixed(1)}%`,
+            timestampMs: Date.now(),
           }),
         }).catch(() => {});
       }
     }
-  }, [telemetry, playAlertBuzzer]);
+  }, [telemetry, audioEngine]);
 
   // Auto-detect mobile device & portrait orientation on mount
   useEffect(() => {
@@ -257,6 +304,8 @@ export function UnifiedLiveMonitor() {
 
   // Start live monitoring (Hardware Camera + Database Driving Session)
   const handleStartMonitoring = useCallback(async () => {
+    // Unlock Web Audio context via the explicit user click gesture
+    unlockAudio();
     await startCamera();
 
     // Start database driving session
@@ -274,10 +323,13 @@ export function UnifiedLiveMonitor() {
         activeSessionCodeRef.current = data.sessionCode;
       }
     } catch (_) {}
-  }, [startCamera, experimentMode, isMobileDevice]);
+  }, [startCamera, experimentMode, isMobileDevice, unlockAudio]);
 
   // Stop live monitoring
   const handleStopMonitoring = useCallback(async () => {
+    // Silence any active alert tone immediately
+    audioEngine?.stopCurrentAlert();
+    audioEngine?.setRiskState("NORMAL");
     stopStreamingLoop();
     stopCamera();
 
@@ -298,7 +350,7 @@ export function UnifiedLiveMonitor() {
       } catch (_) {}
       activeSessionCodeRef.current = null;
     }
-  }, [stopStreamingLoop, stopCamera, streamDurationSec]);
+  }, [audioEngine, stopStreamingLoop, stopCamera, streamDurationSec]);
 
   // Snapshot capture handler
   const handleCaptureSnapshot = useCallback(async () => {
@@ -500,15 +552,27 @@ export function UnifiedLiveMonitor() {
                     </Button>
 
                     <div className="flex items-center gap-2">
-                      <Button
-                        size="icon"
-                        variant="secondary"
-                        onClick={() => setAudioMuted((prev) => !prev)}
-                        className="h-10 w-10 rounded-xl bg-black/80 backdrop-blur-md border border-white/20 text-white"
-                        title={audioMuted ? "Unmute Buzzer" : "Mute Buzzer"}
-                      >
-                        {audioMuted ? <VolumeX className="size-4" /> : <Volume2 className="size-4 text-primary" />}
-                      </Button>
+                      {audioStatus === "blocked" ? (
+                        <Button
+                          size="icon"
+                          variant="secondary"
+                          onClick={() => unlockAudio()}
+                          className="h-10 w-10 rounded-xl bg-amber-500/80 backdrop-blur-md border border-amber-400 text-white animate-pulse"
+                          title="Browser blocked audio. Click to Enable Sound Alerts"
+                        >
+                          <VolumeX className="size-4" />
+                        </Button>
+                      ) : (
+                        <Button
+                          size="icon"
+                          variant="secondary"
+                          onClick={toggleMute}
+                          className="h-10 w-10 rounded-xl bg-black/80 backdrop-blur-md border border-white/20 text-white"
+                          title={audioMuted ? "Unmute Audio Alerts" : "Mute Audio Alerts"}
+                        >
+                          {audioMuted ? <VolumeX className="size-4" /> : <Volume2 className="size-4 text-primary" />}
+                        </Button>
+                      )}
 
                       <Button
                         size="icon"
@@ -546,7 +610,10 @@ export function UnifiedLiveMonitor() {
                 isFullscreen={isFullscreen}
                 onStart={handleStartMonitoring}
                 onStop={handleStopMonitoring}
-                onPause={pauseCamera}
+                onPause={() => {
+                  audioEngine?.stopCurrentAlert();
+                  pauseCamera();
+                }}
                 onResume={resumeCamera}
                 onSwitchFacing={switchFacingMode}
                 onCaptureSnapshot={handleCaptureSnapshot}
@@ -580,6 +647,14 @@ export function UnifiedLiveMonitor() {
               telemetry={telemetry}
               cameraState={cameraState}
               backendType={backendType}
+              latencyDiagnostics={latencyDiagnostics}
+              isAudioUnlocked={isAudioUnlocked}
+              isMuted={audioMuted}
+              volume={audioVolume}
+              audioStatus={audioStatus}
+              onToggleMute={toggleMute}
+              onSetVolume={setAudioVolume}
+              onUnlockAudio={unlockAudio}
             />
 
             {/* Hardware & Cascade Configuration Card (Tabs for Clean Vertical Space) */}

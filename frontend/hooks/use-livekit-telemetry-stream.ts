@@ -12,6 +12,10 @@ import {
   ExperimentMode,
   FrameTelemetry,
   CalibrationPhase,
+  SafetyEvent,
+  LatencyDiagnostics,
+  AlertState,
+  EventAck,
 } from "@/types/telemetry";
 
 export interface UseLivekitTelemetryStreamOptions {
@@ -19,6 +23,7 @@ export interface UseLivekitTelemetryStreamOptions {
   driverId?: string;
   defaultBackend?: "cloud" | "local";
   onTelemetry?: (telemetry: FrameTelemetry) => void;
+  onSafetyEvent?: (event: SafetyEvent) => void;
   onCalibration?: (calibration: CalibrationPhase) => void;
   onError?: (err: Error) => void;
 }
@@ -29,6 +34,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     driverId = "driver_default",
     defaultBackend,
     onTelemetry,
+    onSafetyEvent,
     onCalibration,
     onError,
   } = options;
@@ -57,6 +63,8 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     "disconnected" | "connecting" | "connected" | "reconnecting" | "error"
   >("disconnected");
   const [telemetry, setTelemetry] = useState<FrameTelemetry | null>(null);
+  const [latencyDiagnostics, setLatencyDiagnostics] = useState<LatencyDiagnostics | null>(null);
+  const [activeSafetyEvent, setActiveSafetyEvent] = useState<SafetyEvent | null>(null);
   const [calibration, setCalibration] = useState<CalibrationPhase | null>(null);
   const [roundtripLatencyMs, setRoundtripLatencyMs] = useState<number>(0);
   const [experimentMode, setExperimentMode] = useState<ExperimentMode>(
@@ -69,11 +77,31 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
   const isLoopActiveRef = useRef<boolean>(false);
   const pendingCommandsRef = useRef<Array<Record<string, any>>>([]);
 
+  // Telemetry deduplication, state guard, and latency tracking refs
+  const lastTelemetrySeqRef = useRef<bigint>(BigInt(-1));
+  const activeStateRef = useRef<AlertState>("NORMAL");
+  const processedEventIdsRef = useRef<Set<string>>(new Set());
+  const rttSamplesRef = useRef<number[]>([]);
+  const latestRttRef = useRef<number>(0);
+  const pingSeqRef = useRef<number>(0);
+  const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const lastReactUpdateRef = useRef<number>(0);
+  const latestTimingRef = useRef<{ queueMs: number; inferMs: number; serverTotalMs: number }>({
+    queueMs: 0,
+    inferMs: 0,
+    serverTotalMs: 0,
+  });
+
   // Synchronized callback refs
   const onTelemetryRef = useRef(onTelemetry);
   useEffect(() => {
     onTelemetryRef.current = onTelemetry;
   }, [onTelemetry]);
+
+  const onSafetyEventRef = useRef(onSafetyEvent);
+  useEffect(() => {
+    onSafetyEventRef.current = onSafetyEvent;
+  }, [onSafetyEvent]);
 
   const onCalibrationRef = useRef(onCalibration);
   useEffect(() => {
@@ -89,6 +117,16 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
   const disconnectRoom = useCallback(async () => {
     isConnectingRef.current = false;
     isLoopActiveRef.current = false;
+    lastTelemetrySeqRef.current = BigInt(-1);
+    latestRttRef.current = 0;
+    rttSamplesRef.current = [];
+    setLatencyDiagnostics(null);
+    setRoundtripLatencyMs(0);
+
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current);
+      pingIntervalRef.current = null;
+    }
 
     const currentRoom = roomRef.current;
     roomRef.current = null;
@@ -140,6 +178,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
         publishedTrackRef.current = null;
       }
 
+      lastTelemetrySeqRef.current = BigInt(-1);
       isConnectingRef.current = true;
       setConnectionStatus("connecting");
 
@@ -174,6 +213,76 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
           }
         });
 
+        // Helper to update DataChannel RTT diagnostics and percentiles (invoked only from PING/PONG)
+        const updateRttSample = (
+          rttMs: number,
+          queueMs?: number,
+          inferMs?: number,
+          serverTotalMs?: number
+        ) => {
+          if (rttMs <= 0 || isNaN(rttMs)) return;
+          const roundedRtt = Math.round(rttMs);
+          latestRttRef.current = roundedRtt;
+          setRoundtripLatencyMs(roundedRtt);
+
+          const samples = rttSamplesRef.current;
+          samples.push(rttMs);
+          if (samples.length > 40) samples.shift();
+
+          const sorted = [...samples].sort((a, b) => a - b);
+          const p50 = sorted[Math.floor(sorted.length * 0.5)];
+          const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
+
+          setLatencyDiagnostics((prev) => {
+            const effectiveQueue = queueMs !== undefined ? queueMs : (prev?.queue_latency_ms ?? 0);
+            const effectiveInfer = inferMs !== undefined ? inferMs : (prev?.infer_duration_ms ?? 0);
+            const effectiveServerTotal =
+              serverTotalMs !== undefined && serverTotalMs > 0
+                ? serverTotalMs
+                : (effectiveQueue + effectiveInfer);
+
+            return {
+              datachannel_rtt_ms: roundedRtt,
+              queue_latency_ms: Math.round(effectiveQueue * 10) / 10,
+              infer_duration_ms: Math.round(effectiveInfer * 10) / 10,
+              server_total_ms: Math.round(effectiveServerTotal * 10) / 10,
+              rtt_p50: Math.round(p50),
+              rtt_p95: Math.round(p95),
+              last_measured_at: Date.now(),
+            };
+          });
+        };
+
+        // Helper to update server timing diagnostics from telemetry frames without recording an RTT sample
+        const updateServerTimings = (
+          queueMs: number,
+          inferMs: number,
+          serverTotalMs?: number
+        ) => {
+          setLatencyDiagnostics((prev) => {
+            const effectiveQueue = Math.round(queueMs * 10) / 10;
+            const effectiveInfer = Math.round(inferMs * 10) / 10;
+            const effectiveServerTotal =
+              serverTotalMs !== undefined && serverTotalMs > 0
+                ? serverTotalMs
+                : (effectiveQueue + effectiveInfer);
+
+            const measuredRtt = latestRttRef.current;
+            const p50 = prev?.rtt_p50 ?? (measuredRtt > 0 ? measuredRtt : 0);
+            const p95 = prev?.rtt_p95 ?? (measuredRtt > 0 ? measuredRtt : 0);
+
+            return {
+              datachannel_rtt_ms: measuredRtt,
+              queue_latency_ms: effectiveQueue,
+              infer_duration_ms: effectiveInfer,
+              server_total_ms: Math.round(effectiveServerTotal * 10) / 10,
+              rtt_p50: Math.round(p50),
+              rtt_p95: Math.round(p95),
+              last_measured_at: prev?.last_measured_at ?? Date.now(),
+            };
+          });
+        };
+
         // Listen for real-time telemetry from Python AI worker over WebRTC Data Channel
         room.on(RoomEvent.DataReceived, (payload: Uint8Array, participant?: RemoteParticipant) => {
           try {
@@ -181,26 +290,115 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
             const msg = JSON.parse(rawText);
 
             if (msg.type === "TELEMETRY" && msg.telemetry) {
+              const rawSeq = msg.frame_seq ?? msg.seq ?? (msg.telemetry.frame_index ?? 0);
+              let currentSeq: bigint;
+              try {
+                currentSeq = BigInt(String(rawSeq));
+              } catch {
+                currentSeq = BigInt(0);
+              }
+              // Stale packet rejection: discard packets with older or equal sequence numbers
+              if (currentSeq <= lastTelemetrySeqRef.current) {
+                return;
+              }
+              lastTelemetrySeqRef.current = currentSeq;
+
               const tel = msg.telemetry as FrameTelemetry;
-              const rtt = msg.network_roundtrip_ms ?? tel.inference_latency_ms;
-              setRoundtripLatencyMs(Math.round(rtt));
+              activeStateRef.current = tel.state;
+
+              const qLat = tel.timing?.queue_latency_ms ?? 0;
+              const infLat = tel.timing?.infer_duration_ms ?? (tel.inference_latency_ms ?? 0);
+              const sTotal = tel.timing?.server_total_ms ?? (qLat + infLat);
+              latestTimingRef.current = { queueMs: qLat, inferMs: infLat, serverTotalMs: sTotal };
+
+              // Reuse the last measured RTT when enriching telemetry.
+              // Ensure no RTT is inferred from server processing time before a ping/pong match.
+              const measuredRtt =
+                latestRttRef.current > 0 ? latestRttRef.current : undefined;
 
               const enriched: FrameTelemetry = {
                 ...tel,
-                network_roundtrip_ms: rtt,
+                network_roundtrip_ms: measuredRtt,
               };
 
-              setTelemetry(enriched);
+              // Immediately invoke callbacks for external synchronous listeners
               if (onTelemetryRef.current) {
                 onTelemetryRef.current(enriched);
               }
+              if (msg.calibration && onCalibrationRef.current) {
+                onCalibrationRef.current(msg.calibration as CalibrationPhase);
+              }
 
-              if (msg.calibration) {
-                const cal = msg.calibration as CalibrationPhase;
-                setCalibration(cal);
-                if (onCalibrationRef.current) {
-                  onCalibrationRef.current(cal);
+              // Throttle React state updates to ~20 FPS (max 1 update per 48ms) to prevent UI overload
+              const now = performance.now();
+              const shouldRender = now - lastReactUpdateRef.current >= 48;
+              if (shouldRender) {
+                lastReactUpdateRef.current = now;
+                setTelemetry(enriched);
+                updateServerTimings(qLat, infLat, sTotal);
+                if (msg.calibration) {
+                  setCalibration(msg.calibration as CalibrationPhase);
                 }
+              } else if (msg.calibration && (msg.calibration as CalibrationPhase).is_completed) {
+                // Ensure calibration completion is immediately reflected in React state
+                setCalibration(msg.calibration as CalibrationPhase);
+              }
+            } else if (msg.type === "SAFETY_EVENT") {
+              const safetyEvent = msg as SafetyEvent;
+              console.log(
+                `[DriveGuard LiveKit] Safety event received: ${safetyEvent.previous_state} -> ${safetyEvent.new_state} (ID: ${safetyEvent.event_id})`
+              );
+
+              // 1. Immediately acknowledge event back to Python worker over reliable DataChannel
+              if (roomRef.current && roomRef.current.state === ConnectionState.Connected) {
+                const ackPayload: EventAck = {
+                  action: "EVENT_ACK",
+                  event_id: safetyEvent.event_id,
+                  event_seq: String(safetyEvent.event_seq),
+                  client_timestamp: performance.now(),
+                };
+                try {
+                  const ackBytes = new TextEncoder().encode(JSON.stringify(ackPayload));
+                  roomRef.current.localParticipant
+                    .publishData(ackBytes, { reliable: true })
+                    .catch((ackErr) => {
+                      console.warn("[DriveGuard LiveKit] Failed to send EVENT_ACK:", ackErr);
+                    });
+                } catch (ackErr) {
+                  console.warn("[DriveGuard LiveKit] Failed to send EVENT_ACK:", ackErr);
+                }
+              }
+
+              // 2. Idempotent deduplication (prevent re-triggering alert audio on retransmitted packets)
+              if (!processedEventIdsRef.current.has(safetyEvent.event_id)) {
+                processedEventIdsRef.current.add(safetyEvent.event_id);
+                if (processedEventIdsRef.current.size > 200) {
+                  const oldest = processedEventIdsRef.current.values().next().value;
+                  if (oldest) processedEventIdsRef.current.delete(oldest);
+                }
+
+                activeStateRef.current = safetyEvent.new_state;
+                setActiveSafetyEvent(safetyEvent);
+
+                if (onSafetyEventRef.current) {
+                  onSafetyEventRef.current(safetyEvent);
+                }
+              }
+            } else if (msg.type === "STATE_SYNC") {
+              console.log(
+                `[DriveGuard LiveKit] State synchronization received from server. Current state: ${msg.current_state}`
+              );
+              if (msg.current_state) {
+                activeStateRef.current = msg.current_state;
+              }
+              if (msg.latest_safety_event) {
+                setActiveSafetyEvent(msg.latest_safety_event as SafetyEvent);
+              }
+            } else if (msg.type === "PONG") {
+              if (msg.client_ts !== undefined && msg.client_ts !== null) {
+                const rtt = Math.max(0, performance.now() - msg.client_ts);
+                const timing = latestTimingRef.current;
+                updateRttSample(rtt, timing.queueMs, timing.inferMs, timing.serverTotalMs);
               }
             } else if (
               msg.type === "CALIBRATION_STARTED" ||
@@ -227,14 +425,54 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
 
         room.on(RoomEvent.Disconnected, () => {
           console.log("[DriveGuard LiveKit] Room disconnected.");
+          lastTelemetrySeqRef.current = BigInt(-1);
+          latestRttRef.current = 0;
+          if (pingIntervalRef.current) {
+            clearInterval(pingIntervalRef.current);
+            pingIntervalRef.current = null;
+          }
           setConnectionStatus("disconnected");
         });
 
         // Connect WebRTC to LiveKit Cloud
         console.log(`[DriveGuard LiveKit] Connecting to SFU: ${data.url}`);
+        lastTelemetrySeqRef.current = BigInt(-1);
         await room.connect(data.url, data.token);
         console.log(`[DriveGuard LiveKit] Successfully connected to room '${data.room_name}'!`);
         setConnectionStatus("connected");
+
+        // Start periodic RTT ping probe (every 1s) to measure exact DataChannel latency
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+        }
+        pingIntervalRef.current = setInterval(() => {
+          if (room.state !== ConnectionState.Connected) return;
+          pingSeqRef.current += 1;
+          const pingMsg = {
+            action: "PING",
+            client_ts: performance.now(),
+            ping_id: pingSeqRef.current,
+          };
+          try {
+            const payload = new TextEncoder().encode(JSON.stringify(pingMsg));
+            room.localParticipant
+              .publishData(payload, { reliable: false })
+              .catch((pingErr) => {
+                console.debug("[DriveGuard LiveKit] PING publish dropped:", pingErr);
+              });
+          } catch (_) {}
+        }, 1000);
+
+        // Request initial state synchronization from server upon connection/reconnection
+        try {
+          const syncMsg = { action: "SYNC_STATE" };
+          const payload = new TextEncoder().encode(JSON.stringify(syncMsg));
+          room.localParticipant
+            .publishData(payload, { reliable: true })
+            .catch((syncErr) => {
+              console.warn("[DriveGuard LiveKit] SYNC_STATE publish failed:", syncErr);
+            });
+        } catch (_) {}
 
         // Flush any queued commands (e.g. START_CALIBRATION requested before handshake)
         while (pendingCommandsRef.current.length > 0) {
@@ -256,13 +494,22 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
           const videoTrack = mediaStream.getVideoTracks()[0];
 
           if (videoTrack) {
-            console.log(`[DriveGuard LiveKit] Publishing camera track (${videoTrack.label})...`);
+            const trackSettings = videoTrack.getSettings ? videoTrack.getSettings() : {};
+            console.log(`[DriveGuard LiveKit] Publishing camera track (${videoTrack.label}):`, {
+              actualWidth: trackSettings.width,
+              actualHeight: trackSettings.height,
+              actualFps: trackSettings.frameRate,
+            });
             const pub = await room.localParticipant.publishTrack(videoTrack, {
               name: "driver-camera",
               simulcast: false,
+              videoEncoding: {
+                maxBitrate: 650000,
+                maxFramerate: 25,
+              },
             });
             publishedTrackRef.current = pub.track as LocalVideoTrack;
-            console.log("[DriveGuard LiveKit] Camera track published successfully!");
+            console.log("[DriveGuard LiveKit] Camera track published successfully with 640x480@25fps encoding profile!");
           }
         }
       } catch (err: any) {
@@ -306,13 +553,24 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
           const mediaStream = videoElement.srcObject as MediaStream;
           const videoTrack = mediaStream.getVideoTracks()[0];
           if (videoTrack) {
+            const trackSettings = videoTrack.getSettings ? videoTrack.getSettings() : {};
+            console.log(`[DriveGuard LiveKit] Publishing camera track (${videoTrack.label}):`, {
+              actualWidth: trackSettings.width,
+              actualHeight: trackSettings.height,
+              actualFps: trackSettings.frameRate,
+            });
             roomRef.current.localParticipant
               .publishTrack(videoTrack, {
                 name: "driver-camera",
                 simulcast: false,
+                videoEncoding: {
+                  maxBitrate: 650000,
+                  maxFramerate: 25,
+                },
               })
               .then((pub) => {
                 publishedTrackRef.current = pub.track as LocalVideoTrack;
+                console.log("[DriveGuard LiveKit] Camera track published successfully with 640x480@25fps encoding profile!");
               })
               .catch((err) => console.warn("[DriveGuard LiveKit] Track publish error:", err));
           }
@@ -356,6 +614,17 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     sendCommand({ action: "SKIP_CALIBRATION_STEP" });
   }, [sendCommand]);
 
+  const recalibrateZone = useCallback(
+    (zone: string, durationSec = 4.0) => {
+      sendCommand({
+        action: "RECALIBRATE_ZONE",
+        zone,
+        zone_duration_sec: durationSec,
+      });
+    },
+    [sendCommand]
+  );
+
   const saveProfile = useCallback(
     (driverName = "Driver", vehicleId = "DriveGuard-01") => {
       sendCommand({
@@ -388,6 +657,8 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     isConnected: connectionStatus === "connected",
     connectionStatus,
     telemetry,
+    latencyDiagnostics,
+    activeSafetyEvent,
     calibration,
     roundtripLatencyMs,
     experimentMode,
@@ -398,6 +669,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     sendCommand,
     switchExperiment,
     startCalibration,
+    recalibrateZone,
     cancelCalibration,
     skipCalibrationStep,
     saveProfile,

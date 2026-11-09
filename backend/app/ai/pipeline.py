@@ -14,13 +14,18 @@ Encapsulates the complete real-time computer vision and adaptive inference pipel
 
 from __future__ import annotations
 
+from collections import deque
+import logging
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Deque, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
+
+logger = logging.getLogger("driveguard.pipeline")
 
 from backend.app.ai.blink_kinematics import TemporalKinematicsTracker
 from backend.app.ai.cascade_classifier import (
@@ -70,20 +75,27 @@ class SessionAIEngine:
     ) -> None:
         self.session_id = session_id
         self.driver_id = driver_id
-        self.experiment_mode = experiment_mode
+        if isinstance(experiment_mode, str):
+            try:
+                self.experiment_mode = ExperimentMode(experiment_mode)
+            except ValueError:
+                self.experiment_mode = ExperimentMode.C_CONFIDENCE_GATED_CASCADE
+        else:
+            self.experiment_mode = experiment_mode
 
         # AI Subsystem Components
         self.landmarker = landmarker if landmarker is not None else DriveGuardFaceLandmarker()
         self.cascade = ConfidenceGatedEyeCascade(
             mode=self.experiment_mode, onnx_model_path=onnx_model_path
         )
-        self.kinematics = TemporalKinematicsTracker()
-
-        # Driver Profile & Risk Engine
         if profile is not None:
             self.profile = profile
         else:
             self.profile = DriverBehaviourProfile.create_default_uncalibrated(driver_id=driver_id)
+        self.kinematics = TemporalKinematicsTracker(
+            personalized_blink_median_ms=self.profile.blink_duration_median_ms,
+            personalized_blink_mad_ms=self.profile.blink_duration_mad_ms,
+        )
         self.risk_engine = PersonalisedAdaptiveRiskEngine(profile=self.profile, fixed_ear_threshold=0.22)
 
         # Calibration State
@@ -98,7 +110,26 @@ class SessionAIEngine:
         self.total_disagreements: int = 0
         self.total_mirror_check_suppressions: int = 0
         self.total_fixed_false_alarms: int = 0
-        self.latencies_ms: List[float] = []
+
+        # Hybrid latency history management:
+        # 1. Exact lifetime O(1) running accumulators for session summary mean calculation
+        #    (IEEE 754 64-bit summation accumulated rounding error bounded <= 1.1e-7 ms over 720k frames)
+        # 2. Bounded circular buffer for recent latency inspection (~60 seconds at 25 FPS = 1500 samples)
+        self._lifetime_latency_count: int = 0
+        self._lifetime_latency_sum_ms: float = 0.0
+        self._recent_latencies_ms: Deque[float] = deque(maxlen=1500)
+
+        self._process_lock = threading.Lock()
+        self._is_closed = False
+
+    @property
+    def latencies_ms(self) -> List[float]:
+        """Backward compatibility: returns shallow list copy of recent rolling window of up to 1500 samples."""
+        return list(self._recent_latencies_ms)
+
+    def get_recent_latencies(self) -> List[float]:
+        """Return shallow list copy of recent rolling window of up to 1500 latency samples."""
+        return list(self._recent_latencies_ms)
 
     # --------------------------------------------------------------------------
     # Calibration Lifecycle Management
@@ -109,23 +140,28 @@ class SessionAIEngine:
         four_zone_mode: Optional[bool] = None,
         three_zone_mode: Optional[bool] = None,
         zone_duration_sec: float = 5.0,
+        target_zone: Optional[str] = None,
         timestamp_ms: Optional[float] = None,
     ) -> CalibrationPhaseDTO:
-        """Begin a new guided calibration session (3-Zone, 4-Zone, or 1-Zone)."""
-        if four_zone_mode is True:
-            is_4z, is_3z = True, False
-        elif three_zone_mode is True:
-            is_4z, is_3z = False, True
-        elif four_zone_mode is False and (three_zone_mode is False or three_zone_mode is None):
+        """Begin a new guided calibration session (4-Zone default, 3-Zone, 1-Zone, or single-zone recalibration)."""
+        t_zone = None
+        if target_zone:
             is_4z, is_3z = False, False
+            t_zone = PoseZone(target_zone) if isinstance(target_zone, str) else target_zone
+        elif four_zone_mode is None and three_zone_mode is None:
+            # Default to full 4-Zone calibration
+            is_4z, is_3z = True, False
         else:
-            is_4z, is_3z = False, True
+            is_4z = bool(four_zone_mode)
+            is_3z = not is_4z and bool(three_zone_mode)
 
         self.calibration_session = GuidedCalibrationSession(
             driver_id=self.driver_id,
             four_zone_mode=is_4z,
             three_zone_mode=is_3z,
             step_duration_sec=zone_duration_sec,
+            target_zone=t_zone,
+            existing_profile=self.profile if (t_zone is not None and self.profile.calibration_mode != "UNCALIBRATED_DEFAULT") else None,
         )
         self.calibration_session.start(timestamp_ms=timestamp_ms)
         self._last_completed_calibration_dto = None
@@ -172,6 +208,7 @@ class SessionAIEngine:
                 stability_feedback="Profile Ready",
                 is_completed=True,
                 rejection_reason=self.calibration_session.rejection_reason if self.calibration_session else None,
+                quality_warnings=list(self.calibration_session.quality_warnings) if self.calibration_session else [],
             )
 
         ts = timestamp_ms or (time.perf_counter() * 1000.0)
@@ -195,6 +232,7 @@ class SessionAIEngine:
             stability_feedback=feedback,
             is_completed=self.calibration_session.is_completed,
             rejection_reason=self.calibration_session.rejection_reason,
+            quality_warnings=list(self.calibration_session.quality_warnings),
         )
 
     # --------------------------------------------------------------------------
@@ -205,6 +243,9 @@ class SessionAIEngine:
         """Update active personal baseline profile."""
         self.profile = profile
         self.risk_engine.set_profile(profile)
+        self.kinematics.set_personalized_baseline(
+            profile.blink_duration_median_ms, profile.blink_duration_mad_ms
+        )
 
     def export_profile_dto(self) -> DriverProfileDTO:
         """Export the active driver profile as a validated Pydantic DTO."""
@@ -219,12 +260,17 @@ class SessionAIEngine:
                 pitch_median_deg=round(zb.pitch_median_deg, 2),
                 yaw_median_deg=round(zb.yaw_median_deg, 2),
                 sample_count=zb.sample_count,
+                ear_left_median=round(zb.ear_left_median, 4) if zb.ear_left_median is not None else None,
+                ear_right_median=round(zb.ear_right_median, 4) if zb.ear_right_median is not None else None,
+                blendshape_open_median=round(zb.blendshape_open_median, 3) if zb.blendshape_open_median is not None else None,
+                confidence_median=round(zb.confidence_median, 3) if zb.confidence_median is not None else None,
             )
 
         cal_time = getattr(self.profile, "calibrated_at", None)
         iso_time = cal_time.isoformat() if isinstance(cal_time, datetime) else datetime.now(timezone.utc).isoformat()
 
         return DriverProfileDTO(
+            version=getattr(self.profile, "version", 1),
             driver_id=self.profile.driver_id,
             calibrated_at=iso_time,
             is_calibrated=self.profile.calibration_mode != "UNCALIBRATED_DEFAULT",
@@ -251,6 +297,10 @@ class SessionAIEngine:
                 pitch_median_deg=zb_dto.pitch_median_deg,
                 yaw_median_deg=zb_dto.yaw_median_deg,
                 sample_count=zb_dto.sample_count,
+                ear_left_median=zb_dto.ear_left_median,
+                ear_right_median=zb_dto.ear_right_median,
+                blendshape_open_median=zb_dto.blendshape_open_median,
+                confidence_median=zb_dto.confidence_median,
             )
 
         center_mad = (
@@ -274,6 +324,7 @@ class SessionAIEngine:
             neutral_yaw_deg=dto.neutral_yaw_deg,
             calibration_reliability=dto.calibration_reliability,
             zone_baselines=baselines,
+            version=dto.version,
         )
         self.set_profile(new_profile)
 
@@ -296,6 +347,20 @@ class SessionAIEngine:
         Returns:
             FrameTelemetryDTO containing full explainable metrics, risk score, and cascade decisions.
         """
+        with self._process_lock:
+            if self._is_closed:
+                return self._build_unavailable_frame(
+                    timestamp_ms if timestamp_ms is not None else (time.perf_counter() * 1000.0),
+                    latency_ms=0.0,
+                    reason="SESSION_CLOSED",
+                )
+            return self._process_frame_locked(frame_input, timestamp_ms)
+
+    def _process_frame_locked(
+        self,
+        frame_input: Union[np.ndarray, bytes],
+        timestamp_ms: Optional[float] = None,
+    ) -> FrameTelemetryDTO:
         t_start = time.perf_counter()
         self.frame_index += 1
 
@@ -323,16 +388,25 @@ class SessionAIEngine:
 
         # 3. MediaPipe Face Landmark & 3D Pose Extraction
         ref_ear = self.profile.center_ear_median
-        geom, _ = self.landmarker.process_frame(
-            frame_bgr=frame_bgr,
-            timestamp_ms=ts_ms,
-            neutral_pitch_deg=self.profile.neutral_pitch_deg,
-            neutral_yaw_deg=self.profile.neutral_yaw_deg,
-            reference_open_ear=ref_ear,
-            extract_crops=True,
-        )
+        try:
+            geom, _ = self.landmarker.process_frame(
+                frame_bgr=frame_bgr,
+                timestamp_ms=ts_ms,
+                neutral_pitch_deg=self.profile.neutral_pitch_deg,
+                neutral_yaw_deg=self.profile.neutral_yaw_deg,
+                reference_open_ear=ref_ear,
+                extract_crops=True,
+            )
+        except Exception as exc:
+            logger.error(f"[SessionAIEngine] Landmarker exception at {ts_ms}ms: {exc}", exc_info=True)
+            self.kinematics.handle_face_lost(ts_ms)
+            latency_ms = (time.perf_counter() - t_start) * 1000.0
+            return self._build_unavailable_frame(
+                ts_ms, latency_ms=latency_ms, reason=f"LANDMARKER_EXCEPTION: {type(exc).__name__}"
+            )
 
         if not geom.face_detected:
+            self.kinematics.handle_face_lost(ts_ms)
             latency_ms = (time.perf_counter() - t_start) * 1000.0
             return self._build_unavailable_frame(ts_ms, latency_ms=latency_ms, reason="NO_FACE_DETECTED")
 
@@ -340,23 +414,47 @@ class SessionAIEngine:
         zone_baseline = self.profile.get_zone_baseline(geom.pose_zone)
 
         # 5. Confidence-Gated Eye Cascade with Reliability-Weighted Arbitration
-        cascade_res = self.cascade.evaluate(
-            geom=geom,
-            reference_open_ear=zone_baseline.ear_median,
-            close_threshold_ear=zone_baseline.dynamic_closure_threshold,
-        )
+        try:
+            cascade_res = self.cascade.evaluate(
+                geom=geom,
+                reference_open_ear=zone_baseline.ear_median,
+                close_threshold_ear=zone_baseline.dynamic_closure_threshold,
+            )
+        except Exception as exc:
+            logger.warning(f"[SessionAIEngine] Cascade evaluation exception: {exc}. Activating geometric fallback.")
+            from backend.app.ai.cascade_classifier import CascadeStageResult
+            cascade_res = CascadeStageResult(
+                experiment_mode=self.experiment_mode,
+                geom_closure_score=float(geom.yaw_weighted_ear < zone_baseline.dynamic_closure_threshold),
+                geom_reliability=geom.geometric_reliability,
+                disagreement_ear_vs_blendshape=0.0,
+                cnn_invoked=False,
+                gate_trigger_reason="EXCEPTION_FALLBACK",
+                cnn_closed_prob=None,
+                cnn_open_prob=None,
+                cnn_reliability=None,
+                fused_closure_score=float(geom.yaw_weighted_ear < zone_baseline.dynamic_closure_threshold),
+                winning_authority="GEOMETRIC_FALLBACK",
+                stage_latency_ms=0.1,
+            )
         if cascade_res.cnn_invoked:
             self.total_cnn_invocations += 1
         if cascade_res.disagreement_ear_vs_blendshape > 0.40:
             self.total_disagreements += 1
 
-        # 6. Sub-Frame Blink Kinematics (Duration, RCR Velocity, Rolling 60s PERCLOS)
+        # 6. Sub-Frame Blink Kinematics (Duration, RCR Velocity, Rolling 60s PERCLOS, Gap-Aware)
         kinematics_res = self.kinematics.update(
             timestamp_ms=ts_ms,
             ear_value=geom.yaw_weighted_ear,
             fused_closure_score=cascade_res.fused_closure_score,
             mar_value=geom.mar,
             ear_close_threshold=zone_baseline.dynamic_closure_threshold,
+            left_ear=geom.left_ear,
+            right_ear=geom.right_ear,
+            left_threshold=zone_baseline.dynamic_closure_threshold,
+            right_threshold=zone_baseline.dynamic_closure_threshold,
+            landmark_confidence=geom.landmark_confidence,
+            head_yaw_deg=geom.yaw_deg,
         )
 
         # 7. Calibration Step Ingestion (if session is actively calibrating)
@@ -370,6 +468,10 @@ class SessionAIEngine:
                 yaw_deg=geom.yaw_deg,
                 is_eye_currently_closed=kinematics_res.is_eye_closed,
                 completed_blink=kinematics_res.completed_blink,
+                left_ear=geom.left_ear,
+                right_ear=geom.right_ear,
+                blendshape_blink_mean=geom.blendshape_blink_mean,
+                landmark_confidence=geom.landmark_confidence,
             )
             if new_profile is not None:
                 total_steps = len(self.calibration_session.steps)
@@ -387,6 +489,7 @@ class SessionAIEngine:
                     is_head_in_target_zone=True,
                     stability_feedback="Profile Ready",
                     is_completed=True,
+                    quality_warnings=list(self.calibration_session.quality_warnings),
                     profile=profile_dto,
                 )
                 self.calibration_session = None
@@ -404,6 +507,7 @@ class SessionAIEngine:
                     stability_feedback="Rejected",
                     is_completed=True,
                     rejection_reason=self.calibration_session.rejection_reason,
+                    quality_warnings=list(self.calibration_session.quality_warnings),
                 )
                 self.calibration_session = None
 
@@ -428,7 +532,9 @@ class SessionAIEngine:
             self.total_fixed_false_alarms += 1
 
         latency_ms = (time.perf_counter() - t_start) * 1000.0
-        self.latencies_ms.append(latency_ms)
+        self._lifetime_latency_count += 1
+        self._lifetime_latency_sum_ms += latency_ms
+        self._recent_latencies_ms.append(latency_ms)
 
         # 10. Assemble validated Pydantic DTO
         return FrameTelemetryDTO(
@@ -460,6 +566,12 @@ class SessionAIEngine:
                 blink_rcr=round(kinematics_res.completed_blink.rcr, 2) if kinematics_res.completed_blink else None,
                 blink_rate_per_min=round(kinematics_res.blink_rate_per_min, 1),
                 mar_yawn=round(geom.mar, 3),
+                blink_state=kinematics_res.blink_state.value,
+                blink_classification=kinematics_res.blink_classification.value,
+                perclos_coverage_pct=round(kinematics_res.perclos_coverage_pct, 1),
+                perclos_reliable=kinematics_res.perclos_reliable,
+                eye_closure_duration_ms=round(kinematics_res.current_closure_duration_ms, 1),
+                sampling_gap_detected=kinematics_res.sampling_gap_detected,
             ),
             cascade=CascadeStatusDTO(
                 experiment_mode=self.experiment_mode.value,
@@ -469,7 +581,11 @@ class SessionAIEngine:
                 cnn_open_prob=round(cascade_res.cnn_open_prob, 3) if cascade_res.cnn_open_prob is not None else None,
                 cnn_reliability=round(cascade_res.cnn_reliability, 3) if cascade_res.cnn_reliability is not None else None,
                 arbitration_winner=cascade_res.winning_authority,
-                disagreement_flag=cascade_res.cnn_invoked or cascade_res.disagreement_ear_vs_blendshape > 0.40,
+                disagreement_flag=bool(
+                    cascade_res.cnn_invoked
+                    and cascade_res.cnn_closed_prob is not None
+                    and abs(cascade_res.geom_closure_score - cascade_res.cnn_closed_prob) >= 0.30
+                ),
                 cnn_latency_ms=round(cascade_res.stage_latency_ms, 2),
             ),
             comparison=ConventionalFixedComparisonDTO(
@@ -513,9 +629,15 @@ class SessionAIEngine:
                 blink_rcr=None,
                 blink_rate_per_min=0.0,
                 mar_yawn=0.0,
+                blink_state="UNCERTAIN_GAP",
+                blink_classification="UNCERTAIN",
+                perclos_coverage_pct=0.0,
+                perclos_reliable=False,
+                eye_closure_duration_ms=0.0,
+                sampling_gap_detected=True,
             ),
             cascade=CascadeStatusDTO(
-                experiment_mode=self.experiment_mode.value,
+                experiment_mode=self.experiment_mode.value if hasattr(self.experiment_mode, "value") else str(self.experiment_mode),
                 cnn_triggered=False,
                 geom_open_prob=0.5,
                 geom_reliability=0.0,
@@ -537,15 +659,30 @@ class SessionAIEngine:
             inference_latency_ms=round(latency_ms, 2),
         )
 
+    def close(self) -> None:
+        """Cleanly release AI resources (MediaPipe FaceLandmarker, Cascade ONNX sessions)."""
+        with self._process_lock:
+            self._is_closed = True
+            if self.landmarker is not None and hasattr(self.landmarker, "close"):
+                try:
+                    self.landmarker.close()
+                except Exception:
+                    pass
+            self.cascade = None
+
     # --------------------------------------------------------------------------
     # Session Statistics & Diagnostics
     # --------------------------------------------------------------------------
 
     def get_session_summary(self) -> Dict[str, object]:
         """Return diagnostic metrics and summary for this monitoring session."""
-        mean_lat = float(np.mean(self.latencies_ms)) if self.latencies_ms else 0.0
+        mean_lat = (
+            float(self._lifetime_latency_sum_ms / self._lifetime_latency_count)
+            if self._lifetime_latency_count > 0
+            else 0.0
+        )
         cnn_rate = (self.total_cnn_invocations / max(1, self.frame_index)) * 100.0
-        return {
+        summary: Dict[str, object] = {
             "session_id": self.session_id,
             "driver_id": self.driver_id,
             "total_frames_processed": self.frame_index,
@@ -557,3 +694,6 @@ class SessionAIEngine:
             "is_calibrated": self.profile.calibration_mode != "UNCALIBRATED_DEFAULT",
             "active_calibration_mode": self.profile.calibration_mode,
         }
+        if hasattr(self.landmarker, "get_diagnostics"):
+            summary["landmarker_diagnostics"] = self.landmarker.get_diagnostics()
+        return summary

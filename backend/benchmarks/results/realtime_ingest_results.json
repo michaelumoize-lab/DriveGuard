@@ -1,0 +1,19 @@
+{
+  "benchmark": "realtime_ingest_benchmark",
+  "duration_seconds": 16.18,
+  "target_fps": 25.0,
+  "experiment_mode": "EXPERIMENT_C_CONFIDENCE_GATED_CASCADE",
+  "frames_received": 375,
+  "frames_processed": 369,
+  "frames_replaced": 6,
+  "frames_stale_discarded": 0,
+  "frames_errored": 0,
+  "frames_aborted": 0,
+  "frames_queued_final": 0,
+  "frames_in_flight_final": 0,
+  "accounting_discrepancy": 0,
+  "is_invariant_satisfied": true,
+  "effective_ingest_fps": 23.17,
+  "effective_processed_fps": 22.8,
+  "replacement_rate_pct": 1.6
+}

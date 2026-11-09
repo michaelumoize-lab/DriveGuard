@@ -80,7 +80,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     )
 
 # Root & Health Check Endpoints
-@app.get("/", tags=["Status"])
+@app.api_route("/", methods=["GET", "HEAD"], tags=["Status"])
 def root_info() -> Dict[str, str]:
     """Service status and OpenAPI documentation pointer."""
     return {
@@ -92,7 +92,7 @@ def root_info() -> Dict[str, str]:
     }
 
 
-@app.get("/health", tags=["Status"])
+@app.api_route("/health", methods=["GET", "HEAD"], tags=["Status"])
 def health_check() -> Dict[str, object]:
     """Diagnostic health check endpoint."""
     uptime_sec = round(time.time() - START_TIME, 1)

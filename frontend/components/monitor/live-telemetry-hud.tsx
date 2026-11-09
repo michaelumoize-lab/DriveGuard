@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { FrameTelemetry } from "@/types/telemetry";
+import { FrameTelemetry, LatencyDiagnostics } from "@/types/telemetry";
 import { CameraState } from "@/types/camera";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -27,6 +27,9 @@ import {
   ShieldCheck,
   Sparkles,
   Timer,
+  Volume1,
+  Volume2,
+  VolumeX,
   Wifi,
   WifiOff,
   Zap,
@@ -36,14 +39,30 @@ interface LiveTelemetryHUDProps {
   telemetry: FrameTelemetry | null;
   cameraState?: CameraState;
   backendType?: "cloud" | "local";
+  latencyDiagnostics?: LatencyDiagnostics | null;
   className?: string;
+  isAudioUnlocked?: boolean;
+  isMuted?: boolean;
+  volume?: number;
+  audioStatus?: "ready" | "muted" | "blocked" | "unavailable";
+  onToggleMute?: () => void;
+  onSetVolume?: (volume: number) => void;
+  onUnlockAudio?: () => Promise<boolean>;
 }
 
 export function LiveTelemetryHUD({
   telemetry,
   cameraState = "not-initialized",
   backendType = "local",
+  latencyDiagnostics = null,
   className = "",
+  isAudioUnlocked = false,
+  isMuted = false,
+  volume = 0.75,
+  audioStatus,
+  onToggleMute,
+  onSetVolume,
+  onUnlockAudio,
 }: LiveTelemetryHUDProps) {
   const isCameraActive = cameraState === "active";
 
@@ -60,12 +79,36 @@ export function LiveTelemetryHUD({
               Cockpit Telemetry HUD
             </h3>
           </div>
-          <Badge
-            variant="outline"
-            className="text-[10px] font-mono border-border text-muted-foreground"
-          >
-            {isCameraActive ? "INITIALIZING" : "STANDBY"}
-          </Badge>
+          <div className="flex items-center gap-2">
+            {audioStatus && (
+              <Badge
+                variant="outline"
+                className={`text-[10px] font-mono border-border ${
+                  audioStatus === "ready"
+                    ? "text-emerald-500 border-emerald-500/30"
+                    : audioStatus === "blocked"
+                    ? "text-amber-500 border-amber-500/30"
+                    : audioStatus === "muted"
+                    ? "text-rose-400 border-rose-500/30"
+                    : "text-muted-foreground"
+                }`}
+              >
+                {audioStatus === "ready"
+                  ? "AUDIO READY"
+                  : audioStatus === "blocked"
+                  ? "AUDIO BLOCKED"
+                  : audioStatus === "muted"
+                  ? "MUTED"
+                  : "NO AUDIO"}
+              </Badge>
+            )}
+            <Badge
+              variant="outline"
+              className="text-[10px] font-mono border-border text-muted-foreground"
+            >
+              {isCameraActive ? "INITIALIZING" : "STANDBY"}
+            </Badge>
+          </div>
         </div>
 
         {isCameraActive ? (
@@ -249,7 +292,7 @@ export function LiveTelemetryHUD({
           </div>
         </div>
 
-        {/* Right: Stream Health Metrics (FPS, Network RTT, Inference) */}
+        {/* Right: Stream Health Metrics (FPS, DataChannel RTT, Server Queue, Inference, Estimated E2E) */}
         <div className="flex items-center gap-1.5 flex-wrap font-mono text-[11px]">
           {/* FPS Badge with warning color if dropped */}
           <Badge
@@ -265,33 +308,124 @@ export function LiveTelemetryHUD({
             <span>{fps.toFixed(1)} FPS</span>
           </Badge>
 
-          {/* RTT Badge with latency rating */}
-          {network_roundtrip_ms !== undefined && (
+          {/* WebRTC DataChannel RTT Badge (Exact Measurement) */}
+          {(() => {
+            const rawRtt =
+              latencyDiagnostics?.datachannel_rtt_ms && latencyDiagnostics.datachannel_rtt_ms > 0
+                ? latencyDiagnostics.datachannel_rtt_ms
+                : typeof network_roundtrip_ms === "number" && network_roundtrip_ms > 0
+                ? network_roundtrip_ms
+                : 0;
+            const selectedRtt = Math.round(rawRtt);
+
+            if (selectedRtt <= 0) return null;
+
+            return (
+              <Badge
+                variant="outline"
+                className={`px-2 py-0.5 rounded-lg border gap-1 ${
+                  selectedRtt > 300
+                    ? "border-rose-500/40 text-rose-500 bg-rose-500/10"
+                    : selectedRtt > 120
+                    ? "border-amber-500/40 text-amber-500 bg-amber-500/10"
+                    : "border-border text-foreground"
+                }`}
+                title={`Exact WebRTC DataChannel RTT (p50: ${latencyDiagnostics?.rtt_p50 && latencyDiagnostics.rtt_p50 > 0 ? latencyDiagnostics.rtt_p50 : selectedRtt}ms, p95: ${latencyDiagnostics?.rtt_p95 && latencyDiagnostics.rtt_p95 > 0 ? latencyDiagnostics.rtt_p95 : selectedRtt}ms)`}
+              >
+                <Wifi className="size-3 text-primary" />
+                <span>RTT: {selectedRtt}ms</span>
+              </Badge>
+            );
+          })()}
+
+          {/* Server Ingest Queue Latency (Exact Measurement) */}
+          {telemetry.timing?.queue_latency_ms !== undefined && (
             <Badge
               variant="outline"
-              className={`px-2 py-0.5 rounded-lg border gap-1 ${
-                network_roundtrip_ms > 400
-                  ? "border-rose-500/40 text-rose-500 bg-rose-500/10"
-                  : network_roundtrip_ms > 150
-                  ? "border-amber-500/40 text-amber-500 bg-amber-500/10"
-                  : "border-border text-foreground"
-              }`}
-              title="End-to-End WebSocket Roundtrip Latency"
+              className="px-2 py-0.5 rounded-lg border-border text-muted-foreground hidden sm:inline-flex"
+              title="Server-side async frame queue dwell time before thread pool dispatch"
             >
-              <Wifi className="size-3 text-primary" />
-              <span>{network_roundtrip_ms}ms</span>
+              Q: {telemetry.timing.queue_latency_ms.toFixed(0)}ms
             </Badge>
           )}
 
-          {/* AI Inference Latency Badge */}
-          {inference_latency_ms !== undefined && inference_latency_ms > 0 && (
+          {/* AI Inference Latency Badge (Exact Measurement) */}
+          {(telemetry.timing?.infer_duration_ms != null || (inference_latency_ms != null && inference_latency_ms > 0)) && (
             <Badge
               variant="outline"
               className="px-2 py-0.5 rounded-lg border-border text-muted-foreground hidden xs:inline-flex"
-              title="Edge AI Model Processing Time"
+              title="MediaPipe + MobileNetV3 CPU pipeline inference latency"
             >
-              AI: {inference_latency_ms.toFixed(0)}ms
+              AI: {(telemetry.timing?.infer_duration_ms != null ? telemetry.timing.infer_duration_ms : inference_latency_ms ?? 0).toFixed(0)}ms
             </Badge>
+          )}
+
+          {/* Server Total Processing Latency (Exact Measurement: Queue + Inference) */}
+          {latencyDiagnostics?.server_total_ms != null && latencyDiagnostics.server_total_ms > 0 && (
+            <Badge
+              variant="outline"
+              className="px-2 py-0.5 rounded-lg border-primary/30 text-primary bg-primary/5 hidden md:inline-flex"
+              title="Authoritative Server Processing Duration: Ingest Queue Dwell + Pipeline Inference"
+            >
+              <Timer className="size-3 mr-0.5 text-primary" />
+              Server: {latencyDiagnostics.server_total_ms.toFixed(0)}ms
+            </Badge>
+          )}
+
+          {/* Audio Subsystem Indicator & Controls */}
+          {audioStatus && (
+            <button
+              type="button"
+              onClick={() => {
+                if (audioStatus === "blocked" && onUnlockAudio) {
+                  onUnlockAudio();
+                } else if (onToggleMute) {
+                  onToggleMute();
+                }
+              }}
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border text-[11px] font-mono transition-colors ${
+                audioStatus === "blocked"
+                  ? "border-amber-500/40 text-amber-500 bg-amber-500/10 hover:bg-amber-500/20 cursor-pointer animate-pulse"
+                  : audioStatus === "muted" || isMuted
+                  ? "border-rose-500/40 text-rose-400 bg-rose-500/10 hover:bg-rose-500/20 cursor-pointer"
+                  : audioStatus === "ready"
+                  ? "border-emerald-500/30 text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 cursor-pointer"
+                  : "border-border text-muted-foreground cursor-not-allowed"
+              }`}
+              title={
+                audioStatus === "blocked"
+                  ? "Audio autoplay blocked by browser. Click to enable sound alerts."
+                  : audioStatus === "muted" || isMuted
+                  ? "Audio muted. Click to unmute."
+                  : `Audio active (${Math.round(volume * 100)}%). Click to mute.`
+              }
+            >
+              {audioStatus === "blocked" ? (
+                <>
+                  <VolumeX className="size-3 text-amber-500" />
+                  <span>Enable Audio</span>
+                </>
+              ) : audioStatus === "muted" || isMuted ? (
+                <>
+                  <VolumeX className="size-3 text-rose-400" />
+                  <span>Muted</span>
+                </>
+              ) : audioStatus === "ready" ? (
+                <>
+                  {volume > 0.5 ? (
+                    <Volume2 className="size-3 text-emerald-400" />
+                  ) : (
+                    <Volume1 className="size-3 text-emerald-400" />
+                  )}
+                  <span>Audio {Math.round(volume * 100)}%</span>
+                </>
+              ) : (
+                <>
+                  <VolumeX className="size-3 text-muted-foreground" />
+                  <span>Audio N/A</span>
+                </>
+              )}
+            </button>
           )}
         </div>
       </div>
@@ -394,27 +528,45 @@ export function LiveTelemetryHUD({
         </div>
 
         {/* Card B: PERCLOS (Percentage Eye Closure) */}
-        <div className="p-3.5 rounded-2xl bg-card border border-border shadow-xs space-y-2.5">
-          <div className="flex items-start justify-between gap-2">
-            <div className="space-y-0.5 min-w-0">
-              <div className="flex items-center gap-1.5">
-                <Activity className="size-4 text-primary shrink-0" />
-                <span className="text-xs font-bold text-foreground truncate">
-                  PERCLOS Fatigue
-                </span>
-                <Badge variant="secondary" className="text-[9px] px-1 py-0 font-mono">
-                  60s
-                </Badge>
-              </div>
-              <div className="text-[10px] text-muted-foreground">
-                Time eyes closed &ge; 80%
-              </div>
-            </div>
+        {(() => {
+          const formattedCoveragePct = Math.round(eye_metrics?.perclos_coverage_pct ?? 100);
+          return (
+            <div className="p-3.5 rounded-2xl bg-card border border-border shadow-xs space-y-2.5">
+              <div className="flex items-start justify-between gap-2">
+                <div className="space-y-0.5 min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <Activity className="size-4 text-primary shrink-0" />
+                    <span className="text-xs font-bold text-foreground truncate">
+                      PERCLOS Fatigue
+                    </span>
+                    <Badge
+                      variant={eye_metrics?.perclos_reliable === false ? "outline" : "secondary"}
+                      className={`text-[9px] px-1 py-0 font-mono ${
+                        eye_metrics?.perclos_reliable === false
+                          ? "border-amber-500/50 text-amber-500 bg-amber-500/10"
+                          : ""
+                      }`}
+                      title={`Observation coverage across 60s window: ${formattedCoveragePct}%`}
+                    >
+                      {eye_metrics?.perclos_reliable === false
+                        ? `Cov ${formattedCoveragePct}%`
+                        : `60s`}
+                    </Badge>
+                  </div>
+                  <div className="text-[10px] text-muted-foreground flex items-center gap-1.5">
+                    <span>Time eyes closed &ge; 80%</span>
+                    {eye_metrics?.perclos_reliable === false && (
+                      <span className="text-amber-500 font-medium">⚠️ Low observation coverage</span>
+                    )}
+                  </div>
+                </div>
 
-            {/* PERCLOS Level Badge */}
+                {/* PERCLOS Level Badge */}
             <span
               className={`text-xs font-mono font-bold px-2 py-0.5 rounded-lg flex items-center gap-1 shrink-0 ${
-                perclos > 25
+                eye_metrics?.perclos_reliable === false
+                  ? "bg-muted text-muted-foreground border border-border"
+                  : perclos > 25
                   ? "bg-rose-500/20 text-rose-500 border border-rose-500/30"
                   : perclos > 15
                   ? "bg-amber-500/20 text-amber-500 border border-amber-500/30"
@@ -423,7 +575,13 @@ export function LiveTelemetryHUD({
             >
               <span>{perclos.toFixed(1)}%</span>
               <span className="text-[10px] uppercase font-sans">
-                {perclos > 25 ? "Critical" : perclos > 15 ? "Drowsy" : "Alert"}
+                {eye_metrics?.perclos_reliable === false
+                  ? "Uncertain"
+                  : perclos > 25
+                  ? "Critical"
+                  : perclos > 15
+                  ? "Drowsy"
+                  : "Alert"}
               </span>
             </span>
           </div>
@@ -451,6 +609,8 @@ export function LiveTelemetryHUD({
             </div>
           </div>
         </div>
+      );
+    })()}
       </div>
 
       {/* 4. Cockpit Kinematics & Spatial Tracking (4 Tile Instruments) */}

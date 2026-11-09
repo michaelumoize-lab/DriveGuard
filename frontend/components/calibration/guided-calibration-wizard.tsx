@@ -41,7 +41,7 @@ export function GuidedCalibrationWizard() {
   const [viewOrientation, setViewOrientation] = useState<"portrait" | "landscape">("landscape");
   const [framingMode, setFramingMode] = useState<"cover" | "fit">("cover");
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [calibrationMode, setCalibrationMode] = useState<"3_ZONE" | "4_ZONE">("3_ZONE");
+  const [calibrationMode, setCalibrationMode] = useState<"3_ZONE" | "4_ZONE">("4_ZONE");
   const [isSuccess, setIsSuccess] = useState(false);
   const [calState, setCalState] = useState<CalibrationPhase | null>(null);
 
@@ -60,9 +60,9 @@ export function GuidedCalibrationWizard() {
     startCamera,
     stopCamera,
   } = useCamera({
-    idealWidth: 1280,
-    idealHeight: 720,
-    idealFps: 30,
+    idealWidth: 640,
+    idealHeight: 480,
+    idealFps: 25,
     defaultFacingMode: "user",
     mirrored: true,
   });
@@ -75,6 +75,7 @@ export function GuidedCalibrationWizard() {
     startStreamingLoop,
     stopStreamingLoop,
     startCalibration: triggerLivekitCalibration,
+    recalibrateZone: triggerLivekitRecalibrate,
     cancelCalibration: triggerLivekitCancel,
     skipCalibrationStep: triggerLivekitSkip,
     backendType,
@@ -84,7 +85,7 @@ export function GuidedCalibrationWizard() {
     driverId: "michael_driver",
     onCalibration: (cal) => {
       setCalState(cal);
-      if (cal.is_completed) {
+      if (cal.is_completed && !cal.rejection_reason) {
         setIsSuccess(true);
         toast.success("Calibration Completed Successfully! Personal baselines activated.");
 
@@ -107,6 +108,8 @@ export function GuidedCalibrationWizard() {
             zoneBaselines: prof?.zone_baselines ?? cal,
           }),
         }).catch((e) => console.warn("Could not save profile to DB:", e));
+      } else if (cal.is_completed && cal.rejection_reason) {
+        setIsSuccess(false);
       }
     },
   });
@@ -115,8 +118,10 @@ export function GuidedCalibrationWizard() {
   useEffect(() => {
     if (livekitCalibration) {
       setCalState(livekitCalibration);
-      if (livekitCalibration.is_completed) {
+      if (livekitCalibration.is_completed && !livekitCalibration.rejection_reason) {
         setIsSuccess(true);
+      } else if (livekitCalibration.is_completed && livekitCalibration.rejection_reason) {
+        setIsSuccess(false);
       }
     }
   }, [livekitCalibration]);
@@ -175,6 +180,15 @@ export function GuidedCalibrationWizard() {
   const handleSkipZone = () => {
     triggerLivekitSkip();
     toast.info("Advancing past current spatial zone...");
+  };
+
+  const handleRecalibrateZone = async (zone: string) => {
+    setIsSuccess(false);
+    if (cameraState !== "active") {
+      await startCamera();
+    }
+    triggerLivekitRecalibrate(zone, 5.0);
+    toast.info(`Recalibrating ${zone} zone...`);
   };
 
   // Directional guidance helpers
@@ -386,10 +400,22 @@ export function GuidedCalibrationWizard() {
                   <p className="text-xs text-muted-foreground max-w-sm">
                     Your personalised baselines across spatial zones have been calculated and saved to your PostgreSQL profile.
                   </p>
-                  <div className="flex items-center gap-2 pt-2">
+                  <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
                     <Button size="sm" onClick={handleStartCalibration} variant="outline">
                       <RotateCcw className="size-4 mr-1.5" />
-                      Recalibrate
+                      Full Recalibration
+                    </Button>
+                    <Button size="sm" onClick={() => handleRecalibrateZone("CENTER")} variant="ghost" className="text-xs">
+                      Repeat Center
+                    </Button>
+                    <Button size="sm" onClick={() => handleRecalibrateZone("LEFT_MIRROR")} variant="ghost" className="text-xs">
+                      Repeat Left Mirror
+                    </Button>
+                    <Button size="sm" onClick={() => handleRecalibrateZone("RIGHT_MIRROR")} variant="ghost" className="text-xs">
+                      Repeat Right Mirror
+                    </Button>
+                    <Button size="sm" onClick={() => handleRecalibrateZone("DASHBOARD")} variant="ghost" className="text-xs">
+                      Repeat Dashboard
                     </Button>
                   </div>
                 </div>
@@ -451,6 +477,24 @@ export function GuidedCalibrationWizard() {
                 </div>
               </div>
 
+              {calState?.rejection_reason && (
+                <div className="p-3 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive text-xs space-y-2">
+                  <div>
+                    <span className="font-semibold block">⚠️ Calibration Session Rejected:</span>
+                    <p className="mt-0.5">{calState.rejection_reason}</p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-destructive/40 text-destructive hover:bg-destructive/10 h-7 text-xs"
+                    onClick={handleStartCalibration}
+                  >
+                    <RotateCcw className="size-3.5 mr-1" />
+                    Retry Calibration
+                  </Button>
+                </div>
+              )}
+
               {/* Spatial Alignment Status Indicator */}
               <div className="space-y-1.5">
                 <div className="flex justify-between items-center">
@@ -476,7 +520,9 @@ export function GuidedCalibrationWizard() {
                 <div className="flex justify-between font-mono">
                   <span className="text-muted-foreground">Zone Sample Acquisition:</span>
                   <span className="font-semibold text-foreground">
-                    {calState ? `${Math.round(calState.zone_progress_pct)}%` : "0%"}
+                    {calState
+                      ? `${Math.round(calState.zone_progress_pct)}% (${calState.stable_samples_count}/${calState.target_samples_count})`
+                      : "0%"}
                   </span>
                 </div>
                 <Progress value={calState?.zone_progress_pct || 0} className="h-2" />

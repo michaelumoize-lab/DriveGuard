@@ -1,0 +1,485 @@
+{
+  "benchmark": "latency_distribution_benchmark",
+  "timestamp": 1794125193.1538093,
+  "metadata_investigation": {
+    "protobuf_analysis": {
+      "protobuf_available": true,
+      "metadata_fields": [
+        "user_timestamp",
+        "frame_id",
+        "user_data"
+      ],
+      "user_timestamp_supported": true,
+      "frame_id_supported": true
+    },
+    "client_analysis": {
+      "livekit_client_version": "2.23.0",
+      "supports_track_user_timestamp": true,
+      "supports_frame_id": true,
+      "clock_domain_note": "user_timestamp represents application wall-clock time in microseconds. It must NOT be confused with VideoFrameEvent.timestamp_us which is WebRTC media clock.",
+      "clock_sync_requirement": "Capture-to-ingest delay (T_server_ingest - T_user_timestamp) is mathematically meaningful ONLY if browser and server clocks are synchronized (NTP error bound <= +-10ms). Without hardware PTP/NTP sync, clock drift between browser and Render container introduces unbounded offset error. Hence, capture-to-ingest latency is reported with explicit uncertainty bars."
+    }
+  },
+  "runs": [
+    {
+      "run_id": 1,
+      "sample_count": 10000,
+      "wall_duration_s": 435.7,
+      "mean_latency_ms": 43.56,
+      "std_latency_ms": 39.95,
+      "min_latency_ms": 19.86,
+      "max_latency_ms": 2552.38,
+      "percentiles_with_mbb_ci": {
+        "p50": {
+          "value": 36.23,
+          "ci_95_lower": 35.58,
+          "ci_95_upper": 36.98,
+          "ci_width": 1.4
+        },
+        "p90": {
+          "value": 58.32,
+          "ci_95_lower": 54.25,
+          "ci_95_upper": 63.68,
+          "ci_width": 9.43
+        },
+        "p95": {
+          "value": 74.46,
+          "ci_95_lower": 66.4,
+          "ci_95_upper": 86.91,
+          "ci_width": 20.51
+        },
+        "p99": {
+          "value": 182.31,
+          "ci_95_lower": 113.18,
+          "ci_95_upper": 224.49,
+          "ci_width": 111.31
+        }
+      },
+      "sensitivity_mbb_ci": {
+        "block_size_25": {
+          "p50": {
+            "value": 36.23,
+            "ci_95_lower": 35.71,
+            "ci_95_upper": 36.82,
+            "ci_width": 1.11
+          },
+          "p90": {
+            "value": 58.32,
+            "ci_95_lower": 55.16,
+            "ci_95_upper": 62.59,
+            "ci_width": 7.43
+          },
+          "p95": {
+            "value": 74.46,
+            "ci_95_lower": 67.2,
+            "ci_95_upper": 83.88,
+            "ci_width": 16.69
+          },
+          "p99": {
+            "value": 182.31,
+            "ci_95_lower": 125.8,
+            "ci_95_upper": 222.29,
+            "ci_width": 96.49
+          }
+        },
+        "block_size_50": {
+          "p50": {
+            "value": 36.23,
+            "ci_95_lower": 35.58,
+            "ci_95_upper": 36.98,
+            "ci_width": 1.4
+          },
+          "p90": {
+            "value": 58.32,
+            "ci_95_lower": 54.25,
+            "ci_95_upper": 63.68,
+            "ci_width": 9.43
+          },
+          "p95": {
+            "value": 74.46,
+            "ci_95_lower": 66.4,
+            "ci_95_upper": 86.91,
+            "ci_width": 20.51
+          },
+          "p99": {
+            "value": 182.31,
+            "ci_95_lower": 113.18,
+            "ci_95_upper": 224.49,
+            "ci_width": 111.31
+          }
+        },
+        "block_size_100": {
+          "p50": {
+            "value": 36.23,
+            "ci_95_lower": 35.35,
+            "ci_95_upper": 37.33,
+            "ci_width": 1.98
+          },
+          "p90": {
+            "value": 58.32,
+            "ci_95_lower": 53.17,
+            "ci_95_upper": 65.45,
+            "ci_width": 12.28
+          },
+          "p95": {
+            "value": 74.46,
+            "ci_95_lower": 64.63,
+            "ci_95_upper": 94.83,
+            "ci_width": 30.2
+          },
+          "p99": {
+            "value": 182.31,
+            "ci_95_lower": 103.59,
+            "ci_95_upper": 235.54,
+            "ci_width": 131.96
+          }
+        }
+      }
+    },
+    {
+      "run_id": 2,
+      "sample_count": 10000,
+      "wall_duration_s": 427.24,
+      "mean_latency_ms": 42.71,
+      "std_latency_ms": 24.91,
+      "min_latency_ms": 18.61,
+      "max_latency_ms": 588.77,
+      "percentiles_with_mbb_ci": {
+        "p50": {
+          "value": 38.38,
+          "ci_95_lower": 37.19,
+          "ci_95_upper": 39.52,
+          "ci_width": 2.33
+        },
+        "p90": {
+          "value": 57.3,
+          "ci_95_lower": 54.85,
+          "ci_95_upper": 59.71,
+          "ci_width": 4.86
+        },
+        "p95": {
+          "value": 67.64,
+          "ci_95_lower": 63.32,
+          "ci_95_upper": 72.74,
+          "ci_width": 9.43
+        },
+        "p99": {
+          "value": 114.52,
+          "ci_95_lower": 100.41,
+          "ci_95_upper": 140.57,
+          "ci_width": 40.16
+        }
+      },
+      "sensitivity_mbb_ci": {
+        "block_size_25": {
+          "p50": {
+            "value": 38.38,
+            "ci_95_lower": 37.51,
+            "ci_95_upper": 39.23,
+            "ci_width": 1.73
+          },
+          "p90": {
+            "value": 57.3,
+            "ci_95_lower": 55.36,
+            "ci_95_upper": 59.3,
+            "ci_width": 3.94
+          },
+          "p95": {
+            "value": 67.64,
+            "ci_95_lower": 64.15,
+            "ci_95_upper": 71.82,
+            "ci_width": 7.67
+          },
+          "p99": {
+            "value": 114.52,
+            "ci_95_lower": 100.76,
+            "ci_95_upper": 136.31,
+            "ci_width": 35.55
+          }
+        },
+        "block_size_50": {
+          "p50": {
+            "value": 38.38,
+            "ci_95_lower": 37.19,
+            "ci_95_upper": 39.52,
+            "ci_width": 2.33
+          },
+          "p90": {
+            "value": 57.3,
+            "ci_95_lower": 54.85,
+            "ci_95_upper": 59.71,
+            "ci_width": 4.86
+          },
+          "p95": {
+            "value": 67.64,
+            "ci_95_lower": 63.32,
+            "ci_95_upper": 72.74,
+            "ci_width": 9.43
+          },
+          "p99": {
+            "value": 114.52,
+            "ci_95_lower": 100.41,
+            "ci_95_upper": 140.57,
+            "ci_width": 40.16
+          }
+        },
+        "block_size_100": {
+          "p50": {
+            "value": 38.38,
+            "ci_95_lower": 36.85,
+            "ci_95_upper": 39.94,
+            "ci_width": 3.09
+          },
+          "p90": {
+            "value": 57.3,
+            "ci_95_lower": 54.43,
+            "ci_95_upper": 60.28,
+            "ci_width": 5.84
+          },
+          "p95": {
+            "value": 67.64,
+            "ci_95_lower": 62.98,
+            "ci_95_upper": 74.31,
+            "ci_width": 11.34
+          },
+          "p99": {
+            "value": 114.52,
+            "ci_95_lower": 100.1,
+            "ci_95_upper": 142.92,
+            "ci_width": 42.82
+          }
+        }
+      }
+    },
+    {
+      "run_id": 3,
+      "sample_count": 10000,
+      "wall_duration_s": 400.34,
+      "mean_latency_ms": 40.02,
+      "std_latency_ms": 20.05,
+      "min_latency_ms": 21.72,
+      "max_latency_ms": 697.68,
+      "percentiles_with_mbb_ci": {
+        "p50": {
+          "value": 35.35,
+          "ci_95_lower": 34.77,
+          "ci_95_upper": 36.09,
+          "ci_width": 1.32
+        },
+        "p90": {
+          "value": 55.26,
+          "ci_95_lower": 52.46,
+          "ci_95_upper": 58.3,
+          "ci_width": 5.84
+        },
+        "p95": {
+          "value": 65.39,
+          "ci_95_lower": 62.0,
+          "ci_95_upper": 69.38,
+          "ci_width": 7.39
+        },
+        "p99": {
+          "value": 97.66,
+          "ci_95_lower": 88.12,
+          "ci_95_upper": 112.91,
+          "ci_width": 24.79
+        }
+      },
+      "sensitivity_mbb_ci": {
+        "block_size_25": {
+          "p50": {
+            "value": 35.35,
+            "ci_95_lower": 34.87,
+            "ci_95_upper": 35.87,
+            "ci_width": 1.0
+          },
+          "p90": {
+            "value": 55.26,
+            "ci_95_lower": 53.18,
+            "ci_95_upper": 57.37,
+            "ci_width": 4.19
+          },
+          "p95": {
+            "value": 65.39,
+            "ci_95_lower": 62.67,
+            "ci_95_upper": 68.24,
+            "ci_width": 5.56
+          },
+          "p99": {
+            "value": 97.66,
+            "ci_95_lower": 89.67,
+            "ci_95_upper": 112.0,
+            "ci_width": 22.33
+          }
+        },
+        "block_size_50": {
+          "p50": {
+            "value": 35.35,
+            "ci_95_lower": 34.77,
+            "ci_95_upper": 36.09,
+            "ci_width": 1.32
+          },
+          "p90": {
+            "value": 55.26,
+            "ci_95_lower": 52.46,
+            "ci_95_upper": 58.3,
+            "ci_width": 5.84
+          },
+          "p95": {
+            "value": 65.39,
+            "ci_95_lower": 62.0,
+            "ci_95_upper": 69.38,
+            "ci_width": 7.39
+          },
+          "p99": {
+            "value": 97.66,
+            "ci_95_lower": 88.12,
+            "ci_95_upper": 112.91,
+            "ci_width": 24.79
+          }
+        },
+        "block_size_100": {
+          "p50": {
+            "value": 35.35,
+            "ci_95_lower": 34.62,
+            "ci_95_upper": 36.39,
+            "ci_width": 1.77
+          },
+          "p90": {
+            "value": 55.26,
+            "ci_95_lower": 51.54,
+            "ci_95_upper": 59.28,
+            "ci_width": 7.74
+          },
+          "p95": {
+            "value": 65.39,
+            "ci_95_lower": 60.93,
+            "ci_95_upper": 70.55,
+            "ci_width": 9.62
+          },
+          "p99": {
+            "value": 97.66,
+            "ci_95_lower": 87.7,
+            "ci_95_upper": 118.05,
+            "ci_width": 30.35
+          }
+        }
+      }
+    }
+  ],
+  "pooled_summary": {
+    "total_samples": 30000,
+    "mean_latency_ms": 42.1,
+    "std_latency_ms": 29.58,
+    "min_latency_ms": 18.61,
+    "max_latency_ms": 2552.38,
+    "percentiles_with_mbb_ci": {
+      "p50": {
+        "value": 36.44,
+        "ci_95_lower": 35.97,
+        "ci_95_upper": 37.03,
+        "ci_width": 1.06
+      },
+      "p90": {
+        "value": 56.77,
+        "ci_95_lower": 55.22,
+        "ci_95_upper": 58.8,
+        "ci_width": 3.58
+      },
+      "p95": {
+        "value": 68.37,
+        "ci_95_lower": 65.66,
+        "ci_95_upper": 72.13,
+        "ci_width": 6.46
+      },
+      "p99": {
+        "value": 129.74,
+        "ci_95_lower": 107.66,
+        "ci_95_upper": 161.28,
+        "ci_width": 53.62
+      }
+    },
+    "sensitivity_analysis": {
+      "block_size_25": {
+        "p50": {
+          "value": 36.44,
+          "ci_95_lower": 36.06,
+          "ci_95_upper": 36.85,
+          "ci_width": 0.79
+        },
+        "p90": {
+          "value": 56.77,
+          "ci_95_lower": 55.53,
+          "ci_95_upper": 58.45,
+          "ci_width": 2.92
+        },
+        "p95": {
+          "value": 68.37,
+          "ci_95_lower": 66.11,
+          "ci_95_upper": 71.66,
+          "ci_width": 5.55
+        },
+        "p99": {
+          "value": 129.74,
+          "ci_95_lower": 111.29,
+          "ci_95_upper": 152.47,
+          "ci_width": 41.18
+        }
+      },
+      "block_size_50": {
+        "p50": {
+          "value": 36.44,
+          "ci_95_lower": 35.97,
+          "ci_95_upper": 37.03,
+          "ci_width": 1.06
+        },
+        "p90": {
+          "value": 56.77,
+          "ci_95_lower": 55.22,
+          "ci_95_upper": 58.8,
+          "ci_width": 3.58
+        },
+        "p95": {
+          "value": 68.37,
+          "ci_95_lower": 65.66,
+          "ci_95_upper": 72.13,
+          "ci_width": 6.46
+        },
+        "p99": {
+          "value": 129.74,
+          "ci_95_lower": 107.66,
+          "ci_95_upper": 161.28,
+          "ci_width": 53.62
+        }
+      },
+      "block_size_100": {
+        "p50": {
+          "value": 36.44,
+          "ci_95_lower": 35.81,
+          "ci_95_upper": 37.28,
+          "ci_width": 1.47
+        },
+        "p90": {
+          "value": 56.77,
+          "ci_95_lower": 54.82,
+          "ci_95_upper": 59.64,
+          "ci_width": 4.82
+        },
+        "p95": {
+          "value": 68.37,
+          "ci_95_lower": 65.21,
+          "ci_95_upper": 73.45,
+          "ci_width": 8.24
+        },
+        "p99": {
+          "value": 129.74,
+          "ci_95_lower": 105.09,
+          "ci_95_upper": 169.67,
+          "ci_width": 64.58
+        }
+      }
+    },
+    "mbb_method": "stratified_within_run_blocks",
+    "note": "Resampled strictly within individual 10k runs to prevent artificial cross-run autocorrelation pollution."
+  }
+}

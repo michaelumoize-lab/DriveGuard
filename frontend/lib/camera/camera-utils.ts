@@ -3,7 +3,6 @@ import {
   CameraError,
   CameraFacingMode,
   CameraResolution,
-  CameraState,
 } from "@/types/camera";
 
 /**
@@ -44,22 +43,26 @@ export function checkMediaDevicesSupport(): {
 
 /**
  * Builds recommended MediaStream constraints for automotive driver monitoring.
- * Ideal resolution: 1280x720, 15-30 FPS, user-facing, audio disabled.
+ * Phase 1 Target: 640x480 at 25 FPS, user-facing, audio disabled.
  */
 export function getRecommendedConstraints(
   deviceId?: string,
   facingMode: "user" | "environment" = "user",
-  idealWidth: number = 1280,
-  idealHeight: number = 720,
-  idealFps: number = 30
+  idealWidth: number = 640,
+  idealHeight: number = 480,
+  idealFps: number = 25
 ): MediaStreamConstraints {
+  const maxWidth = Math.max(1280, idealWidth);
+  const maxHeight = Math.max(720, idealHeight);
+  const maxFps = Math.max(30, idealFps);
+
   if (deviceId) {
     return {
       video: {
         deviceId: { exact: deviceId },
-        width: { ideal: idealWidth, min: 640 },
-        height: { ideal: idealHeight, min: 480 },
-        frameRate: { ideal: idealFps, min: 15 },
+        width: { ideal: idealWidth, max: maxWidth },
+        height: { ideal: idealHeight, max: maxHeight },
+        frameRate: { ideal: idealFps, max: maxFps },
       },
       audio: false,
     };
@@ -68,9 +71,9 @@ export function getRecommendedConstraints(
   return {
     video: {
       facingMode: { ideal: facingMode },
-      width: { ideal: idealWidth, min: 640 },
-      height: { ideal: idealHeight, min: 480 },
-      frameRate: { ideal: idealFps, min: 15 },
+      width: { ideal: idealWidth, max: maxWidth },
+      height: { ideal: idealHeight, max: maxHeight },
+      frameRate: { ideal: idealFps, max: maxFps },
     },
     audio: false,
   };
@@ -146,17 +149,22 @@ export function extractCameraResolution(
   video: HTMLVideoElement,
   track?: MediaStreamTrack
 ): CameraResolution | null {
-  const w = video.videoWidth;
-  const h = video.videoHeight;
-  if (!w || !h) return null;
-
+  let w = video.videoWidth;
+  let h = video.videoHeight;
   let frameRate: number | undefined;
+
   if (track && track.getSettings) {
     const settings = track.getSettings();
+    if ((!w || !h) && settings.width && settings.height) {
+      w = settings.width;
+      h = settings.height;
+    }
     if (settings.frameRate) {
       frameRate = Math.round(settings.frameRate);
     }
   }
+
+  if (!w || !h) return null;
 
   return {
     width: w,

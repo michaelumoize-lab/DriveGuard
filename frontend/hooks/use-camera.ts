@@ -28,9 +28,9 @@ export function useCamera(options: UseCameraOptions = {}) {
     preferredDeviceId,
     defaultFacingMode = "user",
     mirrored = true,
-    idealWidth = 1280,
-    idealHeight = 720,
-    idealFps = 30,
+    idealWidth = 640,
+    idealHeight = 480,
+    idealFps = 25,
     onStateChange,
     onError,
   } = options;
@@ -247,6 +247,13 @@ export function useCamera(options: UseCameraOptions = {}) {
           };
 
           const settings = videoTrack.getSettings ? videoTrack.getSettings() : {};
+          console.log("[DriveGuard Camera] Hardware stream active. Verified track settings:", {
+            actualWidth: settings.width,
+            actualHeight: settings.height,
+            actualFps: settings.frameRate,
+            facingMode: settings.facingMode,
+          });
+
           if (settings.facingMode === "environment") {
             setFacingMode("environment");
             setIsMirrored(false);
@@ -277,7 +284,10 @@ export function useCamera(options: UseCameraOptions = {}) {
           // Measure resolution once metadata loads
           const updateRes = () => {
             const res = extractCameraResolution(video, videoTrack);
-            if (res) setResolution(res);
+            if (res) {
+              console.log("[DriveGuard Camera] Viewport resolution confirmed:", res);
+              setResolution(res);
+            }
           };
 
           if (video.readyState >= 1) {
