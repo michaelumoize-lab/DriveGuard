@@ -67,15 +67,18 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
   const [activeSafetyEvent, setActiveSafetyEvent] = useState<SafetyEvent | null>(null);
   const [calibration, setCalibration] = useState<CalibrationPhase | null>(null);
   const [roundtripLatencyMs, setRoundtripLatencyMs] = useState<number>(0);
+  const [isStale, setIsStale] = useState<boolean>(false);
   const [experimentMode, setExperimentMode] = useState<ExperimentMode>(
     "EXPERIMENT_C_CONFIDENCE_GATED_CASCADE"
   );
 
   const roomRef = useRef<Room | null>(null);
   const publishedTrackRef = useRef<LocalVideoTrack | null>(null);
+  const lastVideoElementRef = useRef<HTMLVideoElement | undefined>(undefined);
   const isConnectingRef = useRef<boolean>(false);
   const isLoopActiveRef = useRef<boolean>(false);
   const pendingCommandsRef = useRef<Array<Record<string, any>>>([]);
+  const lastTelemetryReceivedAtRef = useRef<number>(0);
 
   // Telemetry deduplication, state guard, and latency tracking refs
   const lastTelemetrySeqRef = useRef<bigint>(BigInt(-1));
@@ -113,13 +116,32 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     onErrorRef.current = onError;
   }, [onError]);
 
+  // Stale telemetry watchdog (triggers if connected and no telemetry arrives for > 3.5s after initial frame)
+  useEffect(() => {
+    if (connectionStatus !== "connected") {
+      setIsStale(false);
+      return;
+    }
+    const timer = setInterval(() => {
+      if (
+        lastTelemetryReceivedAtRef.current > 0 &&
+        Date.now() - lastTelemetryReceivedAtRef.current > 3500
+      ) {
+        setIsStale(true);
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [connectionStatus]);
+
   // Disconnect & cleanup LiveKit room
   const disconnectRoom = useCallback(async () => {
     isConnectingRef.current = false;
     isLoopActiveRef.current = false;
     lastTelemetrySeqRef.current = BigInt(-1);
+    lastTelemetryReceivedAtRef.current = 0;
     latestRttRef.current = 0;
     rttSamplesRef.current = [];
+    setIsStale(false);
     setLatencyDiagnostics(null);
     setRoundtripLatencyMs(0);
 
@@ -138,14 +160,22 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
           await currentRoom.disconnect();
         }
       } catch (_) {}
+      const base = backendType === "cloud" ? cloudApiBase : localApiBase;
+      fetch(`${base}/api/v1/livekit/stop-worker?room_name=${encodeURIComponent(stableSessionId)}`, {
+        method: "POST",
+        keepalive: true,
+      }).catch(() => {});
     }
 
     setConnectionStatus("disconnected");
-  }, []);
+  }, [backendType, cloudApiBase, localApiBase, stableSessionId]);
 
   // Connect to LiveKit Cloud via signed token
   const connectLivekit = useCallback(
     async (videoElement?: HTMLVideoElement) => {
+      if (videoElement) {
+        lastVideoElementRef.current = videoElement;
+      }
       // If already connected, ensure video track is published if provided
       if (roomRef.current && roomRef.current.state === ConnectionState.Connected) {
         if (videoElement && videoElement.srcObject && !publishedTrackRef.current) {
@@ -211,6 +241,14 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
           } else if (state === ConnectionState.Disconnected) {
             setConnectionStatus("disconnected");
           }
+        });
+
+        room.on(RoomEvent.Reconnected, () => {
+          setConnectionStatus("connected");
+          try {
+            const payload = new TextEncoder().encode(JSON.stringify({ action: "SYNC_STATE" }));
+            room.localParticipant.publishData(payload, { reliable: true }).catch(() => {});
+          } catch (_) {}
         });
 
         // Helper to update DataChannel RTT diagnostics and percentiles (invoked only from PING/PONG)
@@ -302,6 +340,8 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
                 return;
               }
               lastTelemetrySeqRef.current = currentSeq;
+              lastTelemetryReceivedAtRef.current = Date.now();
+              setIsStale(false);
 
               const tel = msg.telemetry as FrameTelemetry;
               activeStateRef.current = tel.state;
@@ -403,18 +443,24 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
             } else if (
               msg.type === "CALIBRATION_STARTED" ||
               msg.type === "CALIBRATION_STEP_SKIPPED" ||
-              msg.type === "CALIBRATION_COMPLETED"
+              msg.type === "CALIBRATION_COMPLETED" ||
+              msg.type === "CALIBRATION_REJECTED"
             ) {
               if (msg.calibration) {
                 const cal = msg.calibration as CalibrationPhase & { profile?: unknown };
                 if (msg.profile) {
                   cal.profile = msg.profile;
                 }
+                if (msg.rejection_reason && !cal.rejection_reason) {
+                  cal.rejection_reason = msg.rejection_reason;
+                }
                 setCalibration(cal);
                 if (onCalibrationRef.current) {
                   onCalibrationRef.current(cal);
                 }
               }
+            } else if (msg.type === "CALIBRATION_CANCELLED") {
+              setCalibration(null);
             } else if (msg.type === "EXPERIMENT_SWITCHED" && msg.mode) {
               setExperimentMode(msg.mode as ExperimentMode);
             }
@@ -638,12 +684,20 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
 
   const switchBackend = useCallback(
     (type: "cloud" | "local") => {
+      const wasActive = isLoopActiveRef.current;
       setBackendType(type);
       disconnectRoom().then(() => {
-        // Will reconnect on next frame or explicit reconnect
+        if (wasActive && lastVideoElementRef.current) {
+          isLoopActiveRef.current = true;
+          setTimeout(() => {
+            if (lastVideoElementRef.current) {
+              connectLivekit(lastVideoElementRef.current);
+            }
+          }, 150);
+        }
       });
     },
-    [disconnectRoom]
+    [disconnectRoom, connectLivekit]
   );
 
   // Unmount cleanup
@@ -656,6 +710,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
   return {
     isConnected: connectionStatus === "connected",
     connectionStatus,
+    isStale,
     telemetry,
     latencyDiagnostics,
     activeSafetyEvent,

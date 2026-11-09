@@ -1,10 +1,12 @@
 import React from "react";
-import Link from "next/link";
 import { getServerSession } from "@/lib/get-session";
 import { prisma } from "@/lib/prisma";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ShieldAlert, AlertTriangle, Eye, Activity } from "lucide-react";
+import { ShieldAlert } from "lucide-react";
+import { AlertsTableInteractive } from "@/components/dashboard/alerts-table-interactive";
+import { DataExportButton } from "@/components/dashboard/data-export-button";
+import type { SerializedAlertItem } from "@/components/dashboard/sessions-table-interactive";
 
 export const dynamic = "force-dynamic";
 
@@ -20,21 +22,41 @@ export default async function AlertsPage({ searchParams }: AlertsPageProps) {
   const params = await searchParams;
   const severityFilter = params.severity?.toUpperCase();
 
-  const alerts = userId
+  const rawAlerts = userId
     ? await prisma.drowsinessAlert.findMany({
         where: {
           session: { userId },
-          ...(severityFilter && ["WARNING", "CRITICAL"].includes(severityFilter)
-            ? { severity: severityFilter }
-            : {}),
         },
         orderBy: { createdAt: "desc" },
-        take: 50,
+        take: 100,
       })
     : [];
 
+  const alerts: SerializedAlertItem[] = rawAlerts.map((a) => ({
+    id: a.id,
+    createdAt: a.createdAt.toISOString(),
+    severity: a.severity,
+    riskScore: a.riskScore,
+    earValue: a.earValue,
+    perclosPct: a.perclosPct,
+    poseZone: a.poseZone,
+    reasons: a.reasons,
+    cascadeDecision: a.cascadeDecision,
+  }));
+
   const criticalCount = alerts.filter((a) => a.severity === "CRITICAL").length;
   const warningCount = alerts.filter((a) => a.severity === "WARNING").length;
+
+  const exportRecords = alerts.map((a) => ({
+    createdAt: a.createdAt,
+    severity: a.severity,
+    riskScorePct: (a.riskScore * 100).toFixed(1),
+    earValue: a.earValue.toFixed(3),
+    perclosPct: a.perclosPct.toFixed(1),
+    poseZone: a.poseZone,
+    reasons: a.reasons.join("; "),
+    cascadeDecision: a.cascadeDecision,
+  }));
 
   return (
     <div className="p-4 sm:p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
@@ -42,20 +64,24 @@ export default async function AlertsPage({ searchParams }: AlertsPageProps) {
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground flex items-center gap-2">
             <ShieldAlert className="size-6 text-primary" />
-            Fatigue & Drowsiness Alerts
+            Fatigue &amp; Drowsiness Alerts
           </h1>
           <p className="text-xs sm:text-sm text-muted-foreground">
             Auditable log of explainable safety alerts, micro-sleep flags, and kinematic thresholds.
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <Badge variant="outline" className="text-xs font-mono">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline" className="text-xs font-mono text-amber-500 border-amber-500/30">
             {warningCount} Warnings
           </Badge>
           <Badge variant="destructive" className="text-xs font-mono">
             {criticalCount} Critical
           </Badge>
+          <DataExportButton
+            data={exportRecords}
+            filenamePrefix="driveguard_alerts"
+          />
         </div>
       </div>
 
@@ -63,7 +89,7 @@ export default async function AlertsPage({ searchParams }: AlertsPageProps) {
         <CardHeader>
           <CardTitle className="text-lg">Recorded Alert Events</CardTitle>
           <CardDescription>
-            Showing the latest safety interventions detected during your driving sessions.
+            Showing safety interventions detected during your driving sessions. Hover any reason badge for its kinematic threshold explanation.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -72,55 +98,10 @@ export default async function AlertsPage({ searchParams }: AlertsPageProps) {
               No drowsiness alerts recorded. The driver has maintained alert state!
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs text-left">
-                <thead className="border-b border-border text-muted-foreground">
-                  <tr>
-                    <th className="py-2.5 px-3">Time</th>
-                    <th className="py-2.5 px-3">Severity</th>
-                    <th className="py-2.5 px-3">Risk</th>
-                    <th className="py-2.5 px-3">EAR</th>
-                    <th className="py-2.5 px-3">PERCLOS (60s)</th>
-                    <th className="py-2.5 px-3">Gaze Zone</th>
-                    <th className="py-2.5 px-3">Reasons</th>
-                    <th className="py-2.5 px-3">Cascade Authority</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {alerts.map((a) => (
-                    <tr key={a.id} className="hover:bg-muted/30">
-                      <td className="py-2.5 px-3 font-mono text-muted-foreground">
-                        {new Date(a.createdAt).toLocaleTimeString()}
-                      </td>
-                      <td className="py-2.5 px-3">
-                        <Badge
-                          variant={a.severity === "CRITICAL" ? "destructive" : "outline"}
-                          className="text-[10px]"
-                        >
-                          {a.severity}
-                        </Badge>
-                      </td>
-                      <td className="py-2.5 px-3 font-mono font-semibold">
-                        {(a.riskScore * 100).toFixed(0)}%
-                      </td>
-                      <td className="py-2.5 px-3 font-mono">{a.earValue.toFixed(3)}</td>
-                      <td className="py-2.5 px-3 font-mono">{a.perclosPct.toFixed(1)}%</td>
-                      <td className="py-2.5 px-3">
-                        <Badge variant="outline" className="text-[10px] font-mono">
-                          {a.poseZone}
-                        </Badge>
-                      </td>
-                      <td className="py-2.5 px-3 text-muted-foreground">
-                        {a.reasons.join(", ")}
-                      </td>
-                      <td className="py-2.5 px-3 font-mono text-muted-foreground">
-                        {a.cascadeDecision}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <AlertsTableInteractive
+              alerts={alerts}
+              initialSeverity={severityFilter}
+            />
           )}
         </CardContent>
       </Card>

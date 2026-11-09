@@ -5,7 +5,8 @@ import { toast } from "sonner";
 import { useCamera } from "@/hooks/use-camera";
 import { useLivekitTelemetryStream } from "@/hooks/use-livekit-telemetry-stream";
 import { CameraView } from "@/components/camera/camera-view";
-import { CalibrationPhase } from "@/types/telemetry";
+import { CalibrationPhase, ZoneBaselineEntry } from "@/types/telemetry";
+import { InitialDriverProfileData } from "@/components/monitor/unified-live-monitor";
 import {
   Card,
   CardContent,
@@ -34,16 +35,27 @@ import {
   Minimize2,
 } from "lucide-react";
 
-export function GuidedCalibrationWizard() {
+export interface GuidedCalibrationWizardProps {
+  driverId?: string;
+  initialDriverProfile?: InitialDriverProfileData | null;
+}
+
+export function GuidedCalibrationWizard({
+  driverId = "driver_default",
+  initialDriverProfile = null,
+}: GuidedCalibrationWizardProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Layout & UI States (matching Live Monitor)
-  const [viewOrientation, setViewOrientation] = useState<"portrait" | "landscape">("landscape");
-  const [framingMode, setFramingMode] = useState<"cover" | "fit">("cover");
+  const [viewOrientation] = useState<"portrait" | "landscape">("landscape");
+  const [framingMode] = useState<"cover" | "fit">("cover");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [calibrationMode, setCalibrationMode] = useState<"3_ZONE" | "4_ZONE">("4_ZONE");
   const [isSuccess, setIsSuccess] = useState(false);
   const [calState, setCalState] = useState<CalibrationPhase | null>(null);
+  const [savedProfile, setSavedProfile] = useState<InitialDriverProfileData | null>(
+    initialDriverProfile
+  );
 
   // Stable Session ID
   const stableSessionId = useMemo(
@@ -82,21 +94,39 @@ export function GuidedCalibrationWizard() {
     switchBackend,
   } = useLivekitTelemetryStream({
     sessionId: stableSessionId,
-    driverId: "michael_driver",
+    driverId,
     onCalibration: (cal) => {
       setCalState(cal);
       if (cal.is_completed && !cal.rejection_reason) {
         setIsSuccess(true);
         toast.success("Calibration Completed Successfully! Personal baselines activated.");
 
-        // Persist calibrated baseline to PostgreSQL
+        // Persist calibrated baseline to PostgreSQL & update local inspector state
         const prof = (cal as unknown as { profile?: Record<string, unknown> })?.profile;
+        const centerEar = (prof?.center_ear_median as number) ?? 0.285;
+        const zoneMap = (prof?.zone_baselines as Record<string, unknown> | null) ?? null;
+
+        setSavedProfile((prev) => ({
+          isCalibrated: true,
+          calibrationMode,
+          centerEarMedian: centerEar,
+          centerEarMadScaled: (prof?.center_ear_mad_scaled as number) ?? prev?.centerEarMadScaled ?? 0.018,
+          blinkDurationMedianMs: (prof?.blink_duration_median_ms as number) ?? prev?.blinkDurationMedianMs ?? 185.0,
+          blinkDurationMadMs: (prof?.blink_duration_mad_ms as number) ?? prev?.blinkDurationMadMs ?? 35.0,
+          blinkRcrMedian: (prof?.blink_rcr_median as number) ?? prev?.blinkRcrMedian ?? 0.92,
+          blinkRcrMad: (prof?.blink_rcr_mad as number) ?? prev?.blinkRcrMad ?? 0.14,
+          neutralPitchDeg: (prof?.neutral_pitch_deg as number) ?? prev?.neutralPitchDeg ?? 0.0,
+          neutralYawDeg: (prof?.neutral_yaw_deg as number) ?? prev?.neutralYawDeg ?? 0.0,
+          calibrationReliability: (prof?.calibration_reliability as number) ?? prev?.calibrationReliability ?? 0.90,
+          zoneBaselines: zoneMap ?? prev?.zoneBaselines ?? null,
+        }));
+
         fetch("/api/calibration/save", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             calibrationMode,
-            centerEarMedian: (prof?.center_ear_median as number) ?? 0.285,
+            centerEarMedian: centerEar,
             centerEarMadScaled: (prof?.center_ear_mad_scaled as number) ?? 0.018,
             blinkDurationMedianMs: (prof?.blink_duration_median_ms as number) ?? 185.0,
             blinkDurationMadMs: (prof?.blink_duration_mad_ms as number) ?? 35.0,
@@ -105,7 +135,7 @@ export function GuidedCalibrationWizard() {
             neutralPitchDeg: (prof?.neutral_pitch_deg as number) ?? 0.0,
             neutralYawDeg: (prof?.neutral_yaw_deg as number) ?? 0.0,
             calibrationReliability: (prof?.calibration_reliability as number) ?? 0.90,
-            zoneBaselines: prof?.zone_baselines ?? cal,
+            zoneBaselines: zoneMap ?? cal,
           }),
         }).catch((e) => console.warn("Could not save profile to DB:", e));
       } else if (cal.is_completed && cal.rejection_reason) {
@@ -554,6 +584,92 @@ export function GuidedCalibrationWizard() {
           </Card>
         )}
       </div>
+
+      {/* 4-Zone Baseline Inspector & Single-Zone Recalibration Card */}
+      {!isFullscreen && (
+        <Card className="border-border/80">
+          <CardHeader className="pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <CardTitle className="text-base font-bold flex items-center gap-2">
+                <CheckCircle2 className="size-4 text-primary" />
+                4-Zone Pose-Conditioned Baseline Inspector
+              </CardTitle>
+              <CardDescription className="text-xs">
+                Inspect your stored Eye Aspect Ratio (EAR) medians, dynamic closure thresholds, or recalibrate any individual zone in 5 seconds.
+              </CardDescription>
+            </div>
+            <Badge
+              variant="outline"
+              className={
+                savedProfile?.isCalibrated
+                  ? "border-emerald-500/40 text-emerald-500 bg-emerald-500/10 font-mono text-xs"
+                  : "border-amber-500/40 text-amber-500 bg-amber-500/10 font-mono text-xs"
+              }
+            >
+              {savedProfile?.isCalibrated ? "CALIBRATED PROFILE ACTIVE" : "UNCALIBRATED DEFAULTS"}
+            </Badge>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {(["CENTER", "LEFT_MIRROR", "RIGHT_MIRROR", "DASHBOARD"] as const).map((zone) => {
+                const zbMap = (savedProfile?.zoneBaselines ?? null) as Record<
+                  string,
+                  ZoneBaselineEntry
+                > | null;
+                const zb = zbMap?.[zone];
+                const earMed =
+                  zb?.ear_median ??
+                  (zone === "CENTER" && savedProfile?.isCalibrated
+                    ? savedProfile.centerEarMedian
+                    : null);
+                const thresh =
+                  zb?.dynamic_closure_threshold ??
+                  (earMed ? Number((earMed * 0.72).toFixed(3)) : null);
+
+                return (
+                  <div
+                    key={zone}
+                    className="p-3.5 rounded-xl border border-border bg-muted/20 flex flex-col justify-between gap-3"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-mono font-bold text-foreground">
+                          {zone.replace("_", " ")}
+                        </span>
+                        <Badge variant="secondary" className="text-[10px] font-mono">
+                          {earMed !== null ? "Calibrated" : "Default"}
+                        </Badge>
+                      </div>
+                      <div className="pt-1 flex items-baseline justify-between font-mono tabular-nums">
+                        <span className="text-[11px] text-muted-foreground">Median EAR:</span>
+                        <span className="text-base font-bold text-foreground">
+                          {earMed !== null ? earMed.toFixed(3) : "—"}
+                        </span>
+                      </div>
+                      <div className="flex items-baseline justify-between font-mono tabular-nums">
+                        <span className="text-[11px] text-muted-foreground">Closure Cutoff:</span>
+                        <span className="text-xs font-semibold text-emerald-500">
+                          {thresh !== null ? thresh.toFixed(3) : "—"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleRecalibrateZone(zone)}
+                      className="w-full h-8 text-xs font-mono"
+                    >
+                      <RotateCcw className="size-3 mr-1.5" />
+                      Recalibrate {zone.replace("_", " ")}
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

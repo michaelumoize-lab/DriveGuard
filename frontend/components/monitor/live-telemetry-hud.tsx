@@ -40,6 +40,7 @@ interface LiveTelemetryHUDProps {
   cameraState?: CameraState;
   backendType?: "cloud" | "local";
   latencyDiagnostics?: LatencyDiagnostics | null;
+  isStale?: boolean;
   className?: string;
   isAudioUnlocked?: boolean;
   isMuted?: boolean;
@@ -48,6 +49,7 @@ interface LiveTelemetryHUDProps {
   onToggleMute?: () => void;
   onSetVolume?: (volume: number) => void;
   onUnlockAudio?: () => Promise<boolean>;
+  onTestAudioTier?: (tier: "WARNING" | "DROWSY" | "CRITICAL" | "RECOVERY") => void;
 }
 
 export function LiveTelemetryHUD({
@@ -55,6 +57,7 @@ export function LiveTelemetryHUD({
   cameraState = "not-initialized",
   backendType = "local",
   latencyDiagnostics = null,
+  isStale = false,
   className = "",
   isAudioUnlocked = false,
   isMuted = false,
@@ -63,6 +66,7 @@ export function LiveTelemetryHUD({
   onToggleMute,
   onSetVolume,
   onUnlockAudio,
+  onTestAudioTier,
 }: LiveTelemetryHUDProps) {
   const isCameraActive = cameraState === "active";
 
@@ -215,6 +219,15 @@ export function LiveTelemetryHUD({
           cardBorder: "border-border",
           riskColor: "text-emerald-500",
         };
+      case "MONITORING_UNAVAILABLE":
+        return {
+          pillBg: "bg-slate-800 text-amber-300 border border-dashed border-amber-400/70",
+          icon: <EyeOff className="size-4 text-amber-400" />,
+          label: "MONITORING UNAVAILABLE",
+          sublabel: "Face lost or camera occluded",
+          cardBorder: "border-amber-500/40 border-dashed",
+          riskColor: "text-muted-foreground",
+        };
       default:
         return {
           pillBg: "bg-muted text-muted-foreground",
@@ -268,7 +281,22 @@ export function LiveTelemetryHUD({
   const zoneInfo = getZoneDisplay(pose_zone);
 
   return (
-    <div className={`space-y-3 ${className}`}>
+    <div className={`space-y-3 transition-opacity ${isStale ? "opacity-75" : ""} ${className}`}>
+      {isStale && (
+        <div
+          role="alert"
+          className="px-3 py-2 rounded-xl border border-dashed border-purple-500/50 bg-purple-500/10 text-purple-600 dark:text-purple-300 text-xs flex items-center justify-between gap-2"
+        >
+          <div className="flex items-center gap-2 font-medium">
+            <WifiOff className="size-4 shrink-0" />
+            <span>Telemetry Stale (&gt;3.5s) — Values below reflect last received frame.</span>
+          </div>
+          <Badge variant="outline" className="text-[10px] font-mono border-purple-500/40 text-purple-400">
+            STALE
+          </Badge>
+        </div>
+      )}
+
       {/* 1. Top Cockpit Telemetry Banner: State, Risk, & Stream Health */}
       <div
         className={`p-3 sm:p-3.5 rounded-2xl bg-card border ${stateStyle.cardBorder} shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3`}
@@ -724,6 +752,94 @@ export function LiveTelemetryHUD({
           )}
         </div>
       </div>
+
+      {/* 6. Personalised 4-Zone vs Conventional Static (0.22) Benchmark Strip */}
+      {telemetry.comparison && (
+        <div className="p-3 rounded-2xl bg-card border border-border flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="size-4 text-emerald-500 shrink-0" />
+            <span className="font-medium text-foreground">PDBP vs Fixed 0.22 Rule:</span>
+            <span className="font-mono text-muted-foreground">
+              Zone Thresh {telemetry.comparison.personalised_threshold.toFixed(3)} vs Fixed {telemetry.comparison.fixed_cutoff_ear.toFixed(2)}
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5 font-mono">
+            {telemetry.comparison.fixed_false_alarm ? (
+              <Badge className="bg-emerald-500/20 text-emerald-500 border border-emerald-500/40 text-[10px]">
+                FALSE ALARM PREVENTED
+              </Badge>
+            ) : telemetry.comparison.is_mirror_check_suppressed ? (
+              <Badge variant="outline" className="border-primary/40 text-primary text-[10px]">
+                MIRROR GLANCE SUPPRESSED
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                Fixed Rule: {telemetry.comparison.fixed_alert_state}
+              </Badge>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 7. Audio Alert Synthesizer Control & Test Bar */}
+      {onTestAudioTier && (
+        <div className="p-3 rounded-2xl bg-card border border-border space-y-2 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-semibold text-foreground flex items-center gap-1.5">
+              <Volume2 className="size-3.5 text-primary" />
+              Cabin Audio Siren Control &amp; Test
+            </span>
+            {onSetVolume && (
+              <div className="flex items-center gap-2">
+                <label htmlFor="hud-alert-volume" className="text-[11px] font-mono text-muted-foreground">
+                  Vol {Math.round(volume * 100)}%
+                </label>
+                <input
+                  id="hud-alert-volume"
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={volume}
+                  aria-label="Alert volume"
+                  onChange={(e) => onSetVolume(parseFloat(e.target.value))}
+                  className="w-20 accent-primary cursor-pointer"
+                />
+              </div>
+            )}
+          </div>
+          <div className="grid grid-cols-4 gap-1.5 font-mono text-[11px]">
+            <button
+              type="button"
+              onClick={() => onTestAudioTier("WARNING")}
+              className="py-1 px-2 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-500 hover:bg-amber-500/20 transition-colors cursor-pointer"
+            >
+              Warn Beep
+            </button>
+            <button
+              type="button"
+              onClick={() => onTestAudioTier("DROWSY")}
+              className="py-1 px-2 rounded-lg border border-orange-500/40 bg-orange-500/10 text-orange-500 hover:bg-orange-500/20 transition-colors cursor-pointer"
+            >
+              Drowsy Pulse
+            </button>
+            <button
+              type="button"
+              onClick={() => onTestAudioTier("CRITICAL")}
+              className="py-1 px-2 rounded-lg border border-rose-500/40 bg-rose-500/10 text-rose-500 hover:bg-rose-500/20 transition-colors cursor-pointer"
+            >
+              Crit Siren
+            </button>
+            <button
+              type="button"
+              onClick={() => onTestAudioTier("RECOVERY")}
+              className="py-1 px-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20 transition-colors cursor-pointer"
+            >
+              Recovery
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -2,11 +2,14 @@
 
 import React from "react";
 import { CameraState } from "@/types/camera";
-import { Camera, Eye, Flame, Pause, ShieldCheck, Sparkles } from "lucide-react";
+import { AlertState } from "@/types/telemetry";
+import { Camera, Eye, Pause, ShieldCheck } from "lucide-react";
 
 interface CameraViewProps {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   cameraState: CameraState;
+  alertState?: AlertState;
+  isStale?: boolean;
   isMirrored: boolean;
   framingMode: "cover" | "fit";
   viewOrientation: "portrait" | "landscape";
@@ -18,6 +21,8 @@ interface CameraViewProps {
 export function CameraView({
   videoRef,
   cameraState,
+  alertState = "NORMAL",
+  isStale = false,
   isMirrored,
   framingMode,
   viewOrientation,
@@ -32,6 +37,26 @@ export function CameraView({
     cameraState === "requesting-permission" || cameraState === "permission-granted";
   const isIdle =
     cameraState === "not-initialized" || cameraState === "stopped";
+
+  const reticleBorderColor = isStale
+    ? "border-purple-400/80 border-dashed"
+    : alertState === "CRITICAL"
+      ? "border-rose-500"
+      : alertState === "WARNING"
+        ? "border-amber-400"
+        : alertState === "MONITORING_UNAVAILABLE"
+          ? "border-slate-400/80 border-dashed"
+          : "border-emerald-500/70";
+
+  const crosshairBgColor = isStale
+    ? "bg-purple-400"
+    : alertState === "CRITICAL"
+      ? "bg-rose-500"
+      : alertState === "WARNING"
+        ? "bg-amber-400"
+        : alertState === "MONITORING_UNAVAILABLE"
+          ? "bg-slate-400"
+          : "bg-emerald-400";
 
   return (
     <div
@@ -62,19 +87,19 @@ export function CameraView({
       {isActive && (
         <div className="absolute inset-0 pointer-events-none p-4 flex flex-col justify-between">
           <div className="flex justify-between items-start">
-            <div className="w-6 h-6 border-t-2 border-l-2 border-emerald-500/70 rounded-tl-sm" />
-            <div className="w-6 h-6 border-t-2 border-r-2 border-emerald-500/70 rounded-tr-sm" />
+            <div className={`w-6 h-6 border-t-2 border-l-2 ${reticleBorderColor} rounded-tl-sm`} />
+            <div className={`w-6 h-6 border-t-2 border-r-2 ${reticleBorderColor} rounded-tr-sm`} />
           </div>
 
           {/* Central Eye-Level Driver Focus Guide (Subtle) */}
           <div className="self-center flex flex-col items-center gap-1 opacity-25">
-            <div className="w-12 h-0.5 bg-emerald-400" />
-            <div className="h-12 w-0.5 bg-emerald-400" />
+            <div className={`w-12 h-0.5 ${crosshairBgColor}`} />
+            <div className={`h-12 w-0.5 ${crosshairBgColor}`} />
           </div>
 
           <div className="flex justify-between items-end">
-            <div className="w-6 h-6 border-b-2 border-l-2 border-emerald-500/70 rounded-bl-sm" />
-            <div className="w-6 h-6 border-b-2 border-r-2 border-emerald-500/70 rounded-br-sm" />
+            <div className={`w-6 h-6 border-b-2 border-l-2 ${reticleBorderColor} rounded-bl-sm`} />
+            <div className={`w-6 h-6 border-b-2 border-r-2 ${reticleBorderColor} rounded-br-sm`} />
           </div>
         </div>
       )}
@@ -120,12 +145,12 @@ export function CameraView({
           </div>
           <div className="space-y-1 max-w-xs">
             <h3 className="font-bold text-foreground text-base tracking-tight">
-              Driver Cabin Webcam Simulation
+              DriveGuard Cabin Telemetry Feed
             </h3>
             <p className="text-xs text-muted-foreground leading-relaxed">
               {isPortrait
                 ? "Full-bleed mobile portrait monitoring. Access front camera for driver facial analysis."
-                : "Real-time browser webcam stream simulation for IntelliGuard driver monitoring."}
+                : "Real-time WebRTC camera stream for personalised 4-zone driver drowsiness monitoring."}
             </p>
           </div>
 
