@@ -8,11 +8,14 @@ let getServerSessionMock: (() => Promise<ServerSessionResult | null>) | null = n
 export function __setGetServerSessionMock(
   mockFn: (() => Promise<ServerSessionResult | null>) | null
 ) {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("__setGetServerSessionMock cannot be used in production");
+  }
   getServerSessionMock = mockFn;
 }
 
 export async function getServerSession(): Promise<ServerSessionResult | null> {
-  if (getServerSessionMock) {
+  if (getServerSessionMock && process.env.NODE_ENV !== "production") {
     return await getServerSessionMock();
   }
   try {

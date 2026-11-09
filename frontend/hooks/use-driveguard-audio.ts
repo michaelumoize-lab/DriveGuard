@@ -4,12 +4,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   DriveGuardAudioEngine,
   AudioEngineConfig,
+  AlertTier,
 } from "@/lib/audio/audio-engine";
 
 export type AudioDisplayStatus = "ready" | "muted" | "blocked" | "unavailable";
 
 export interface UseDriveGuardAudioOptions extends AudioEngineConfig {
   autoUnlockOnGesture?: boolean;
+  initialMuted?: boolean;
 }
 
 export interface UseDriveGuardAudioReturn {
@@ -20,6 +22,7 @@ export interface UseDriveGuardAudioReturn {
   toggleMute: () => void;
   setVolume: (volume: number) => void;
   unlockAudio: () => Promise<boolean>;
+  testAlert: (tier?: AlertTier) => Promise<boolean>;
   getAudioLatencyEstimateMs: () => number | null;
   engine: DriveGuardAudioEngine | null;
 }
@@ -34,8 +37,9 @@ export function useDriveGuardAudio(
   const engineRef = useRef<DriveGuardAudioEngine | null>(null);
 
   // Synchronized React state for UI rendering
+  const initialMutedValue = Boolean(options?.initialMuted ?? options?.muted);
   const [isAudioUnlocked, setIsAudioUnlocked] = useState<boolean>(false);
-  const [isMuted, setIsMuted] = useState<boolean>(Boolean(options?.muted));
+  const [isMuted, setIsMuted] = useState<boolean>(initialMutedValue);
   const [volume, setVolumeState] = useState<number>(options?.masterVolume ?? 0.75);
   const [audioStatus, setAudioStatus] = useState<AudioDisplayStatus>("blocked");
 
@@ -44,7 +48,7 @@ export function useDriveGuardAudio(
     if (!sharedAudioEngine) {
       sharedAudioEngine = new DriveGuardAudioEngine({
         masterVolume: options?.masterVolume ?? 0.75,
-        muted: options?.muted ?? false,
+        muted: initialMutedValue,
         warningCooldownMs: options?.warningCooldownMs,
         drowsyCooldownMs: options?.drowsyCooldownMs,
         criticalRepeatIntervalMs: options?.criticalRepeatIntervalMs,
@@ -54,7 +58,7 @@ export function useDriveGuardAudio(
     return sharedAudioEngine;
   }, [
     options?.masterVolume,
-    options?.muted,
+    initialMutedValue,
     options?.warningCooldownMs,
     options?.drowsyCooldownMs,
     options?.criticalRepeatIntervalMs,
@@ -169,6 +173,21 @@ export function useDriveGuardAudio(
     return engineRef.current?.getOutputLatencyEstimateMs() ?? null;
   }, []);
 
+  const testAlert = useCallback(
+    async (tier: AlertTier = "WARNING"): Promise<boolean> => {
+      const engine = getEngine();
+      await engine.unlock();
+      if (engine.isMuted()) {
+        engine.setMuted(false);
+        setIsMuted(false);
+      }
+      setIsAudioUnlocked(true);
+      updateDisplayStatus();
+      return engine.playAlert(tier);
+    },
+    [getEngine, updateDisplayStatus]
+  );
+
   return {
     isAudioUnlocked,
     isMuted,
@@ -177,6 +196,7 @@ export function useDriveGuardAudio(
     toggleMute,
     setVolume,
     unlockAudio,
+    testAlert,
     getAudioLatencyEstimateMs,
     engine: engineRef.current,
   };

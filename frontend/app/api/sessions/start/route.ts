@@ -5,18 +5,16 @@ import { prisma } from "@/lib/prisma";
 export async function POST(req: NextRequest) {
   try {
     const session = await getServerSession();
-    let userId = session?.user?.id;
+    const userId = session?.user?.id;
     if (!userId) {
-      const fallbackUser = await prisma.user.findFirst();
-      if (fallbackUser) {
-        userId = fallbackUser.id;
-      } else {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      }
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const body = await req.json().catch(() => ({}));
-    const customCode = body.sessionCode || `DRV-${Date.now().toString().slice(-6)}`;
+    const customCode =
+      typeof body.sessionCode === "string" && body.sessionCode.trim().length > 0
+        ? body.sessionCode.trim()
+        : `DRV-${Date.now().toString().slice(-6)}`;
 
     const drivingSession = await prisma.drivingSession.create({
       data: {

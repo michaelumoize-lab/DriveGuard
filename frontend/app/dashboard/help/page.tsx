@@ -176,14 +176,36 @@ export default function HelpPage() {
           </p>
           <ul className="list-disc pl-5 space-y-1.5 text-xs">
             <li>
-              <strong>Local Engine (Recommended for 30 FPS):</strong> Start the backend locally with:
-              <pre className="mt-1 p-2 rounded bg-muted font-mono text-[11px]">python run.py --port 8000</pre>
-              Select <strong>⚡ Local</strong> in the Live Monitor top-right toggle.
+              <strong>Local Engine (Recommended for Low-Latency Evaluation):</strong> Start the backend locally with:
+              <pre className="mt-1 p-2 rounded bg-muted font-mono text-xs">python run.py --port 8000</pre>
+              Select <strong>Local</strong> in the Live Monitor top toolbar.
             </li>
             <li>
-              <strong>Cloud Engine (Render):</strong> Render free tier instances spin down after 15 minutes of inactivity. When connecting for the first time, allow 45-60 seconds for the cloud server to spin up, or select <strong>⚡ Local</strong> for instant response.
+              <strong>Cloud Engine (Render + LiveKit Cloud SFU):</strong> Render free-tier instances spin down after 15 minutes of inactivity. When connecting for the first time, allow 30–60 seconds for the cloud worker to wake up, or use the built-in Connection Recovery Assistant.
             </li>
           </ul>
+        </div>
+      ),
+    },
+    {
+      id: "privacy-and-safety-disclaimer",
+      category: "getting-started",
+      title: "Privacy Architecture & Safety Prototype Disclaimer",
+      summary: "How camera frames are processed in memory, what telemetry is stored, and prototype safety notices.",
+      badge: "Privacy & Safety",
+      content: (
+        <div className="space-y-3 text-sm text-muted-foreground leading-relaxed">
+          <div className="space-y-2 text-xs">
+            <div>
+              <strong className="text-foreground">In-Memory Ephemeral Video Processing:</strong> WebRTC video frames streamed via LiveKit are processed strictly in volatile RAM by the Python AI worker (`maxsize=1` frame buffer) to extract 478 facial landmarks and eye crops. Raw video recordings and camera images are never written to disk or stored in PostgreSQL.
+            </div>
+            <div>
+              <strong className="text-foreground">Stored Telemetry & User Control:</strong> Only numeric 4-zone calibration baselines (`DriverProfile`), aggregate session statistics (`DrivingSession`), and state-transition safety alert metadata (`DrowsinessAlert`) are stored in Neon PostgreSQL under your authenticated account.
+            </div>
+            <div className="p-3 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-300">
+              <strong>Important Safety Disclaimer:</strong> DriveGuard is an academic computer engineering research platform and prototype driver monitoring system. It is not a certified automotive ADAS medical or safety device (e.g., ISO 26262 / Euro NCAP). Never rely on DriveGuard to continue driving while fatigued.
+            </div>
+          </div>
         </div>
       ),
     },

@@ -24,16 +24,20 @@ export default async function DashboardLayout({
     redirect("/auth/sign-in?redirectTo=/dashboard");
   }
 
-  // Enforce Onboarding: if profile is not completed, redirect to /onboarding
-  const profile = await getOrCreateUserProfile(session.user.id);
+  // Enforce Onboarding & fetch user-scoped critical drowsiness alerts count in parallel
+  const [profile, criticalAlertsCount] = await Promise.all([
+    getOrCreateUserProfile(session.user.id),
+    prisma.drowsinessAlert.count({
+      where: {
+        severity: "CRITICAL",
+        session: { userId: session.user.id },
+      },
+    }),
+  ]);
+
   if (!profile.onboardingCompleted) {
     redirect("/onboarding");
   }
-
-  // Fetch recent critical drowsiness alerts count for notification bell
-  const criticalAlertsCount = await prisma.drowsinessAlert.count({
-    where: { severity: "CRITICAL" },
-  });
 
   const user = {
     id: session.user.id,
@@ -77,7 +81,7 @@ export default async function DashboardLayout({
             </header>
 
             {/* Main Page Content */}
-            <main className="flex-1 overflow-y-auto min-h-0 bg-background">
+            <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto min-h-0 bg-background outline-none">
               {children}
             </main>
 

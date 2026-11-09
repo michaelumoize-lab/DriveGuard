@@ -5,19 +5,14 @@ import { prisma } from "@/lib/prisma";
 export async function POST(req: NextRequest) {
   try {
     const session = await getServerSession();
-    let userId = session?.user?.id;
+    const userId = session?.user?.id;
     if (!userId) {
-      const fallbackUser = await prisma.user.findFirst();
-      if (fallbackUser) {
-        userId = fallbackUser.id;
-      } else {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      }
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const body = await req.json();
     const {
-      calibrationMode = "3_ZONE",
+      calibrationMode = "4_ZONE",
       centerEarMedian = 0.285,
       centerEarMadScaled = 0.018,
       blinkDurationMedianMs = 185.0,
@@ -34,7 +29,7 @@ export async function POST(req: NextRequest) {
       where: { userId },
       create: {
         userId,
-        calibrationMode,
+        calibrationMode: String(calibrationMode),
         centerEarMedian: Number(centerEarMedian),
         centerEarMadScaled: Number(centerEarMadScaled),
         blinkDurationMedianMs: Number(blinkDurationMedianMs),
@@ -49,7 +44,7 @@ export async function POST(req: NextRequest) {
         calibratedAt: new Date(),
       },
       update: {
-        calibrationMode,
+        calibrationMode: String(calibrationMode),
         centerEarMedian: Number(centerEarMedian),
         centerEarMadScaled: Number(centerEarMadScaled),
         blinkDurationMedianMs: Number(blinkDurationMedianMs),
@@ -63,6 +58,33 @@ export async function POST(req: NextRequest) {
         isCalibrated: true,
         calibratedAt: new Date(),
       },
+    });
+
+    // Best-effort sync to FastAPI worker so the live session uses the latest profile immediately
+    const apiBaseUrl =
+      process.env.NEXT_PUBLIC_API_BASE_URL ||
+      process.env.NEXT_PUBLIC_FASTAPI_URL ||
+      "http://localhost:8000";
+
+    fetch(`${apiBaseUrl.replace(/\/$/, "")}/api/v1/profiles`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        driver_id: userId,
+        calibration_mode: profile.calibrationMode,
+        ear_median: profile.centerEarMedian,
+        ear_mad_scaled: profile.centerEarMadScaled,
+        blink_duration_median_ms: profile.blinkDurationMedianMs,
+        blink_duration_mad_ms: profile.blinkDurationMadMs,
+        blink_rcr_median: profile.blinkRcrMedian,
+        blink_rcr_mad: profile.blinkRcrMad,
+        neutral_pitch_deg: profile.neutralPitchDeg,
+        neutral_yaw_deg: profile.neutralYawDeg,
+        calibration_reliability: profile.calibrationReliability,
+        zone_baselines: profile.zoneBaselines ?? {},
+      }),
+    }).catch(() => {
+      // Non-fatal if worker is offline during profile save
     });
 
     return NextResponse.json({ success: true, profile });

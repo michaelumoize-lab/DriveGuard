@@ -177,3 +177,176 @@ export interface ServerTelemetryMessage {
   telemetry?: FrameTelemetry;
   calibration?: CalibrationPhase | null;
 }
+
+export interface ZoneBaselineEntry {
+  ear_median: number;
+  ear_mad_scaled?: number;
+  dynamic_closure_threshold?: number;
+  sample_count?: number;
+  pitch_deg_median?: number;
+  yaw_deg_median?: number;
+}
+
+export interface SessionEndPayload {
+  sessionCode: string;
+  durationSeconds: number;
+  averageFps: number;
+  averageLatencyMs: number;
+  averagePerclosPct: number;
+  maxPerclosPct: number;
+  totalBlinks: number;
+  averageBlinkRate: number;
+  normalFramesCount: number;
+  warningAlertsCount: number;
+  criticalAlertsCount: number;
+  mirrorSuppressions: number;
+  // Backward-compatible legacy aliases
+  durationSec?: number;
+  totalFrames?: number;
+  maxPerclos?: number;
+  criticalAlerts?: number;
+}
+
+export interface AlertLogPayload {
+  sessionCode: string;
+  severity: "WARNING" | "CRITICAL";
+  riskScore: number;
+  earValue: number;
+  perclosPct: number;
+  poseZone: string;
+  reasons: string[];
+  cascadeDecision: string;
+  timestampMs?: number;
+}
+
+export interface ReasonExplanation {
+  code: string;
+  title: string;
+  description: string;
+  explanation?: string;
+  subsystem: "KINEMATICS" | "PERCLOS" | "GEOMETRY" | "HEAD_POSE" | "CONTEXT" | "QUALITY";
+  severity: "INFO" | "WARNING" | "CRITICAL";
+}
+
+export const REASON_CODE_CATALOG: Record<string, ReasonExplanation> = {
+  PROLONGED_EYE_CLOSURE_MICROSLEEP: {
+    code: "PROLONGED_EYE_CLOSURE_MICROSLEEP",
+    title: "Microsleep / Prolonged Closure",
+    description: "Continuous eye closure exceeded the personal microsleep safety threshold (>= 1.1s or 3.5x baseline blink duration).",
+    subsystem: "KINEMATICS",
+    severity: "CRITICAL",
+  },
+  REPEATED_ABNORMAL_BLINK_CLUSTER: {
+    code: "REPEATED_ABNORMAL_BLINK_CLUSTER",
+    title: "Abnormal Blink Cluster",
+    description: "Multiple prolonged blinks or sluggish reopening events detected within the rolling temporal window.",
+    subsystem: "KINEMATICS",
+    severity: "WARNING",
+  },
+  PROLONGED_BLINK_DETECTED: {
+    code: "PROLONGED_BLINK_DETECTED",
+    title: "Prolonged Single Blink",
+    description: "Completed blink duration significantly exceeded the driver's calibrated median blink duration.",
+    subsystem: "KINEMATICS",
+    severity: "WARNING",
+  },
+  BLINK_DURATION_ABOVE_PERSONAL_BASELINE: {
+    code: "BLINK_DURATION_ABOVE_PERSONAL_BASELINE",
+    title: "Elevated Blink Duration (z >= 1.8)",
+    description: "Blink duration robust z-score is elevated above personal baseline or current closure exceeds 450 ms.",
+    subsystem: "KINEMATICS",
+    severity: "WARNING",
+  },
+  EYELID_REOPENING_VELOCITY_SLOWED: {
+    code: "EYELID_REOPENING_VELOCITY_SLOWED",
+    title: "Sluggish Eyelid Reopening (RCR)",
+    description: "Reopening-to-Closing velocity ratio (RCR) dropped significantly below the driver's alert baseline (z >= 1.8).",
+    subsystem: "KINEMATICS",
+    severity: "WARNING",
+  },
+  INCREASED_PERCLOS: {
+    code: "INCREASED_PERCLOS",
+    title: "Elevated 60s Rolling PERCLOS",
+    description: "Time-weighted Percentage of Eye Closure over the rolling 60-second window exceeded healthy baseline (>= 12% or z >= 1.6).",
+    subsystem: "PERCLOS",
+    severity: "CRITICAL",
+  },
+  SUSTAINED_EYE_OPENNESS_REDUCTION: {
+    code: "SUSTAINED_EYE_OPENNESS_REDUCTION",
+    title: "Sustained Narrowed Aperture",
+    description: "5-second rolling Eye Aspect Ratio (EAR) dropped >= 2.0 MAD below the active zone's personal baseline.",
+    subsystem: "GEOMETRY",
+    severity: "WARNING",
+  },
+  SUSTAINED_DOWNWARD_HEAD_PITCH: {
+    code: "SUSTAINED_DOWNWARD_HEAD_PITCH",
+    title: "Sustained Head Nodding",
+    description: "Downward head pitch (<= -14 deg below neutral) persisted for >= 1.6 seconds outside mirror-check context.",
+    subsystem: "HEAD_POSE",
+    severity: "CRITICAL",
+  },
+  FREQUENT_OR_PROLONGED_YAWNING: {
+    code: "FREQUENT_OR_PROLONGED_YAWNING",
+    title: "Frequent or Prolonged Yawning",
+    description: "Mouth Aspect Ratio (MAR) indicated active yawning or >= 2 yawns within the 5-minute window.",
+    subsystem: "GEOMETRY",
+    severity: "WARNING",
+  },
+  FACE_NOT_VISIBLE_OR_OBSCURED: {
+    code: "FACE_NOT_VISIBLE_OR_OBSCURED",
+    title: "Face Lost or Camera Occluded",
+    description: "Driver's facial landmarks were unavailable or geometric reliability dropped below 0.22 for >= 1.2 seconds.",
+    subsystem: "QUALITY",
+    severity: "WARNING",
+  },
+  INSUFFICIENT_PERCLOS_OBSERVATION_COVERAGE: {
+    code: "INSUFFICIENT_PERCLOS_OBSERVATION_COVERAGE",
+    title: "Low PERCLOS Observation Coverage",
+    description: "Valid face tracking coverage across the 60-second window is below 50%; PERCLOS weight is held back until coverage recovers.",
+    subsystem: "QUALITY",
+    severity: "INFO",
+  },
+  OBSERVATION_SAMPLING_GAP_DETECTED: {
+    code: "OBSERVATION_SAMPLING_GAP_DETECTED",
+    title: "Frame Sampling Gap Detected",
+    description: "An inter-frame gap occurred; microsleep timers are protected against false triggers across dropped frames.",
+    subsystem: "QUALITY",
+    severity: "INFO",
+  },
+};
+
+export function explainReasonCode(code: string): ReasonExplanation {
+  if (REASON_CODE_CATALOG[code]) {
+    const entry = REASON_CODE_CATALOG[code];
+    return {
+      ...entry,
+      explanation: entry.description,
+    };
+  }
+  if (code.startsWith("CONTEXT_MIRROR_CHECK_")) {
+    const zone = code.replace("CONTEXT_MIRROR_CHECK_", "").replace(/_/g, " ");
+    const description = `Transient gaze into ${zone} (<= 3.0s) uses the zone-conditioned baseline and suppresses false head-pose penalties.`;
+    return {
+      code,
+      title: `Mirror / Instrument Glance (${zone})`,
+      description,
+      explanation: description,
+      subsystem: "CONTEXT",
+      severity: "INFO",
+    };
+  }
+  const formattedTitle = code
+    .split("_")
+    .map((w) => (w.length > 0 ? w[0].toUpperCase() + w.slice(1).toLowerCase() : ""))
+    .join(" ");
+  const fallbackDesc = "Diagnostic signal emitted by the DriveGuard adaptive risk engine.";
+  return {
+    code,
+    title: formattedTitle,
+    description: fallbackDesc,
+    explanation: fallbackDesc,
+    subsystem: "GEOMETRY",
+    severity: "WARNING",
+  };
+}
+

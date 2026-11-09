@@ -346,8 +346,12 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
           <div className="space-y-4">
             {/* Sensitivity Levels */}
             <div className="space-y-2">
-              <Label>Fatigue Sensitivity Profile</Label>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <Label id="onboarding-sensitivity-label">Fatigue Sensitivity Profile</Label>
+              <div
+                role="radiogroup"
+                aria-labelledby="onboarding-sensitivity-label"
+                className="grid grid-cols-1 sm:grid-cols-3 gap-3"
+              >
                 {[
                   {
                     level: "STANDARD",
@@ -365,10 +369,13 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
                     desc: "Aggressive micro-sleep detection optimized for long, monotonous routes.",
                   },
                 ].map((s) => (
-                  <div
+                  <button
                     key={s.level}
+                    type="button"
+                    role="radio"
+                    aria-checked={sensitivityLevel === s.level}
                     onClick={() => setSensitivityLevel(s.level as "STANDARD" | "HIGH" | "HIGHWAY")}
-                    className={`cursor-pointer rounded-lg border p-3.5 transition-all text-left ${
+                    className={`cursor-pointer rounded-lg border p-3.5 transition-all text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                       sensitivityLevel === s.level
                         ? "border-primary bg-primary/10 shadow-sm"
                         : "border-border hover:border-border/80 bg-background"
@@ -376,7 +383,7 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
                   >
                     <div className="font-semibold text-sm text-foreground mb-1">{s.title}</div>
                     <div className="text-xs text-muted-foreground">{s.desc}</div>
-                  </div>
+                  </button>
                 ))}
               </div>
             </div>
@@ -469,20 +476,31 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
         )}
       </CardContent>
 
-      <CardFooter className="flex items-center justify-between border-t border-border pt-4">
-        {currentStep > 1 ? (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setCurrentStep((prev) => Math.max(1, prev - 1))}
-            disabled={isSubmitting}
-          >
-            <ArrowLeft className="size-4 mr-1.5" />
-            Previous
-          </Button>
-        ) : (
-          <div />
-        )}
+      <CardFooter className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4">
+        <div className="flex items-center gap-2">
+          {currentStep > 1 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setCurrentStep((prev) => Math.max(1, prev - 1))}
+              disabled={isSubmitting}
+            >
+              <ArrowLeft className="size-4 mr-1.5" />
+              Previous
+            </Button>
+          )}
+          {currentStep < 4 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => saveStepData(4, true)}
+              disabled={isSubmitting}
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              Skip for now (use defaults)
+            </Button>
+          )}
+        </div>
 
         {currentStep < 4 ? (
           <Button

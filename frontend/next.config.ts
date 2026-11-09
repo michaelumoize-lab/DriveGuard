@@ -1,6 +1,10 @@
 import type { NextConfig } from "next";
 
-const remotePatterns: Array<{ protocol: "http" | "https"; hostname: string; pathname: string }> = [
+const remotePatterns: Array<{
+  protocol: "http" | "https";
+  hostname: string;
+  pathname: string;
+}> = [
   {
     protocol: "https",
     hostname: "ik.imagekit.io",
@@ -13,7 +17,8 @@ if (process.env.IMAGEKIT_URL_ENDPOINT) {
     const parsed = new URL(process.env.IMAGEKIT_URL_ENDPOINT);
     if (parsed.hostname && parsed.hostname !== "ik.imagekit.io") {
       remotePatterns.push({
-        protocol: (parsed.protocol.replace(":", "") as "http" | "https") || "https",
+        protocol:
+          (parsed.protocol.replace(":", "") as "http" | "https") || "https",
         hostname: parsed.hostname,
         pathname: "/**",
       });
@@ -27,7 +32,7 @@ const nextConfig: NextConfig = {
   images: {
     remotePatterns,
   },
+  allowedDevOrigins: ["192.168.0.104"],
 };
 
 export default nextConfig;
-

@@ -39,20 +39,26 @@ export default async function ProjectOverviewPage() {
     redirect("/auth/sign-in?redirectTo=/dashboard/project-overview");
   }
 
-  // Fetch summary counts for the dashboard overview
+  const userId = session.user.id;
+
+  // Fetch user-scoped summary counts for the dashboard overview
   const [
     totalSessionsCount,
-    calibratedDriversCount,
-    totalProfilesCount,
+    driverProfile,
     warningAlertsCount,
     criticalAlertsCount,
   ] = await Promise.all([
-    prisma.drivingSession.count(),
-    prisma.driverProfile.count({ where: { isCalibrated: true } }),
-    prisma.driverProfile.count(),
-    prisma.drowsinessAlert.count({ where: { severity: "WARNING" } }),
-    prisma.drowsinessAlert.count({ where: { severity: "CRITICAL" } }),
+    prisma.drivingSession.count({ where: { userId } }),
+    prisma.driverProfile.findUnique({ where: { userId } }),
+    prisma.drowsinessAlert.count({ where: { severity: "WARNING", session: { userId } } }),
+    prisma.drowsinessAlert.count({ where: { severity: "CRITICAL", session: { userId } } }),
   ]);
+
+  const calibratedZonesCount = driverProfile?.zoneBaselines
+    ? Object.keys(driverProfile.zoneBaselines as Record<string, unknown>).length
+    : driverProfile?.isCalibrated
+      ? 4
+      : 0;
 
   return (
     <div className="p-4 sm:p-6 md:p-8 space-y-8 max-w-7xl mx-auto">
@@ -93,24 +99,26 @@ export default async function ProjectOverviewPage() {
         {/* Executive Metrics Overview */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 pt-8 mt-6 border-t border-border/60">
           <div className="p-3 bg-card/60 backdrop-blur-md rounded-xl border border-border/80">
-            <span className="text-[10px] uppercase font-mono text-muted-foreground">Driving Sessions</span>
-            <p className="text-xl sm:text-2xl font-bold font-mono text-foreground mt-0.5">{totalSessionsCount}</p>
+            <span className="text-xs uppercase font-mono text-muted-foreground">Your Sessions</span>
+            <p className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-foreground mt-0.5">{totalSessionsCount}</p>
           </div>
           <div className="p-3 bg-card/60 backdrop-blur-md rounded-xl border border-border/80">
-            <span className="text-[10px] uppercase font-mono text-muted-foreground">Calibrated Baselines</span>
-            <p className="text-xl sm:text-2xl font-bold font-mono text-emerald-500 mt-0.5">{calibratedDriversCount}</p>
+            <span className="text-xs uppercase font-mono text-muted-foreground">Baseline Status</span>
+            <p className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-emerald-500 mt-0.5">
+              {driverProfile?.isCalibrated ? "Calibrated" : "Pending"}
+            </p>
           </div>
           <div className="p-3 bg-card/60 backdrop-blur-md rounded-xl border border-border/80">
-            <span className="text-[10px] uppercase font-mono text-muted-foreground">Configured Drivers</span>
-            <p className="text-xl sm:text-2xl font-bold font-mono text-foreground mt-0.5">{totalProfilesCount}</p>
+            <span className="text-xs uppercase font-mono text-muted-foreground">Active Spatial Zones</span>
+            <p className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-foreground mt-0.5">{calibratedZonesCount} / 4</p>
           </div>
           <div className="p-3 bg-card/60 backdrop-blur-md rounded-xl border border-border/80">
-            <span className="text-[10px] uppercase font-mono text-muted-foreground">Warning Alerts</span>
-            <p className="text-xl sm:text-2xl font-bold font-mono text-amber-500 mt-0.5">{warningAlertsCount}</p>
+            <span className="text-xs uppercase font-mono text-muted-foreground">Warning Alerts</span>
+            <p className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-amber-500 mt-0.5">{warningAlertsCount}</p>
           </div>
           <div className="p-3 bg-card/60 backdrop-blur-md rounded-xl border border-border/80 col-span-2 sm:col-span-1">
-            <span className="text-[10px] uppercase font-mono text-muted-foreground">Critical Interventions</span>
-            <p className="text-xl sm:text-2xl font-bold font-mono text-rose-500 mt-0.5">{criticalAlertsCount}</p>
+            <span className="text-xs uppercase font-mono text-muted-foreground">Critical Interventions</span>
+            <p className="text-xl sm:text-2xl font-bold font-mono tabular-nums text-rose-500 mt-0.5">{criticalAlertsCount}</p>
           </div>
         </div>
       </div>
@@ -205,10 +213,10 @@ export default async function ProjectOverviewPage() {
 
           <div className="p-4 rounded-xl border border-border/80 bg-card/60 space-y-2">
             <div className="flex items-center gap-2 font-semibold text-sm text-foreground">
-              <Activity className="size-4 text-primary" /> Real-Time Telemetry
+              <Activity className="size-4 text-primary" /> Real-Time WebRTC Transport
             </div>
             <p className="text-xs text-muted-foreground">
-              Binary WebSocket protocol (`/ws/v1/session/{'{session_id}'}`) streaming ~25 FPS JPEG frames with backpressure flow control.
+              LiveKit Cloud SFU video streaming with dual-channel DataChannel v2 telemetry (lossy per-frame UDP + reliable ACKed safety events).
             </p>
           </div>
 
@@ -217,16 +225,16 @@ export default async function ProjectOverviewPage() {
               <Database className="size-4 text-primary" /> Relational Storage
             </div>
             <p className="text-xs text-muted-foreground">
-              PostgreSQL on Neon Cloud, Prisma 7 ORM, storing user profiles, driving sessions, and fatigue alert timelines.
+              PostgreSQL on Neon Cloud, Prisma ORM, storing 4-zone driver profiles, driving sessions, and explainable fatigue alert timelines.
             </p>
           </div>
 
           <div className="p-4 rounded-xl border border-border/80 bg-card/60 space-y-2">
             <div className="flex items-center gap-2 font-semibold text-sm text-foreground">
-              <Layers className="size-4 text-primary" /> Modern Frontend
+              <Layers className="size-4 text-primary" /> Modern Frontend & Audio
             </div>
             <p className="text-xs text-muted-foreground">
-              Next.js 16 (App Router), React 19, Better Auth, Tailwind CSS v4, Shadcn UI, Fullscreen Cabin HUD.
+              Next.js 16 (App Router), React 19, Better Auth, Tailwind CSS v4, synthesized 4-tier Web Audio API alert engine.
             </p>
           </div>
         </div>

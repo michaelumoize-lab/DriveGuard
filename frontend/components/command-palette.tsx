@@ -17,17 +17,16 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip
 import {
   LayoutDashboard,
   Camera,
-  Users,
-  UserPlus,
+  Eye,
   History,
-  Cpu,
   ShieldAlert,
   Settings,
   Sun,
   Moon,
   Laptop,
   Search,
-  ExternalLink,
+  Sparkles,
+  CircleHelp,
   Check,
 } from "lucide-react";
 
@@ -63,18 +62,18 @@ export function CommandPalette() {
           {/* Quick Actions */}
           <CommandGroup heading="Quick Actions">
             <CommandItem
-              onSelect={() => runCommand(() => router.push("/dashboard/simulation"))}
+              onSelect={() => runCommand(() => router.push("/dashboard/live-monitor"))}
               className="gap-2.5 cursor-pointer"
             >
               <Camera className="w-4 h-4 text-primary" />
-              <span>Launch Live Camera Scan</span>
+              <span>Launch Live Driver Monitor</span>
             </CommandItem>
             <CommandItem
-              onSelect={() => runCommand(() => router.push("/dashboard/persons/register"))}
+              onSelect={() => runCommand(() => router.push("/dashboard/calibration"))}
               className="gap-2.5 cursor-pointer"
             >
-              <UserPlus className="w-4 h-4 text-emerald-500" />
-              <span>Enroll New Biometric Identity</span>
+              <Eye className="w-4 h-4 text-emerald-500" />
+              <span>Run 4-Zone Pose Calibration Wizard</span>
             </CommandItem>
           </CommandGroup>
 
@@ -87,42 +86,42 @@ export function CommandPalette() {
               className="gap-2.5 cursor-pointer"
             >
               <LayoutDashboard className="w-4 h-4 text-muted-foreground" />
-              <span>Security Overview Dashboard</span>
+              <span>Driver Safety Overview Dashboard</span>
             </CommandItem>
             <CommandItem
-              onSelect={() => runCommand(() => router.push("/dashboard/persons"))}
-              className="gap-2.5 cursor-pointer"
-            >
-              <Users className="w-4 h-4 text-muted-foreground" />
-              <span>Personnel Directory</span>
-            </CommandItem>
-            <CommandItem
-              onSelect={() => runCommand(() => router.push("/dashboard/access-logs"))}
+              onSelect={() => runCommand(() => router.push("/dashboard/sessions"))}
               className="gap-2.5 cursor-pointer"
             >
               <History className="w-4 h-4 text-muted-foreground" />
-              <span>Access Event Logs</span>
-            </CommandItem>
-            <CommandItem
-              onSelect={() => runCommand(() => router.push("/dashboard/devices"))}
-              className="gap-2.5 cursor-pointer"
-            >
-              <Cpu className="w-4 h-4 text-muted-foreground" />
-              <span>Edge Devices & Gates</span>
+              <span>Driving Session History & Analytics</span>
             </CommandItem>
             <CommandItem
               onSelect={() => runCommand(() => router.push("/dashboard/alerts"))}
               className="gap-2.5 cursor-pointer"
             >
               <ShieldAlert className="w-4 h-4 text-muted-foreground" />
-              <span>Security Alerts & Anomalies</span>
+              <span>Drowsiness & Safety Alert Logs</span>
+            </CommandItem>
+            <CommandItem
+              onSelect={() => runCommand(() => router.push("/dashboard/project-overview"))}
+              className="gap-2.5 cursor-pointer"
+            >
+              <Sparkles className="w-4 h-4 text-muted-foreground" />
+              <span>AI Architecture & Research Overview</span>
+            </CommandItem>
+            <CommandItem
+              onSelect={() => runCommand(() => router.push("/dashboard/help"))}
+              className="gap-2.5 cursor-pointer"
+            >
+              <CircleHelp className="w-4 h-4 text-muted-foreground" />
+              <span>System Guide & Troubleshooting</span>
             </CommandItem>
             <CommandItem
               onSelect={() => runCommand(() => router.push("/settings/account"))}
               className="gap-2.5 cursor-pointer"
             >
               <Settings className="w-4 h-4 text-muted-foreground" />
-              <span>Account & System Settings</span>
+              <span>Driver Preferences & Account Settings</span>
             </CommandItem>
           </CommandGroup>
 
