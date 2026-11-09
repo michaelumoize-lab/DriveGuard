@@ -154,6 +154,24 @@ class LiveKitAIWorkerSession:
         self._ingest_task: Optional[asyncio.Task] = None
         self._inference_task: Optional[asyncio.Task] = None
         self._current_video_stream: Optional[rtc.VideoStream] = None
+        self._stream_cleanup_lock: asyncio.Lock = asyncio.Lock()
+        self._stream_close_task: Optional[asyncio.Task] = None
+        self._stream_close_tasks: Dict[int, asyncio.Task] = {}
+        self._closed_stream_ids: set[int] = set()
+        self._stream_cleanup_error_count: int = 0
+        self._last_stream_cleanup_error: Optional[str] = None
+        self._is_stopped: bool = False
+        self._stop_lock: asyncio.Lock = asyncio.Lock()
+
+    @property
+    def stream_cleanup_error_count(self) -> int:
+        """Total count of exceptions encountered during VideoStream aclose() native teardown."""
+        return self._stream_cleanup_error_count
+
+    @property
+    def last_stream_cleanup_error(self) -> Optional[str]:
+        """Description of the most recent VideoStream cleanup exception, or None."""
+        return self._last_stream_cleanup_error
 
     def get_frame_accounting_snapshot(self) -> FrameAccountingSnapshot:
         """Return an immutable snapshot of all frame lifecycle counters on the event loop."""
@@ -234,6 +252,98 @@ class LiveKitAIWorkerSession:
         # 5. Start background inference task
         self._inference_task = asyncio.create_task(self._inference_loop())
 
+    async def _safe_close_video_stream(self, stream_to_close: Optional[rtc.VideoStream] = None) -> None:
+        """
+        Idempotent, race-safe teardown of rtc.VideoStream.
+        Ensures underlying C++ FFI handle and queue task are cleanly disposed,
+        protects against concurrent close from unsubscription and worker shutdown,
+        preserves exactly one cleanup task per stream instance,
+        records teardown failures in diagnostic state,
+        and uses asyncio.shield to prevent cancellation of the caller from abandoning
+        native stream resource disposal.
+        """
+        target_task: Optional[asyncio.Task] = None
+        target_stream: Optional[rtc.VideoStream] = None
+
+        async with self._stream_cleanup_lock:
+            target_stream = stream_to_close or self._current_video_stream
+            if target_stream is None:
+                running_tasks = [t for t in self._stream_close_tasks.values() if not t.done()]
+                if running_tasks:
+                    try:
+                        await asyncio.shield(asyncio.gather(*running_tasks, return_exceptions=True))
+                    except asyncio.CancelledError:
+                        raise
+                return
+
+            if target_stream is self._current_video_stream:
+                self._current_video_stream = None
+
+            stream_id = id(target_stream)
+            existing_task = self._stream_close_tasks.get(stream_id)
+            if existing_task is not None:
+                target_task = existing_task
+            elif stream_id in self._closed_stream_ids:
+                return
+            else:
+                self._closed_stream_ids.add(stream_id)
+
+                async def _do_close(st: rtc.VideoStream, s_id: int) -> None:
+                    try:
+                        if hasattr(st, "aclose"):
+                            await st.aclose()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as err:
+                        self._stream_cleanup_error_count += 1
+                        self._last_stream_cleanup_error = f"{type(err).__name__}: {err}"
+                        logger.error(
+                            f"[LiveKit Worker] VideoStream aclose() error on stream {s_id}: {err}",
+                            exc_info=True,
+                        )
+                        raise
+
+                target_task = asyncio.create_task(_do_close(target_stream, stream_id))
+                self._stream_close_tasks[stream_id] = target_task
+                self._stream_close_task = target_task
+
+        if target_task and not target_task.done():
+            try:
+                await asyncio.shield(target_task)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    f"[LiveKit Worker] Stream cleanup failed for stream {id(target_stream) if target_stream else 'unknown'}: {exc}"
+                )
+                raise
+
+    async def _handle_track_subscribed(
+        self,
+        track: rtc.Track,
+        participant: rtc.RemoteParticipant,
+    ) -> None:
+        """Handle video track subscription with clean teardown of any previous stream."""
+        logger.info(
+            f"[LiveKit Worker] Video track subscribed from '{participant.identity}' (SID: {track.sid})."
+        )
+        if self._ingest_task and not self._ingest_task.done():
+            self._ingest_task.cancel()
+            try:
+                await self._ingest_task
+            except asyncio.CancelledError:
+                pass
+
+        try:
+            await self._safe_close_video_stream()
+        except Exception as exc:
+            logger.warning(f"[LiveKit Worker] Warning during previous stream close on new track subscription: {exc}")
+        if not self.is_running:
+            return
+
+        self._current_video_stream = rtc.VideoStream(track)
+        self._ingest_task = asyncio.create_task(self._ingest_video_stream(self._current_video_stream))
+
     def _register_event_handlers(self) -> None:
         """Attach room callbacks for video track subscription and data channel communication."""
 
@@ -244,15 +354,7 @@ class LiveKitAIWorkerSession:
             participant: rtc.RemoteParticipant,
         ) -> None:
             if track.kind == rtc.TrackKind.KIND_VIDEO:
-                logger.info(
-                    f"[LiveKit Worker] Video track subscribed from '{participant.identity}' (SID: {track.sid})."
-                )
-                # If an existing stream was running, cancel it
-                if self._ingest_task and not self._ingest_task.done():
-                    self._ingest_task.cancel()
-
-                self._current_video_stream = rtc.VideoStream(track)
-                self._ingest_task = asyncio.create_task(self._ingest_video_stream(self._current_video_stream))
+                asyncio.create_task(self._handle_track_subscribed(track, participant))
 
         @self.room.on("track_unsubscribed")
         def on_track_unsubscribed(
@@ -264,6 +366,8 @@ class LiveKitAIWorkerSession:
                 logger.info(f"[LiveKit Worker] Video track unsubscribed from '{participant.identity}'.")
                 if self._ingest_task and not self._ingest_task.done():
                     self._ingest_task.cancel()
+                asyncio.create_task(self._safe_close_video_stream())
+                asyncio.create_task(self._transition_monitoring_unavailable("VIDEO_TRACK_UNSUBSCRIBED"))
 
         @self.room.on("data_received")
         def on_data_received(data_packet: rtc.DataPacket) -> None:
@@ -333,12 +437,59 @@ class LiveKitAIWorkerSession:
             pass
         except Exception as exc:
             logger.error(f"[LiveKit Worker] Ingest error on room '{self.room_name}': {exc}", exc_info=True)
+        finally:
+            await self._safe_close_video_stream(stream)
+
+    async def _transition_monitoring_unavailable(self, reason: str) -> None:
+        """Immediately transition session state to MONITORING_UNAVAILABLE and emit reliable safety event."""
+        if self._last_state == "MONITORING_UNAVAILABLE":
+            return
+        previous_state = self._last_state
+        self._last_state = "MONITORING_UNAVAILABLE"
+        event_id = f"evt_{uuid.uuid4().hex[:8]}"
+        self._event_seq += 1
+        safety_event_payload = {
+            "v": 2,
+            "type": "SAFETY_EVENT",
+            "event_id": event_id,
+            "session_id": self.room_name,
+            "event_seq": str(self._event_seq),
+            "frame_seq": str(self._frame_seq),
+            "worker_boot_id": self.worker_boot_id,
+            "session_epoch": self.session_epoch,
+            "event_type": "STATE_TRANSITION",
+            "previous_state": previous_state,
+            "new_state": "MONITORING_UNAVAILABLE",
+            "timestamp": time.time(),
+            "server_wall_epoch_ms": round(time.time() * 1000.0, 1),
+            "metrics": {
+                "risk_score": 0.0,
+                "ear": 0.0,
+                "ear_raw": 0.0,
+                "perclos": 0.0,
+                "pose_zone": "OUT_OF_BOUNDS",
+                "reasons": [reason],
+            },
+        }
+        self._latest_safety_event = safety_event_payload
+        await self._publish_reliable_safety_event(safety_event_payload)
 
     async def _inference_loop(self) -> None:
         """Continuous AI inference worker: processes latest frame and publishes telemetry."""
         while self.is_running:
             try:
-                frame, recv_mono_ms, frame_seq_num = await self.frame_queue.get()
+                try:
+                    frame, recv_mono_ms, frame_seq_num = await asyncio.wait_for(
+                        self.frame_queue.get(), timeout=2.0
+                    )
+                except asyncio.TimeoutError:
+                    if not self.is_running:
+                        break
+                    # Frame delivery stall watchdog: if frames were previously arriving and now stopped
+                    if self._frames_received > 0 and self._last_state != "MONITORING_UNAVAILABLE":
+                        await self._transition_monitoring_unavailable("FRAME_DELIVERY_TIMEOUT")
+                    continue
+
                 if not self.is_running:
                     self._frames_aborted += 1
                     break
@@ -500,12 +651,16 @@ class LiveKitAIWorkerSession:
                         server_total_ms=server_total_ms,
                     )
 
-                    # Publish lossy/unreliable for telemetry (fastest WebRTC UDP delivery)
-                    payload_bytes = json.dumps(response_payload).encode("utf-8")
-                    await self.room.local_participant.publish_data(payload_bytes, reliable=False)
                     self._frames_processed += 1
                     self._frames_in_flight = 0
                     self._active_cfut = None
+
+                    # Publish lossy/unreliable for telemetry (fastest WebRTC UDP delivery)
+                    try:
+                        payload_bytes = json.dumps(response_payload).encode("utf-8")
+                        await self.room.local_participant.publish_data(payload_bytes, reliable=False)
+                    except Exception as pub_exc:
+                        logger.warning(f"[LiveKit Worker] Non-fatal telemetry publication failure: {pub_exc}")
 
                 except asyncio.CancelledError:
                     self._coro_cancelled_for_active_frame = True
@@ -529,6 +684,10 @@ class LiveKitAIWorkerSession:
                     self._frames_in_flight = 0
                     self._active_cfut = None
                     logger.error(f"[LiveKit Worker] Inference execution error: {exc}", exc_info=True)
+                    if self._last_state != "MONITORING_UNAVAILABLE":
+                        asyncio.create_task(
+                            self._transition_monitoring_unavailable(f"INFERENCE_ERROR: {type(exc).__name__}")
+                        )
                 finally:
                     if not (self._coro_cancelled_for_active_frame and self._active_cfut and not self._active_cfut.done()):
                         self._frames_in_flight = 0
@@ -585,13 +744,51 @@ class LiveKitAIWorkerSession:
             msg = json.loads(raw_text)
             action = msg.get("action")
 
-            if not action or not self.engine:
+            if not action:
                 return
 
             print(f"[LiveKit Worker] >>> Control action received: '{action}'")
             logger.info(f"[LiveKit Worker] Control action received: '{action}'")
 
-            if action == "START_CALIBRATION":
+            if action in ("EVENT_ACK", "ACK_EVENT"):
+                event_id = msg.get("event_id")
+                if event_id:
+                    acked = self._unacknowledged_events.pop(event_id, None)
+                    if acked:
+                        ack_rtt_ms = (time.perf_counter() - acked["sent_at"]) * 1000.0
+                        logger.info(f"[LiveKit Worker] Safety event '{event_id}' ACK confirmed in {ack_rtt_ms:.1f}ms.")
+
+            elif action == "SYNC_STATE":
+                unacked = [entry["payload"] for entry in self._unacknowledged_events.values()]
+                await self._send_control_ack({
+                    "v": 2,
+                    "type": "STATE_SYNC",
+                    "session_id": self.room_name,
+                    "current_state": self._last_state,
+                    "latest_safety_event": self._latest_safety_event,
+                    "unacknowledged_events": unacked,
+                    "server_time": time.time(),
+                })
+
+            elif action == "PING":
+                client_ts = msg.get("client_ts")
+                ping_id = msg.get("ping_id")
+                if client_ts is not None:
+                    self._last_client_ping_ts = client_ts
+                await self._send_control_ack({
+                    "v": 2,
+                    "type": "PONG",
+                    "client_ts": client_ts,
+                    "ping_id": ping_id,
+                    "server_time": time.time(),
+                    "queue_depth": self.frame_queue.qsize(),
+                })
+
+            elif not self.engine:
+                logger.warning(f"[LiveKit Worker] Cannot execute '{action}' because engine is not initialized.")
+                return
+
+            elif action == "START_CALIBRATION":
                 self._calibration_completion_sent = False
                 four_zone = msg.get("four_zone", True)
                 three_zone = msg.get("three_zone", False)
@@ -638,38 +835,6 @@ class LiveKitAIWorkerSession:
                 profile_store.save_profile(profile_dto)
                 await self._send_control_ack({"type": "PROFILE_SAVED", "driver_id": profile_dto.driver_id})
 
-            elif action == "EVENT_ACK":
-                event_id = msg.get("event_id")
-                if event_id:
-                    acked = self._unacknowledged_events.pop(event_id, None)
-                    if acked:
-                        ack_rtt_ms = (time.perf_counter() - acked["sent_at"]) * 1000.0
-                        logger.info(f"[LiveKit Worker] Safety event '{event_id}' ACK confirmed in {ack_rtt_ms:.1f}ms.")
-
-            elif action == "SYNC_STATE":
-                await self._send_control_ack({
-                    "v": 2,
-                    "type": "STATE_SYNC",
-                    "session_id": self.room_name,
-                    "current_state": self._last_state,
-                    "latest_safety_event": self._latest_safety_event,
-                    "server_time": time.time(),
-                })
-
-            elif action == "PING":
-                client_ts = msg.get("client_ts")
-                ping_id = msg.get("ping_id")
-                if client_ts is not None:
-                    self._last_client_ping_ts = client_ts
-                await self._send_control_ack({
-                    "v": 2,
-                    "type": "PONG",
-                    "client_ts": client_ts,
-                    "ping_id": ping_id,
-                    "server_time": time.time(),
-                    "queue_depth": self.frame_queue.qsize(),
-                })
-
         except Exception as exc:
             logger.error(f"[LiveKit Worker] Control message parsing error: {exc}", exc_info=True)
 
@@ -714,8 +879,9 @@ class LiveKitAIWorkerSession:
             except Exception as exc:
                 logger.warning(f"[LiveKit Worker] Retry {attempt} failed: {exc}")
 
-        entry = self._unacknowledged_events.pop(event_id, None)
+        entry = self._unacknowledged_events.get(event_id)
         if entry and self.is_running:
+            entry["exhausted"] = True
             logger.warning(
                 f"[LiveKit Worker] Event '{event_id}' unacknowledged after 3 retries (client may be disconnected)."
             )
@@ -730,9 +896,13 @@ class LiveKitAIWorkerSession:
 
     async def stop(self) -> None:
         """Cleanly disconnect the worker from the LiveKit room, terminate tasks, and flush session summaries."""
-        if not self.is_running and not self.room:
-            return
-        self.is_running = False
+        async with self._stop_lock:
+            if self._is_stopped:
+                return
+            self._is_stopped = True
+            if not self.is_running and not self.room:
+                return
+            self.is_running = False
 
         shutdown_task = self._shutdown_task
         self._shutdown_task = None
@@ -741,10 +911,23 @@ class LiveKitAIWorkerSession:
 
         if self._ingest_task and not self._ingest_task.done():
             self._ingest_task.cancel()
+            try:
+                await self._ingest_task
+            except asyncio.CancelledError:
+                pass
             self._ingest_task = None
+
+        try:
+            await self._safe_close_video_stream()
+        except Exception as exc:
+            logger.warning(f"[LiveKit Worker] Stream cleanup error during worker stop(): {exc}")
 
         if self._inference_task and not self._inference_task.done():
             self._inference_task.cancel()
+            try:
+                await self._inference_task
+            except asyncio.CancelledError:
+                pass
             self._inference_task = None
 
         # Drain remaining frames from queue into aborted count
@@ -777,6 +960,11 @@ class LiveKitAIWorkerSession:
         # Terminate active session in session_manager to release in-memory state and auto-persist profile
         try:
             summary = await session_manager.terminate_session(self.room_name)
+            if self.engine is not None and not getattr(self.engine, "_is_closed", False):
+                try:
+                    self.engine.close()
+                except Exception:
+                    pass
             self.engine = None
             if summary:
                 logger.info(
