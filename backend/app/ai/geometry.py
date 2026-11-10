@@ -82,6 +82,8 @@ class FrameGeometryFeatures:
     roll_deg: float
     pose_zone: PoseZone
     geometric_reliability: float
+    blendshape_brow_down: Optional[float] = None
+    blendshape_eye_squint: Optional[float] = None
     left_eye_crop: Optional[EyeCropQuality] = None
     right_eye_crop: Optional[EyeCropQuality] = None
 
@@ -329,7 +331,7 @@ def assess_geometric_reliability(
     roll_deg: float,
     left_ear: float,
     right_ear: float,
-    blendshape_blink_mean: Optional[float],
+    blendshape_blink_mean: Optional[float] = None,
     reference_open_ear: float = 0.28,
 ) -> Tuple[float, float]:
     """

@@ -97,9 +97,11 @@ class TestPDBPCalibrationPhase4(unittest.TestCase):
         ts = 0.0
         final_profile: DriverBehaviourProfile | None = None
 
-        for target_zone, pitch, yaw, ear_l, ear_r, blend in zone_configs:
+        for i_zone, (target_zone, pitch, yaw, ear_l, ear_r, blend) in enumerate(zone_configs):
+            if i_zone > 0:
+                ts += 2200.0  # Advance past 2.0s inter-step grace period
             ear_mean = (ear_l + ear_r) / 2.0
-            for _ in range(16):
+            for _ in range(45):
                 ts += 40.0
                 res = session.ingest_frame(
                     timestamp_ms=ts,

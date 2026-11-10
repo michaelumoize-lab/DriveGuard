@@ -187,6 +187,9 @@ class TestSessionAIEngine(unittest.TestCase):
         self.assertEqual(status.phase_index, 2)
         self.assertEqual(status.zone_progress_pct, 0.0)
 
+        # Advance past the 2.0-second inter-step grace period
+        ts += 2100.0
+
         # Driver still looking CENTER (mock_lm yaw=0.0). Ingest 5 frames: progress MUST NOT advance!
         for _ in range(5):
             dto = engine.process_frame(frame, timestamp_ms=ts)
@@ -199,7 +202,7 @@ class TestSessionAIEngine(unittest.TestCase):
 
         # Now driver turns to LEFT_MIRROR (yaw = +18.0)
         mock_lm.yaw = 18.0
-        for _ in range(6):
+        for _ in range(15):
             dto = engine.process_frame(frame, timestamp_ms=ts)
             ts += 33.3
 

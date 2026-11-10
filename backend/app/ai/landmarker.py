@@ -208,6 +208,10 @@ class DriveGuardFaceLandmarker:
             landmarks_pixel_xyz: Optional[np.ndarray] = None
             blendshape_left: Optional[float] = None
             blendshape_right: Optional[float] = None
+            brow_down_left: Optional[float] = None
+            brow_down_right: Optional[float] = None
+            eye_squint_left: Optional[float] = None
+            eye_squint_right: Optional[float] = None
             trans_matrix: Optional[np.ndarray] = None
 
             if self._use_tasks_api and self._tasks_landmarker is not None:
@@ -255,6 +259,14 @@ class DriveGuardFaceLandmarker:
                                 blendshape_left = float(cat.score)
                             elif cat.category_name == "eyeBlinkRight":
                                 blendshape_right = float(cat.score)
+                            elif cat.category_name == "browDownLeft":
+                                brow_down_left = float(cat.score)
+                            elif cat.category_name == "browDownRight":
+                                brow_down_right = float(cat.score)
+                            elif cat.category_name == "eyeSquintLeft":
+                                eye_squint_left = float(cat.score)
+                            elif cat.category_name == "eyeSquintRight":
+                                eye_squint_right = float(cat.score)
                     if result.facial_transformation_matrixes:
                         trans_matrix = np.array(
                             result.facial_transformation_matrixes[0], dtype=np.float64
@@ -279,6 +291,8 @@ class DriveGuardFaceLandmarker:
                     blendshape_blink_left=None,
                     blendshape_blink_right=None,
                     blendshape_blink_mean=None,
+                    blendshape_brow_down=None,
+                    blendshape_eye_squint=None,
                     mar=0.0,
                     pitch_deg=0.0,
                     yaw_deg=0.0,
@@ -305,6 +319,12 @@ class DriveGuardFaceLandmarker:
         bs_mean: Optional[float] = None
         if blendshape_left is not None and blendshape_right is not None:
             bs_mean = 0.5 * (blendshape_left + blendshape_right)
+        brow_down_mean: Optional[float] = None
+        if brow_down_left is not None and brow_down_right is not None:
+            brow_down_mean = 0.5 * (brow_down_left + brow_down_right)
+        eye_squint_mean: Optional[float] = None
+        if eye_squint_left is not None and eye_squint_right is not None:
+            eye_squint_mean = 0.5 * (eye_squint_left + eye_squint_right)
 
         pose_zone = classify_pose_zone(pitch_deg, yaw_deg, neutral_pitch_deg, neutral_yaw_deg)
         geom_rel, _ = assess_geometric_reliability(
@@ -339,6 +359,8 @@ class DriveGuardFaceLandmarker:
             blendshape_blink_left=blendshape_left,
             blendshape_blink_right=blendshape_right,
             blendshape_blink_mean=bs_mean,
+            blendshape_brow_down=brow_down_mean,
+            blendshape_eye_squint=eye_squint_mean,
             mar=round(mar, 4),
             pitch_deg=round(pitch_deg, 2),
             yaw_deg=round(yaw_deg, 2),
@@ -442,6 +464,8 @@ class DriveGuardFaceLandmarker:
             blendshape_blink_left=None,
             blendshape_blink_right=None,
             blendshape_blink_mean=None,
+            blendshape_brow_down=None,
+            blendshape_eye_squint=None,
             mar=0.15,
             pitch_deg=pitch_deg,
             yaw_deg=yaw_deg,

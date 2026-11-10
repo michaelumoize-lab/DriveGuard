@@ -57,6 +57,11 @@ class EyeMetricsDTO(BaseModel):
     perclos_reliable: bool = Field(default=True, description="Whether PERCLOS coverage meets the reliable observation threshold")
     eye_closure_duration_ms: float = Field(default=0.0, description="Continuous eye closure duration in ms", ge=0.0)
     sampling_gap_detected: bool = Field(default=False, description="Whether an observation gap exceeded maximum continuous threshold")
+    blink_avr: Optional[float] = Field(default=None, description="Amplitude-to-Velocity Ratio of recent blinks")
+    blink_cv_ibi: Optional[float] = Field(default=None, description="Coefficient of variation of inter-blink intervals")
+    gaze_entropy: Optional[float] = Field(default=None, description="Transition gaze entropy H_t across cabin zones")
+    brow_furrow_au4: Optional[float] = Field(default=None, description="Facial Action Unit AU4 Brow Lowerer strain score")
+    yawn_envelope_confidence: Optional[float] = Field(default=None, description="Authentic physiological yawn envelope confidence score")
 
 
 class CascadeStatusDTO(BaseModel):

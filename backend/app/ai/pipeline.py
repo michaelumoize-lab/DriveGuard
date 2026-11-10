@@ -32,6 +32,7 @@ from backend.app.ai.cascade_classifier import (
     ConfidenceGatedEyeCascade,
     ExperimentMode,
 )
+from backend.app.ai.gaze_attention import GazeAttentionTracker
 from backend.app.ai.geometry import (
     FrameGeometryFeatures,
     PoseZone,
@@ -96,6 +97,7 @@ class SessionAIEngine:
             personalized_blink_median_ms=self.profile.blink_duration_median_ms,
             personalized_blink_mad_ms=self.profile.blink_duration_mad_ms,
         )
+        self.gaze_tracker = GazeAttentionTracker()
         self.risk_engine = PersonalisedAdaptiveRiskEngine(profile=self.profile, fixed_ear_threshold=0.22)
 
         # Calibration State
@@ -474,7 +476,7 @@ class SessionAIEngine:
         if cascade_res.disagreement_ear_vs_blendshape > 0.40:
             self.total_disagreements += 1
 
-        # 6. Sub-Frame Blink Kinematics (Duration, RCR Velocity, Rolling 60s PERCLOS, Gap-Aware)
+        # 6. Sub-Frame Blink Kinematics (Duration, RCR Velocity, Rolling 60s PERCLOS, Gap-Aware, Authentic Squint)
         kinematics_res = self.kinematics.update(
             timestamp_ms=ts_ms,
             ear_value=geom.yaw_weighted_ear,
@@ -487,6 +489,14 @@ class SessionAIEngine:
             right_threshold=zone_baseline.dynamic_closure_threshold,
             landmark_confidence=geom.landmark_confidence,
             head_yaw_deg=geom.yaw_deg,
+            eye_squint=geom.blendshape_eye_squint,
+        )
+        # Euro NCAP 2026 Gaze Scanpath & Attention Tracking
+        gaze_res = self.gaze_tracker.update(
+            timestamp_ms=ts_ms,
+            zone=geom.pose_zone,
+            pitch_deg=geom.pitch_deg,
+            yaw_deg=geom.yaw_deg,
         )
 
         # 7. Calibration Step Ingestion (if session is actively calibrating)
@@ -548,6 +558,7 @@ class SessionAIEngine:
             geom=geom,
             cascade=cascade_res,
             kinematics=kinematics_res,
+            gaze=gaze_res,
         )
         is_mirror_suppressed = risk_res.deviations.is_mirror_check_context
         if is_mirror_suppressed:
@@ -604,6 +615,11 @@ class SessionAIEngine:
                 perclos_reliable=kinematics_res.perclos_reliable,
                 eye_closure_duration_ms=round(kinematics_res.current_closure_duration_ms, 1),
                 sampling_gap_detected=kinematics_res.sampling_gap_detected,
+                blink_avr=round(kinematics_res.recent_blink_avr, 3) if kinematics_res.recent_blink_avr is not None else None,
+                blink_cv_ibi=round(kinematics_res.blink_cv_ibi, 3) if kinematics_res.blink_cv_ibi is not None else None,
+                gaze_entropy=round(gaze_res.transition_entropy_ht, 3),
+                brow_furrow_au4=round(geom.blendshape_brow_down, 3) if geom.blendshape_brow_down is not None else None,
+                yawn_envelope_confidence=round(kinematics_res.yawn_confidence, 3),
             ),
             cascade=CascadeStatusDTO(
                 experiment_mode=self.experiment_mode.value,
