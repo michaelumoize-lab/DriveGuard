@@ -417,7 +417,7 @@ class GuidedCalibrationSession:
         if step_duration_sec is not None and step_duration_sec <= 1.0:
             self.target_samples_per_zone: int = max(4, int(step_duration_sec * 25))
         else:
-            self.target_samples_per_zone = 35  # ~1.4 - 1.7 seconds of stable gaze per zone
+            self.target_samples_per_zone = 45  # ~1.5 seconds of stable gaze per zone
         self._learned_neutral_pitch: float = 0.0
         self._learned_neutral_yaw: float = 0.0
         self._is_aligned: bool = False
@@ -425,6 +425,11 @@ class GuidedCalibrationSession:
         self._last_pose_ts: Optional[float] = None
         self._last_pitch: Optional[float] = None
         self._last_yaw: Optional[float] = None
+
+        # Inter-Zone Transition Grace Period (2.0s buffer to comfortably reposition between zones)
+        self._inter_zone_grace_sec: float = 2.0
+        self._grace_until_ts_ms: Optional[float] = None
+        self._grace_zone_name: Optional[str] = None
 
     def start(self, timestamp_ms: Optional[float] = None) -> None:
         """Start or restart the guided calibration workflow."""
@@ -438,6 +443,8 @@ class GuidedCalibrationSession:
         self._learned_neutral_yaw = 0.0
         self._is_aligned = False
         self._feedback_msg = "Look straight ahead at center roadway"
+        self._grace_until_ts_ms = None
+        self._grace_zone_name = None
         for s in self.steps:
             z = s.zone.value
             self._total_frames_by_zone[z] = 0
@@ -511,8 +518,11 @@ class GuidedCalibrationSession:
             return True, "Holding Steady (Passenger Mirror)"
 
         elif target_zone == PoseZone.DASHBOARD:
-            # Relaxed pitch threshold from -7.5 to -4.5 deg so level webcams do not get stuck
-            if rel_pitch > -4.5:
+            # Require head yaw to be centered (|yaw| < 10.0 deg) and pitch to be intentionally down (<= -8.0 deg)
+            # so returning from a side mirror cannot accidentally trigger it.
+            if abs(rel_yaw) >= 10.0:
+                return False, "Center your head, then glance down at Dashboard"
+            if rel_pitch > -8.0:
                 return False, "Glance downward at Dashboard  v"
             return True, "Holding Steady (Dashboard)"
 
@@ -524,6 +534,19 @@ class GuidedCalibrationSession:
         """
         if not self.is_running:
             return 0, len(self.steps), 0.0, "Calibration idle", False, "Idle"
+
+        # Display transition grace countdown if currently waiting between zones
+        if self._grace_until_ts_ms is not None and timestamp_ms < self._grace_until_ts_ms:
+            remaining_sec = max(0.1, (self._grace_until_ts_ms - timestamp_ms) / 1000.0)
+            return (
+                self._step_idx + 1,
+                len(self.steps),
+                0.0,
+                f"Get ready to glance at {self._grace_zone_name}...",
+                False,
+                f"Get ready to glance at {self._grace_zone_name} ({remaining_sec:.1f}s)...",
+            )
+
         step = self.current_step
         if step.step_type == "BLINK_CADENCE":
             ratio = float(np.clip(self._blink_phase_elapsed_sec / max(1.0, step.duration_sec), 0.0, 1.0))
@@ -539,7 +562,7 @@ class GuidedCalibrationSession:
         z_key = step.zone.value
         samples = len(self._ear_samples_by_zone.get(z_key, []))
         zone_target = (
-            min(20, self.target_samples_per_zone)
+            min(40, self.target_samples_per_zone)
             if step.zone in (PoseZone.LEFT_MIRROR, PoseZone.RIGHT_MIRROR, PoseZone.DASHBOARD)
             else self.target_samples_per_zone
         )
@@ -575,6 +598,19 @@ class GuidedCalibrationSession:
         """
         if not self.is_running:
             return None
+
+        # Inter-Zone Grace Period: Hold sampling for 2.0 seconds between zones to allow comfortable repositioning
+        if self._grace_until_ts_ms is not None:
+            if timestamp_ms < self._grace_until_ts_ms:
+                remaining_sec = max(0.1, (self._grace_until_ts_ms - timestamp_ms) / 1000.0)
+                self._is_aligned = False
+                self._feedback_msg = f"Get ready to glance at {self._grace_zone_name} ({remaining_sec:.1f}s)..."
+                self._step_start_ts_ms = timestamp_ms
+                return None
+            else:
+                self._grace_until_ts_ms = None
+                self._grace_zone_name = None
+                self._step_start_ts_ms = timestamp_ms
 
         if self._step_start_ts_ms is None:
             self._step_start_ts_ms = timestamp_ms
@@ -653,11 +689,11 @@ class GuidedCalibrationSession:
         if step.zone in (PoseZone.LEFT_MIRROR, PoseZone.RIGHT_MIRROR):
             min_geom_rel = 0.28
             min_ear_val = 0.11
-            zone_target = min(20, self.target_samples_per_zone)
+            zone_target = min(40, self.target_samples_per_zone)
         elif step.zone == PoseZone.DASHBOARD:
             min_geom_rel = 0.28
             min_ear_val = 0.10
-            zone_target = min(20, self.target_samples_per_zone)
+            zone_target = min(40, self.target_samples_per_zone)
         else:
             min_geom_rel = 0.38
             min_ear_val = 0.12
@@ -689,7 +725,7 @@ class GuidedCalibrationSession:
             self._last_blink_duration_ms = completed_blink.duration_ms
 
         # Minimum required valid observations per zone
-        min_required = 12 if step.zone == PoseZone.CENTER else 8
+        min_required = 18 if step.zone == PoseZone.CENTER else 16
         if self.step_duration_sec is not None and self.step_duration_sec <= 1.0:
             min_required = max(3, int(self.step_duration_sec * 20))
 
@@ -727,6 +763,15 @@ class GuidedCalibrationSession:
             self._is_aligned = False
             if self._step_idx >= len(self.steps):
                 return self._finalize()
+            else:
+                next_step = self.steps[self._step_idx]
+                next_zone_name = (
+                    "Dashboard"
+                    if next_step.zone == PoseZone.DASHBOARD
+                    else ("2-Min Blink Stream" if next_step.step_type == "BLINK_CADENCE" else next_step.zone.value.replace("_", " ").title())
+                )
+                self._grace_until_ts_ms = timestamp_ms + (self._inter_zone_grace_sec * 1000.0)
+                self._grace_zone_name = next_zone_name
 
         return None
 
@@ -737,6 +782,8 @@ class GuidedCalibrationSession:
         self._step_idx += 1
         self._step_start_ts_ms = timestamp_ms
         self._is_aligned = False
+        self._grace_until_ts_ms = None
+        self._grace_zone_name = None
         if self._step_idx >= len(self.steps):
             return self._finalize()
         return None
