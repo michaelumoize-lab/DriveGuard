@@ -160,14 +160,30 @@ export function DriverCockpitHUD({
   // Natural human-readable driver advisory
   const getDriverAdvisory = () => {
     if (state === "CRITICAL") {
-      if (reason_codes?.includes("MICRO_SLEEP") || reason_codes?.includes("MICROSLEEP")) {
+      if (
+        reason_codes?.includes("MICRO_SLEEP") ||
+        reason_codes?.includes("MICROSLEEP") ||
+        reason_codes?.includes("PROLONGED_EYE_CLOSURE_MICROSLEEP")
+      ) {
         return "Critical hazard: Microsleep episode detected! Sounding audio warning. Bring vehicle to a safe stop.";
+      }
+      if (reason_codes?.includes("COGNITIVE_TUNNELING_BLANK_STARE")) {
+        return "Critical: Motionless forward blank stare detected (>= 5.0s). Shift focus and check cabin mirrors.";
       }
       return "Prolonged eyelid closure detected. Immediate rest required before continuing to drive.";
     }
 
     if (state === "WARNING") {
-      if (reason_codes?.includes("HIGH_PERCLOS")) {
+      if (reason_codes?.includes("VISUAL_DISTRACTION_OFF_ROAD_DWELL")) {
+        return "Visual distraction: Eyes off road exceeded 3.0s (Euro NCAP limit). Return focus to forward roadway.";
+      }
+      if (reason_codes?.includes("ELEVATED_BLINK_AMPLITUDE_VELOCITY_RATIO")) {
+        return "Sluggish eyelid reopening dynamics detected (Optalert AVR). Onset of pre-drowsiness.";
+      }
+      if (reason_codes?.includes("INVOLUNTARY_BROW_STRAIN_AU4")) {
+        return "Facial muscle strain detected: fighting drooping eyelids. Schedule a rest break.";
+      }
+      if (reason_codes?.includes("HIGH_PERCLOS") || reason_codes?.includes("INCREASED_PERCLOS")) {
         return "Cumulative eye closure rate is elevated. Your alertness is declining — plan a rest stop.";
       }
       return "Drowsiness indicators detected. Cabin siren chime armed.";
@@ -247,6 +263,43 @@ export function DriverCockpitHUD({
           </div>
         </div>
 
+        {/* Advanced Physiological Dynamics Strip (Euro NCAP 2026 Gaze Entropy & Optalert Dynamics) */}
+        {(eye_metrics?.gaze_entropy !== undefined || eye_metrics?.blink_avr !== undefined) && (
+          <div className="px-3 py-2 rounded-xl bg-muted/20 border border-border/50 flex items-center justify-between gap-2 flex-wrap text-[11px] font-mono">
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground">Euro NCAP Gaze Scanpath:</span>
+              <span
+                className={`font-bold ${
+                  (eye_metrics?.gaze_entropy ?? 1.2) < 0.35
+                    ? "text-rose-400"
+                    : (eye_metrics?.gaze_entropy ?? 1.2) < 0.7
+                    ? "text-amber-400"
+                    : "text-emerald-400"
+                }`}
+              >
+                {eye_metrics?.gaze_entropy !== null && eye_metrics?.gaze_entropy !== undefined
+                  ? `Ht = ${eye_metrics.gaze_entropy.toFixed(2)} (${
+                      eye_metrics.gaze_entropy < 0.35
+                        ? "Tunneling"
+                        : eye_metrics.gaze_entropy < 0.7
+                        ? "Constrained"
+                        : "Active"
+                    })`
+                  : "Calibrating"}
+              </span>
+            </div>
+
+            {eye_metrics?.blink_avr !== null && eye_metrics?.blink_avr !== undefined && (
+              <div className="flex items-center gap-1.5 text-muted-foreground">
+                <span>Eyelid AVR:</span>
+                <span className={`font-bold ${eye_metrics.blink_avr > 0.18 ? "text-amber-400" : "text-foreground"}`}>
+                  {eye_metrics.blink_avr.toFixed(3)} {eye_metrics.blink_avr > 0.18 ? "(Sluggish)" : "(Snappy)"}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Simplified In-Cabin Spatial & Audio Strip */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1 text-xs">
           {/* Cabin Gaze Zone */}
