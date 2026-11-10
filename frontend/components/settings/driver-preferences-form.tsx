@@ -28,7 +28,6 @@ import {
   Sliders,
   CheckCircle2,
   AlertTriangle,
-  Fingerprint,
 } from "lucide-react";
 
 export interface DriverPreferencesData {
@@ -161,12 +160,6 @@ export function DriverPreferencesForm({
                 <Link href="/dashboard/calibration">
                   <Sliders className="size-3 mr-1.5" />
                   Calibration Studio
-                </Link>
-              </Button>
-              <Button asChild variant="outline" size="sm" className="h-7 text-xs">
-                <Link href="/settings/security">
-                  <Fingerprint className="size-3 mr-1.5 text-primary" />
-                  Biometric Passkeys
                 </Link>
               </Button>
             </div>
