@@ -103,7 +103,7 @@ const mainNavItems: NavItem[] = [
     icon: Activity,
   },
   {
-    title: "4-Zone Calibration",
+    title: "Calibration",
     href: "/dashboard/calibration",
     icon: Eye,
   },
