@@ -15,12 +15,14 @@ Encapsulates the complete real-time computer vision and adaptive inference pipel
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
+import asyncio
 import logging
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Deque, Dict, List, Optional, Tuple, Union
+from typing import Any, Deque, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
@@ -58,6 +60,16 @@ from backend.app.schemas.telemetry import (
     HeadPoseDTO,
     PoseZoneEnum,
 )
+
+
+@dataclass
+class EngineCommand:
+    """Encapsulates a state mutation command queued for execution at a safe frame boundary."""
+
+    action: str
+    params: Dict[str, Any]
+    future: Optional[asyncio.Future] = None
+    event_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
 class SessionAIEngine:
@@ -121,7 +133,9 @@ class SessionAIEngine:
         self._lifetime_latency_sum_ms: float = 0.0
         self._recent_latencies_ms: Deque[float] = deque(maxlen=1500)
 
-        self._process_lock = threading.Lock()
+        self._process_lock = threading.RLock()
+        self._command_lock = threading.Lock()
+        self._pending_commands: Deque[EngineCommand] = deque()
         self._is_closed = False
 
     @property
@@ -134,7 +148,7 @@ class SessionAIEngine:
         return list(self._recent_latencies_ms)
 
     # --------------------------------------------------------------------------
-    # Calibration Lifecycle Management
+    # Calibration Lifecycle Management (Synchronized & Frame-Boundary Safe)
     # --------------------------------------------------------------------------
 
     def start_calibration(
@@ -147,7 +161,28 @@ class SessionAIEngine:
         include_blink_baseline: bool = False,
         blink_baseline_duration_sec: float = 120.0,
     ) -> CalibrationPhaseDTO:
-        """Begin a new guided calibration session (4-Zone default, 3-Zone, 1-Zone, or single-zone recalibration)."""
+        """Begin a new guided calibration session (synchronized under process lock)."""
+        with self._process_lock:
+            return self._start_calibration_locked(
+                four_zone_mode=four_zone_mode,
+                three_zone_mode=three_zone_mode,
+                zone_duration_sec=zone_duration_sec,
+                target_zone=target_zone,
+                timestamp_ms=timestamp_ms,
+                include_blink_baseline=include_blink_baseline,
+                blink_baseline_duration_sec=blink_baseline_duration_sec,
+            )
+
+    def _start_calibration_locked(
+        self,
+        four_zone_mode: Optional[bool] = None,
+        three_zone_mode: Optional[bool] = None,
+        zone_duration_sec: float = 5.0,
+        target_zone: Optional[str] = None,
+        timestamp_ms: Optional[float] = None,
+        include_blink_baseline: bool = False,
+        blink_baseline_duration_sec: float = 120.0,
+    ) -> CalibrationPhaseDTO:
         t_zone: Optional[PoseZone | str] = None
         if target_zone:
             is_4z, is_3z = False, False
@@ -178,14 +213,22 @@ class SessionAIEngine:
 
     def cancel_calibration(self) -> None:
         """Cancel an ongoing calibration session."""
+        with self._process_lock:
+            self._cancel_calibration_locked()
+
+    def _cancel_calibration_locked(self) -> None:
         self.calibration_session = None
 
     def skip_calibration_step(self, timestamp_ms: Optional[float] = None) -> Optional[CalibrationPhaseDTO]:
         """Manually advance past the current zone if tracking is difficult or user wishes to proceed."""
+        with self._process_lock:
+            return self._skip_calibration_step_locked(timestamp_ms=timestamp_ms)
+
+    def _skip_calibration_step_locked(self, timestamp_ms: Optional[float] = None) -> Optional[CalibrationPhaseDTO]:
         if self.calibration_session is not None and self.calibration_session.is_running:
             new_profile = self.calibration_session.skip_current_step(timestamp_ms=timestamp_ms)
             if new_profile is not None:
-                self.set_profile(new_profile)
+                self._set_profile_locked(new_profile)
                 self._last_completed_calibration_dto = self._build_calibration_dto(timestamp_ms=timestamp_ms)
             return self._build_calibration_dto(timestamp_ms=timestamp_ms)
         return None
@@ -256,11 +299,15 @@ class SessionAIEngine:
         )
 
     # --------------------------------------------------------------------------
-    # Profile Import / Export
+    # Profile Import / Export (Synchronized & Frame-Boundary Safe)
     # --------------------------------------------------------------------------
 
     def set_profile(self, profile: DriverBehaviourProfile) -> None:
         """Update active personal baseline profile."""
+        with self._process_lock:
+            self._set_profile_locked(profile)
+
+    def _set_profile_locked(self, profile: DriverBehaviourProfile) -> None:
         self.profile = profile
         self.risk_engine.set_profile(profile)
         self.kinematics.set_personalized_baseline(
@@ -314,7 +361,11 @@ class SessionAIEngine:
         )
 
     def load_profile_dto(self, dto: DriverProfileDTO) -> None:
-        """Load and activate a driver profile from a Pydantic DTO."""
+        """Load and activate a driver profile from a Pydantic DTO (synchronized under process lock)."""
+        with self._process_lock:
+            self._load_profile_dto_locked(dto)
+
+    def _load_profile_dto_locked(self, dto: DriverProfileDTO) -> None:
         baselines: Dict[str, ZoneBaseline] = {}
         for zk_str, zb_dto in dto.zone_baselines.items():
             if zk_str.startswith("_"):
@@ -360,7 +411,124 @@ class SessionAIEngine:
             sensitivity_level=getattr(dto, "sensitivity_level", "STANDARD") or "STANDARD",
             version=dto.version,
         )
-        self.set_profile(new_profile)
+        self._set_profile_locked(new_profile)
+
+    def set_experiment_mode(self, mode: Union[ExperimentMode, str]) -> ExperimentMode:
+        """Authoritative synchronous method to validate and transition experiment mode."""
+        validated = self._validate_experiment_mode(mode)
+        with self._process_lock:
+            return self._set_experiment_mode_locked(validated)
+
+    def _validate_experiment_mode(self, mode: Union[ExperimentMode, str, None]) -> ExperimentMode:
+        if mode is None:
+            raise ValueError("Experiment mode cannot be None")
+        if isinstance(mode, ExperimentMode):
+            return mode
+        if isinstance(mode, str):
+            for em in ExperimentMode:
+                if em.value == mode or em.name == mode:
+                    return em
+        valid_modes = [m.value for m in ExperimentMode]
+        raise ValueError(f"Invalid experiment mode: '{mode}'. Must be one of {valid_modes}")
+
+    def _set_experiment_mode_locked(self, mode: ExperimentMode) -> ExperimentMode:
+        self.experiment_mode = mode
+        if self.cascade is not None:
+            self.cascade.mode = mode
+        return mode
+
+    # --------------------------------------------------------------------------
+    # Thread-Safe Command Boundary Mechanism (Workstream B)
+    # --------------------------------------------------------------------------
+
+    async def submit_command(self, action: str, **params: Any) -> Any:
+        """
+        Thread-safe asynchronous entry point for engine state mutations.
+        Enqueues command for execution at next frame boundary under _process_lock,
+        or triggers immediate threadpool execution if idle, returning result without blocking loop.
+        """
+        if self._is_closed:
+            raise RuntimeError(f"SessionAIEngine '{self.session_id}' is closed; command '{action}' rejected.")
+
+        # Pre-validate synchronous commands before queueing
+        if action == "SWITCH_EXPERIMENT":
+            self._validate_experiment_mode(params.get("mode"))
+
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        cmd = EngineCommand(action=action, params=params, future=fut, event_loop=loop)
+
+        with self._command_lock:
+            if self._is_closed:
+                raise RuntimeError(f"SessionAIEngine '{self.session_id}' is closed; command '{action}' rejected.")
+            self._pending_commands.append(cmd)
+
+        drain_task = asyncio.create_task(asyncio.to_thread(self._drain_pending_commands))
+        try:
+            return await fut
+        finally:
+            if not drain_task.done():
+                try:
+                    await drain_task
+                except Exception:
+                    pass
+
+    def _drain_pending_commands(self) -> None:
+        """Synchronously acquire process lock and drain all queued commands."""
+        with self._process_lock:
+            self._drain_pending_commands_locked()
+
+    def _drain_pending_commands_locked(self) -> None:
+        """Drain and execute all pending commands while holding _process_lock."""
+        with self._command_lock:
+            if not self._pending_commands:
+                return
+            cmds_to_run = list(self._pending_commands)
+            self._pending_commands.clear()
+
+        for cmd in cmds_to_run:
+            if cmd.future is not None and cmd.future.done():
+                continue
+            try:
+                res = self._execute_command_internal_locked(cmd.action, cmd.params)
+                if cmd.future and cmd.event_loop and not cmd.future.done():
+                    cmd.event_loop.call_soon_threadsafe(cmd.future.set_result, res)
+            except Exception as exc:
+                if cmd.future and cmd.event_loop and not cmd.future.done():
+                    cmd.event_loop.call_soon_threadsafe(cmd.future.set_exception, exc)
+                elif not cmd.future:
+                    logger.error(f"[SessionAIEngine] Error executing command '{cmd.action}': {exc}", exc_info=True)
+
+    def _execute_command_internal_locked(self, action: str, params: Dict[str, Any]) -> Any:
+        if self._is_closed:
+            raise RuntimeError(f"Cannot execute '{action}' on closed engine.")
+
+        if action == "START_CALIBRATION":
+            return self._start_calibration_locked(
+                four_zone_mode=params.get("four_zone_mode"),
+                three_zone_mode=params.get("three_zone_mode"),
+                zone_duration_sec=params.get("zone_duration_sec", 5.0),
+                target_zone=params.get("target_zone"),
+                timestamp_ms=params.get("timestamp_ms"),
+                include_blink_baseline=params.get("include_blink_baseline", False),
+                blink_baseline_duration_sec=params.get("blink_baseline_duration_sec", 120.0),
+            )
+        elif action == "CANCEL_CALIBRATION":
+            self._cancel_calibration_locked()
+            return None
+        elif action == "SKIP_CALIBRATION_STEP":
+            return self._skip_calibration_step_locked(timestamp_ms=params.get("timestamp_ms"))
+        elif action == "SWITCH_EXPERIMENT":
+            mode = self._validate_experiment_mode(params["mode"])
+            return self._set_experiment_mode_locked(mode)
+        elif action == "SET_PROFILE":
+            self._set_profile_locked(params["profile"])
+            return None
+        elif action == "LOAD_PROFILE_DTO":
+            self._load_profile_dto_locked(params["dto"])
+            return None
+        else:
+            raise ValueError(f"Unknown engine command action: '{action}'")
 
     # --------------------------------------------------------------------------
     # Real-Time Frame Processing Orchestration
@@ -400,6 +568,8 @@ class SessionAIEngine:
         is_rgb: bool = True,
     ) -> FrameTelemetryDTO:
         t_start = time.perf_counter()
+        # Drain and apply any pending control mutations at this frame boundary
+        self._drain_pending_commands_locked()
         self.frame_index += 1
 
         # 1. Resolve timestamp & instantaneous FPS
@@ -537,7 +707,7 @@ class SessionAIEngine:
             )
             if new_profile is not None:
                 total_steps = len(self.calibration_session.steps)
-                self.set_profile(new_profile)
+                self._set_profile_locked(new_profile)
                 profile_dto = self.export_profile_dto()
                 self._last_completed_calibration_dto = CalibrationPhaseDTO(
                     current_zone="CENTER",
@@ -741,6 +911,14 @@ class SessionAIEngine:
         """Cleanly release AI resources (MediaPipe FaceLandmarker, Cascade ONNX sessions)."""
         with self._process_lock:
             self._is_closed = True
+            with self._command_lock:
+                while self._pending_commands:
+                    cmd = self._pending_commands.popleft()
+                    if cmd.future and cmd.event_loop and not cmd.future.done():
+                        cmd.event_loop.call_soon_threadsafe(
+                            cmd.future.set_exception,
+                            RuntimeError(f"Engine is closing; command '{cmd.action}' aborted."),
+                        )
             if self.landmarker is not None and hasattr(self.landmarker, "close"):
                 try:
                     self.landmarker.close()

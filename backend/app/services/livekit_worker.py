@@ -833,7 +833,8 @@ class LiveKitAIWorkerSession:
                 duration = float(msg.get("zone_duration_sec", 5.0))
                 include_blink = bool(msg.get("include_blink_baseline", False))
                 blink_duration = float(msg.get("blink_baseline_duration_sec", 120.0))
-                cal_dto = self.engine.start_calibration(
+                cal_dto = await self.engine.submit_command(
+                    "START_CALIBRATION",
                     four_zone_mode=four_zone,
                     three_zone_mode=three_zone,
                     zone_duration_sec=duration,
@@ -851,7 +852,8 @@ class LiveKitAIWorkerSession:
                 target_zone = msg.get("zone", "CENTER")
                 duration = float(msg.get("zone_duration_sec", 5.0))
                 blink_duration = float(msg.get("blink_baseline_duration_sec", 120.0))
-                cal_dto = self.engine.start_calibration(
+                cal_dto = await self.engine.submit_command(
+                    "START_CALIBRATION",
                     target_zone=target_zone,
                     zone_duration_sec=duration,
                     blink_baseline_duration_sec=blink_duration,
@@ -860,11 +862,11 @@ class LiveKitAIWorkerSession:
                 await self._send_control_ack({"type": "CALIBRATION_STARTED", "calibration": cal_dto.model_dump()})
 
             elif action == "CANCEL_CALIBRATION":
-                self.engine.cancel_calibration()
+                await self.engine.submit_command("CANCEL_CALIBRATION")
                 await self._send_control_ack({"type": "CALIBRATION_CANCELLED"})
 
             elif action == "SKIP_CALIBRATION_STEP":
-                cal_dto = self.engine.skip_calibration_step()
+                cal_dto = await self.engine.submit_command("SKIP_CALIBRATION_STEP")
                 await self._send_control_ack({
                     "type": "CALIBRATION_STEP_SKIPPED",
                     "calibration": cal_dto.model_dump() if cal_dto else None,
@@ -873,8 +875,7 @@ class LiveKitAIWorkerSession:
             elif action == "SWITCH_EXPERIMENT":
                 mode_str = msg.get("mode")
                 if mode_str:
-                    new_mode = ExperimentMode(mode_str)
-                    self.engine.set_experiment_mode(new_mode)
+                    new_mode = await self.engine.submit_command("SWITCH_EXPERIMENT", mode=mode_str)
                     await self._send_control_ack({"type": "EXPERIMENT_SWITCHED", "mode": new_mode.value})
 
             elif action == "SAVE_PROFILE":
@@ -883,7 +884,12 @@ class LiveKitAIWorkerSession:
                 await self._send_control_ack({"type": "PROFILE_SAVED", "driver_id": profile_dto.driver_id})
 
         except Exception as exc:
-            logger.error(f"[LiveKit Worker] Control message parsing error: {exc}", exc_info=True)
+            logger.error(f"[LiveKit Worker] Control message error: {exc}", exc_info=True)
+            action_name = locals().get("action", "UNKNOWN")
+            try:
+                await self._send_control_ack({"type": "ERROR", "action": action_name, "error": str(exc)})
+            except Exception:
+                pass
 
     async def _publish_reliable_safety_event(self, event_payload: dict) -> None:
         """Publish important safety event with reliable DataChannel delivery and track ACK."""

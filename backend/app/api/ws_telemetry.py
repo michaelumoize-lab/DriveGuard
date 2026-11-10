@@ -108,8 +108,10 @@ async def websocket_session_stream(
                     if action in ("START_CALIBRATION", "START_4ZONE_CALIBRATION"):
                         four_zone = bool(cmd_data.get("four_zone", True))
                         duration_sec = float(cmd_data.get("zone_duration_sec", 5.0))
-                        cal_dto = engine.start_calibration(
-                            four_zone_mode=four_zone, zone_duration_sec=duration_sec
+                        cal_dto = await engine.submit_command(
+                            "START_CALIBRATION",
+                            four_zone_mode=four_zone,
+                            zone_duration_sec=duration_sec,
                         )
                         await websocket.send_json(
                             {
@@ -120,11 +122,11 @@ async def websocket_session_stream(
                         )
 
                     elif action == "CANCEL_CALIBRATION":
-                        engine.cancel_calibration()
+                        await engine.submit_command("CANCEL_CALIBRATION")
                         await websocket.send_json({"type": "CALIBRATION_CANCELLED"})
 
                     elif action in ("SKIP_CALIBRATION_STEP", "SKIP_ZONE"):
-                        cal_dto = engine.skip_calibration_step()
+                        cal_dto = await engine.submit_command("SKIP_CALIBRATION_STEP")
                         await websocket.send_json(
                             {
                                 "type": "CALIBRATION_PHASE",
@@ -135,15 +137,11 @@ async def websocket_session_stream(
 
                     elif action == "SWITCH_EXPERIMENT":
                         target_mode = cmd_data.get("mode", "")
-                        for em in ExperimentMode:
-                            if em.value == target_mode or em.name == target_mode:
-                                engine.experiment_mode = em
-                                engine.cascade.mode = em
-                                break
+                        new_mode = await engine.submit_command("SWITCH_EXPERIMENT", mode=target_mode)
                         await websocket.send_json(
                             {
                                 "type": "EXPERIMENT_SWITCHED",
-                                "active_mode": engine.experiment_mode.value,
+                                "active_mode": new_mode.value,
                             }
                         )
 
@@ -162,6 +160,10 @@ async def websocket_session_stream(
                 except json.JSONDecodeError:
                     await websocket.send_json(
                         {"type": "ERROR", "message": "Invalid JSON text message"}
+                    )
+                except Exception as cmd_err:
+                    await websocket.send_json(
+                        {"type": "ERROR", "action": action if 'action' in locals() else "UNKNOWN", "message": str(cmd_err)}
                     )
 
     except WebSocketDisconnect:
