@@ -54,14 +54,23 @@ export function PasskeyButton({ view }: PasskeyButtonProps) {
       type="button"
       variant="outline"
       disabled={isPending}
-      className={cn("w-full", isPending && "pointer-events-none opacity-50")}
+      className={cn(
+        "w-full h-10 font-medium border-border/80 bg-background/50 hover:bg-accent/40 transition-all shadow-xs gap-2",
+        isPending && "pointer-events-none opacity-50"
+      )}
       onClick={() => signInPasskey()}
     >
-      {passkeyPending ? <Spinner /> : <Fingerprint />}
-      {localization.auth.continueWith.replace(
-        "{{provider}}",
-        passkeyLocalization.passkey
+      {passkeyPending ? (
+        <Spinner className="size-4 animate-spin" />
+      ) : (
+        <Fingerprint className="size-4 text-primary shrink-0" />
       )}
+      <span>
+        {localization.auth.continueWith.replace(
+          "{{provider}}",
+          passkeyLocalization.passkey
+        )}
+      </span>
     </Button>
   )
 }

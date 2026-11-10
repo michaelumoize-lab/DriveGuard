@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { admin, multiSession } from "better-auth/plugins";
 import { nextCookies } from "better-auth/next-js";
 import { lastLoginMethod } from "better-auth/plugins";
+import { passkey } from "@better-auth/passkey";
 
 const BETTER_AUTH_SECRET = process.env.BETTER_AUTH_SECRET;
 const APP_URL = process.env.BETTER_AUTH_URL ?? "http://localhost:3000";
@@ -57,8 +58,17 @@ export const auth = betterAuth({
     }),
     multiSession(),
     lastLoginMethod(),
+    passkey({
+      rpName: "DriveGuard In-Cabin Biometrics",
+    }),
     nextCookies(),
   ],
+
+  rateLimit: {
+    enabled: true,
+    window: 10,
+    max: 20,
+  },
 
   trustedOrigins: [
     APP_URL,
