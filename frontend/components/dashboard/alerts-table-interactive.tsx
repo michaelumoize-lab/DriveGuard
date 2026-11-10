@@ -72,16 +72,16 @@ export function AlertsTableInteractive({
 
         <div className="flex flex-wrap items-center gap-2">
           <select
-            aria-label="Filter alerts by head-pose zone"
+            aria-label="Filter alerts by cabin gaze zone"
             value={zoneFilter}
             onChange={(e) => setZoneFilter(e.target.value)}
-            className="h-8 rounded-md border border-input bg-background px-2.5 text-xs font-mono text-foreground"
+            className="h-8 rounded-md border border-input bg-background text-foreground px-2.5 text-xs font-mono focus-visible:ring-2 focus-visible:ring-primary outline-none"
           >
             <option value="ALL">All Gaze Zones</option>
-            <option value="FRONT">FRONT</option>
-            <option value="LEFT_MIRROR">LEFT_MIRROR</option>
-            <option value="RIGHT_MIRROR">RIGHT_MIRROR</option>
-            <option value="REARVIEW_MIRROR">REARVIEW_MIRROR</option>
+            <option value="CENTER">CENTER (Road Ahead)</option>
+            <option value="LEFT_MIRROR">LEFT_MIRROR (Driver Side)</option>
+            <option value="RIGHT_MIRROR">RIGHT_MIRROR (Passenger Side)</option>
+            <option value="DASHBOARD">DASHBOARD (Instrument Cluster)</option>
           </select>
 
           <div className="relative w-56">
@@ -90,7 +90,7 @@ export function AlertsTableInteractive({
               type="search"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Filter reason or authority..."
+              placeholder="Filter reason or authority…"
               aria-label="Filter alerts by reason code or cascade authority"
               className="pl-8 h-8 text-xs"
             />

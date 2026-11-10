@@ -15,15 +15,25 @@ class CalibrationPhaseDTO(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    current_zone: str = Field(description="Target zone: CENTER, LEFT_MIRROR, RIGHT_MIRROR, DASHBOARD")
-    phase_index: int = Field(description="1-based index of the current phase (e.g. 1 of 4)", ge=1)
+    current_zone: str = Field(description="Target zone: CENTER, LEFT_MIRROR, RIGHT_MIRROR, DASHBOARD, or BLINK_CADENCE")
+    phase_index: int = Field(description="1-based index of the current phase (e.g. 1 of 5)", ge=1)
     total_phases: int = Field(default=4, description="Total number of guided calibration phases", ge=1)
+    phase_type: str = Field(default="SPATIAL_ZONE", description="Phase type: SPATIAL_ZONE or BLINK_CADENCE")
     
     # Progress & Stability
     zone_progress_pct: float = Field(description="Percentage progress for current target zone (0 to 100%)", ge=0.0, le=100.0)
     total_progress_pct: float = Field(description="Overall calibration session progress (0 to 100%)", ge=0.0, le=100.0)
     stable_samples_count: int = Field(description="Number of stable, high-quality samples acquired in this zone", ge=0)
     target_samples_count: int = Field(description="Target number of samples required for convergence", ge=1)
+    
+    # 2-Minute Natural Blink Cadence Telemetry
+    elapsed_sec: float = Field(default=0.0, description="Elapsed seconds in current phase", ge=0.0)
+    target_duration_sec: float = Field(default=5.0, description="Target duration of current phase in seconds", ge=0.0)
+    collected_blinks_count: int = Field(default=0, description="Total natural blinks captured during calibration", ge=0)
+    live_blink_rate_per_min: float = Field(default=0.0, description="Real-time blink rate (blinks/min) observed during cadence phase", ge=0.0)
+    last_blink_duration_ms: Optional[float] = Field(default=None, description="Duration (ms) of the most recent completed blink")
+    live_median_blink_duration_ms: Optional[float] = Field(default=None, description="Running median blink duration (ms)")
+    live_median_blink_rcr: Optional[float] = Field(default=None, description="Running median eyelid reopening-to-closing ratio")
     
     # Guidance & Quality
     instruction: str = Field(description="Human-readable driver instruction prompt")
@@ -44,7 +54,17 @@ class CalibrationStartRequest(BaseModel):
     driver_id: str = Field(default="driver_default", description="Driver identifier")
     four_zone_mode: bool = Field(default=True, description="True for 4-zone calibration, False for quick 1-zone")
     zone_duration_sec: float = Field(default=5.0, description="Duration per zone in seconds", ge=1.0, le=30.0)
-    recalibrate_zone: Optional[Literal["CENTER", "LEFT_MIRROR", "RIGHT_MIRROR", "DASHBOARD"]] = Field(
+    include_blink_baseline: bool = Field(
+        default=False,
+        description="Whether to append the 2-minute (120s) natural blink rate & cadence profiling phase after spatial calibration",
+    )
+    blink_baseline_duration_sec: float = Field(
+        default=120.0,
+        description="Duration of the natural blink rate & cadence phase in seconds (default 120s)",
+        ge=5.0,
+        le=300.0,
+    )
+    recalibrate_zone: Optional[Literal["CENTER", "LEFT_MIRROR", "RIGHT_MIRROR", "DASHBOARD", "BLINK_CADENCE"]] = Field(
         default=None,
-        description="Specific zone to recalibrate individually (CENTER, LEFT_MIRROR, RIGHT_MIRROR, DASHBOARD)",
+        description="Specific zone to recalibrate individually (CENTER, LEFT_MIRROR, RIGHT_MIRROR, DASHBOARD, BLINK_CADENCE)",
     )

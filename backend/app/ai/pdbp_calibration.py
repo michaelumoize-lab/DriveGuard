@@ -98,6 +98,11 @@ class DriverBehaviourProfile:
     zone_baselines: Dict[str, ZoneBaseline] = field(default_factory=dict)
     # Drift-clamped active center EAR baseline (Bt)
     active_center_ear_median: Optional[float] = None
+    # Extended Temporal Cadence Baselines (2-Min Natural Blink Stream)
+    baseline_perclos_pct: float = 3.5
+    blink_amplitude_median: float = 0.14
+    temporal_blinks_sampled: int = 0
+    temporal_window_sec: float = 120.0
     version: int = 1
 
     def __post_init__(self) -> None:
@@ -195,6 +200,10 @@ class DriverBehaviourProfile:
             "neutral_yaw_deg",
             "calibration_reliability",
             "active_center_ear_median",
+            "baseline_perclos_pct",
+            "blink_amplitude_median",
+            "temporal_blinks_sampled",
+            "temporal_window_sec",
             "version",
         }
         clean_data = {k: v for k, v in data.items() if k in valid_profile_keys}
@@ -216,16 +225,20 @@ class DriverBehaviourProfile:
             calibration_mode="UNCALIBRATED_DEFAULT",
             center_ear_median=0.285,
             center_ear_mad_scaled=0.020,
-            blink_duration_median_ms=185.0,
-            blink_duration_mad_ms=35.0,
-            blink_rcr_median=0.92,
-            blink_rcr_mad=0.14,
-            blink_freq_median_per_min=15.0,
-            blink_freq_mad_per_min=4.0,
+            blink_duration_median_ms=235.0,
+            blink_duration_mad_ms=40.0,
+            blink_rcr_median=0.95,
+            blink_rcr_mad=0.18,
+            blink_freq_median_per_min=16.0,
+            blink_freq_mad_per_min=4.5,
             neutral_pitch_deg=0.0,
             neutral_yaw_deg=0.0,
             calibration_reliability=0.50,
             zone_baselines={PoseZone.CENTER.value: center_zone},
+            baseline_perclos_pct=3.5,
+            blink_amplitude_median=0.14,
+            temporal_blinks_sampled=0,
+            temporal_window_sec=120.0,
         )
 
 
@@ -236,6 +249,7 @@ class CalibrationStepConfig:
     zone: PoseZone
     duration_sec: float
     instruction: str
+    step_type: str = "SPATIAL_ZONE"  # "SPATIAL_ZONE" or "BLINK_CADENCE"
 
 
 FOUR_ZONE_CALIBRATION_PLAN: Tuple[CalibrationStepConfig, ...] = (
@@ -300,18 +314,32 @@ class GuidedCalibrationSession:
         four_zone_mode: bool = True,
         three_zone_mode: bool = False,
         step_duration_sec: Optional[float] = None,
-        target_zone: Optional[PoseZone] = None,
+        target_zone: Optional[PoseZone | str] = None,
         existing_profile: Optional[DriverBehaviourProfile] = None,
+        include_blink_baseline: bool = False,
+        blink_baseline_duration_sec: float = 120.0,
     ) -> None:
         self.driver_id = driver_id
         self.four_zone_mode = four_zone_mode
         self.three_zone_mode = three_zone_mode
         self.step_duration_sec = step_duration_sec
-        self.target_zone = target_zone
+        self.include_blink_baseline = include_blink_baseline
+        self.blink_baseline_duration_sec = float(blink_baseline_duration_sec)
+        self.blink_only_mode = str(target_zone) == "BLINK_CADENCE"
+        self.target_zone = None if self.blink_only_mode else target_zone
         self.existing_profile = existing_profile
 
-        if target_zone is not None:
-            zone_enum = PoseZone(target_zone) if isinstance(target_zone, str) else target_zone
+        if self.blink_only_mode:
+            base_steps: Tuple[CalibrationStepConfig, ...] = (
+                CalibrationStepConfig(
+                    zone=PoseZone.CENTER,
+                    duration_sec=self.blink_baseline_duration_sec,
+                    instruction="STEP 1/1 [2-MIN BLINK STREAM]: Sit comfortably, look straight ahead naturally, and blink normally for 2 minutes.",
+                    step_type="BLINK_CADENCE",
+                ),
+            )
+        elif self.target_zone is not None:
+            zone_enum = PoseZone(self.target_zone) if isinstance(self.target_zone, str) else self.target_zone
             matching = [s for s in FOUR_ZONE_CALIBRATION_PLAN if s.zone == zone_enum]
             base_steps = (
                 (matching[0],)
@@ -331,17 +359,33 @@ class GuidedCalibrationSession:
         else:
             base_steps = CENTER_ONLY_CALIBRATION_PLAN
 
-        if step_duration_sec is not None:
-            self.steps = tuple(
+        if step_duration_sec is not None and not self.blink_only_mode:
+            spatial_steps = tuple(
                 CalibrationStepConfig(
                     zone=s.zone,
                     duration_sec=float(step_duration_sec),
                     instruction=s.instruction,
+                    step_type=s.step_type,
                 )
                 for s in base_steps
             )
         else:
-            self.steps = base_steps
+            spatial_steps = base_steps
+
+        if self.include_blink_baseline and not self.blink_only_mode and self.target_zone is None:
+            total_n = len(spatial_steps) + 1
+            blink_step = CalibrationStepConfig(
+                zone=PoseZone.CENTER,
+                duration_sec=self.blink_baseline_duration_sec,
+                instruction=(
+                    f"STEP {total_n}/{total_n} [2-MIN BLINK STREAM]: Sit comfortably, look ahead naturally, "
+                    "and blink normally for 2 minutes so DriveGuard learns your personal blink rate & speed."
+                ),
+                step_type="BLINK_CADENCE",
+            )
+            self.steps = spatial_steps + (blink_step,)
+        else:
+            self.steps = spatial_steps
 
         self.is_running: bool = False
         self.is_completed: bool = False
@@ -361,6 +405,12 @@ class GuidedCalibrationSession:
         self._confidence_by_zone: Dict[str, List[float]] = {s.zone.value: [] for s in self.steps}
         self._reliabilities: List[float] = []
         self._collected_blinks: List[BlinkEvent] = []
+
+        # 2-Minute Natural Blink Cadence Phase Accumulators
+        self._blink_phase_elapsed_sec: float = 0.0
+        self._blink_phase_valid_ms: float = 0.0
+        self._blink_phase_closed_ms: float = 0.0
+        self._last_blink_duration_ms: Optional[float] = None
 
         # Target-Acquisition Spatial Gating
         if step_duration_sec is not None and step_duration_sec <= 1.0:
@@ -400,6 +450,10 @@ class GuidedCalibrationSession:
             self._confidence_by_zone[z] = []
         self._reliabilities.clear()
         self._collected_blinks.clear()
+        self._blink_phase_elapsed_sec = 0.0
+        self._blink_phase_valid_ms = 0.0
+        self._blink_phase_closed_ms = 0.0
+        self._last_blink_duration_ms = None
         self._last_pose_ts = None
         self._last_pitch = None
         self._last_yaw = None
@@ -470,6 +524,17 @@ class GuidedCalibrationSession:
         if not self.is_running:
             return 0, len(self.steps), 0.0, "Calibration idle", False, "Idle"
         step = self.current_step
+        if step.step_type == "BLINK_CADENCE":
+            ratio = float(np.clip(self._blink_phase_elapsed_sec / max(1.0, step.duration_sec), 0.0, 1.0))
+            return (
+                self._step_idx + 1,
+                len(self.steps),
+                ratio,
+                step.instruction,
+                self._is_aligned,
+                self._feedback_msg,
+            )
+
         z_key = step.zone.value
         samples = len(self._ear_samples_by_zone.get(z_key, []))
         zone_target = (
@@ -515,24 +580,71 @@ class GuidedCalibrationSession:
 
         step = self.current_step
         z_key = step.zone.value
-        self._total_frames_by_zone[z_key] += 1
-
-        is_aligned, feedback = self.is_pose_aligned_with_target(step.zone, pitch_deg, yaw_deg)
-        self._is_aligned = is_aligned
-        self._feedback_msg = feedback
+        self._total_frames_by_zone[z_key] = self._total_frames_by_zone.get(z_key, 0) + 1
 
         # Rapid head motion check (> 80 deg/s) to reject jerky frames
         is_moving_excessively = False
+        dt_s = 0.04
         if self._last_pose_ts is not None and self._last_pitch is not None and self._last_yaw is not None:
             dt_s = max(1e-3, (timestamp_ms - self._last_pose_ts) / 1000.0)
             if dt_s < 0.5:
                 ang_vel = float(np.hypot(pitch_deg - self._last_pitch, yaw_deg - self._last_yaw) / dt_s)
                 if ang_vel > 80.0:
                     is_moving_excessively = True
-                    self._feedback_msg = "Hold head steady in target zone"
         self._last_pose_ts = timestamp_ms
         self._last_pitch = pitch_deg
         self._last_yaw = yaw_deg
+
+        # --- Special handling for the 2-Minute Natural Blink & Cadence Phase ---
+        if step.step_type == "BLINK_CADENCE":
+            ref_yaw = self._learned_neutral_yaw
+            ref_pitch = self._learned_neutral_pitch
+            rel_yaw = yaw_deg - ref_yaw
+            rel_pitch = pitch_deg - ref_pitch
+            # Relaxed natural posture bounds during 2-minute blink stream
+            is_relaxed_forward = face_detected and abs(rel_yaw) <= 20.0 and abs(rel_pitch) <= 16.0
+            self._is_aligned = is_relaxed_forward
+
+            if not face_detected:
+                self._feedback_msg = "Keep face visible in camera frame"
+            elif not is_relaxed_forward:
+                self._feedback_msg = "Look naturally toward the road ahead"
+            else:
+                step_dt_s = min(dt_s, 0.25)
+                self._blink_phase_elapsed_sec += step_dt_s
+                self._blink_phase_valid_ms += step_dt_s * 1000.0
+                if is_eye_currently_closed:
+                    self._blink_phase_closed_ms += step_dt_s * 1000.0
+                self._valid_frames_by_zone[z_key] = self._valid_frames_by_zone.get(z_key, 0) + 1
+                self._reliabilities.append(geometric_reliability)
+                if not is_eye_currently_closed and ear_value > 0.12:
+                    self._ear_samples_by_zone.setdefault(z_key, []).append(ear_value)
+                rem_sec = max(0, int(round(step.duration_sec - self._blink_phase_elapsed_sec)))
+                self._feedback_msg = (
+                    f"Natural Blink Stream ({len(self._collected_blinks)} blinks · {rem_sec}s left)"
+                )
+
+            if completed_blink is not None and not is_moving_excessively and abs(rel_yaw) <= 18.0:
+                self._collected_blinks.append(completed_blink)
+                self._last_blink_duration_ms = completed_blink.duration_ms
+
+            wall_elapsed_sec = (
+                (timestamp_ms - self._step_start_ts_ms) / 1000.0
+                if self._step_start_ts_ms is not None
+                else 0.0
+            )
+            if self._blink_phase_elapsed_sec >= step.duration_sec or wall_elapsed_sec >= (step.duration_sec * 1.15):
+                self._step_idx += 1
+                self._step_start_ts_ms = timestamp_ms
+                self._is_aligned = False
+                if self._step_idx >= len(self.steps):
+                    return self._finalize()
+            return None
+
+        # --- Standard Spatial Zone Alignment & Sampling ---
+        is_aligned, feedback = self.is_pose_aligned_with_target(step.zone, pitch_deg, yaw_deg)
+        self._is_aligned = is_aligned
+        self._feedback_msg = "Hold head steady in target zone" if is_moving_excessively else feedback
 
         # ONLY accumulate valid open-eye samples when head is oriented toward target!
         # For lateral mirror zones and dashboard, perspective yaw foreshortens one eye
@@ -571,8 +683,9 @@ class GuidedCalibrationSession:
                 self._pitch_samples_by_zone[z_key].append(pitch_deg)
                 self._yaw_samples_by_zone[z_key].append(yaw_deg)
 
-        if completed_blink is not None:
+        if completed_blink is not None and not is_moving_excessively:
             self._collected_blinks.append(completed_blink)
+            self._last_blink_duration_ms = completed_blink.duration_ms
 
         # Minimum required valid observations per zone
         min_required = 12 if step.zone == PoseZone.CENTER else 8
@@ -627,13 +740,126 @@ class GuidedCalibrationSession:
             return self._finalize()
         return None
 
+    def get_live_blink_telemetry(self) -> Dict[str, Optional[float | int | str]]:
+        """Return real-time temporal blink cadence metrics during calibration."""
+        step = self.current_step if self.steps else None
+        phase_type = step.step_type if step else "SPATIAL_ZONE"
+        target_dur = step.duration_sec if step else 5.0
+        elapsed = (
+            self._blink_phase_elapsed_sec
+            if phase_type == "BLINK_CADENCE"
+            else 0.0
+        )
+        n_blinks = len(self._collected_blinks)
+        active_min = max(0.15, elapsed / 60.0) if elapsed > 0 else 0.25
+        live_rate = float(np.clip(n_blinks / active_min, 0.0, 60.0)) if n_blinks > 0 else 0.0
+        med_dur = (
+            float(np.median([b.duration_ms for b in self._collected_blinks]))
+            if n_blinks > 0
+            else None
+        )
+        med_rcr = (
+            float(np.median([b.rcr for b in self._collected_blinks]))
+            if n_blinks > 0
+            else None
+        )
+        return {
+            "phase_type": phase_type,
+            "elapsed_sec": round(elapsed, 1),
+            "target_duration_sec": round(target_dur, 1),
+            "collected_blinks_count": n_blinks,
+            "live_blink_rate_per_min": round(live_rate, 1),
+            "last_blink_duration_ms": round(self._last_blink_duration_ms, 1) if self._last_blink_duration_ms is not None else None,
+            "live_median_blink_duration_ms": round(med_dur, 1) if med_dur is not None else None,
+            "live_median_blink_rcr": round(med_rcr, 2) if med_rcr is not None else None,
+        }
+
+    def _compute_temporal_blink_baselines(self) -> Tuple[float, float, float, float, float, float, float, float]:
+        """
+        Compute (dur_med, dur_mad, rcr_med, rcr_mad, freq_med, freq_mad, amp_med, base_perclos_pct)
+        from collected blink events and active observation window.
+        """
+        if len(self._collected_blinks) >= 2:
+            durs = [float(np.clip(b.duration_ms, 70.0, 520.0)) for b in self._collected_blinks]
+            rcrs = [float(np.clip(b.rcr, 0.25, 3.20)) for b in self._collected_blinks]
+            amps = [float(np.clip(b.amplitude, 0.04, 0.38)) for b in self._collected_blinks]
+            dur_med, dur_mad = compute_median_and_scaled_mad(durs, min_floor=35.0)
+            rcr_med, rcr_mad = compute_median_and_scaled_mad(rcrs, min_floor=0.14)
+            amp_med = float(np.median(amps))
+
+            # Derive blink rate from both total window count and inter-blink intervals (IBIs)
+            observed_sec = (
+                self._blink_phase_elapsed_sec
+                if self._blink_phase_elapsed_sec >= 10.0
+                else max(15.0, sum(s.duration_sec for s in self.steps))
+            )
+            overall_rate = (len(self._collected_blinks) / max(0.20, observed_sec / 60.0))
+
+            ibi_rates: List[float] = []
+            for idx in range(1, len(self._collected_blinks)):
+                ibi_ms = self._collected_blinks[idx].start_ts_ms - self._collected_blinks[idx - 1].start_ts_ms
+                if 1200.0 <= ibi_ms <= 25000.0:
+                    ibi_rates.append(60000.0 / ibi_ms)
+
+            if len(ibi_rates) >= 2:
+                ibi_med, ibi_mad = compute_median_and_scaled_mad(ibi_rates, min_floor=3.5)
+                freq_med = float(np.clip(0.65 * overall_rate + 0.35 * ibi_med, 5.0, 38.0))
+                freq_mad = float(np.clip(ibi_mad, 3.5, 10.0))
+            else:
+                freq_med = float(np.clip(overall_rate, 6.0, 34.0))
+                freq_mad = 4.5
+        elif len(self._collected_blinks) == 1:
+            b0 = self._collected_blinks[0]
+            dur_med = float(np.clip(0.6 * b0.duration_ms + 0.4 * 235.0, 160.0, 310.0))
+            dur_mad = 40.0
+            rcr_med = float(np.clip(0.6 * b0.rcr + 0.4 * 0.95, 0.55, 1.80))
+            rcr_mad = 0.18
+            amp_med = float(np.clip(b0.amplitude, 0.08, 0.28))
+            freq_med, freq_mad = 16.0, 4.5
+        else:
+            dur_med, dur_mad = 235.0, 40.0
+            rcr_med, rcr_mad = 0.95, 0.18
+            amp_med = 0.14
+            freq_med, freq_mad = 16.0, 4.5
+
+        if self._blink_phase_valid_ms >= 5000.0:
+            raw_perclos = (self._blink_phase_closed_ms / self._blink_phase_valid_ms) * 100.0
+            base_perclos_pct = float(np.clip(raw_perclos, 1.0, 9.5))
+        else:
+            # Estimate resting closed-eye percentage from personal blink rate * personal blink duration
+            est_closed_ms_per_min = freq_med * dur_med
+            base_perclos_pct = float(np.clip((est_closed_ms_per_min / 60000.0) * 100.0, 1.5, 8.5))
+
+        return dur_med, dur_mad, rcr_med, rcr_mad, freq_med, freq_mad, amp_med, base_perclos_pct
+
     def _finalize(self) -> Optional[DriverBehaviourProfile]:
         """Validate calibration quality, calculate robust baselines, and return DriverBehaviourProfile."""
         self.is_running = False
         center_key = PoseZone.CENTER.value
 
+        dur_med, dur_mad, rcr_med, rcr_mad, freq_med, freq_mad, amp_med, base_perclos_pct = (
+            self._compute_temporal_blink_baselines()
+        )
+
+        # Blink-only recalibration merge into existing profile
+        if self.blink_only_mode and self.existing_profile is not None:
+            self.existing_profile.blink_duration_median_ms = dur_med
+            self.existing_profile.blink_duration_mad_ms = dur_mad
+            self.existing_profile.blink_rcr_median = rcr_med
+            self.existing_profile.blink_rcr_mad = rcr_mad
+            self.existing_profile.blink_freq_median_per_min = freq_med
+            self.existing_profile.blink_freq_mad_per_min = freq_mad
+            self.existing_profile.blink_amplitude_median = amp_med
+            self.existing_profile.baseline_perclos_pct = base_perclos_pct
+            self.existing_profile.temporal_blinks_sampled = len(self._collected_blinks)
+            self.existing_profile.temporal_window_sec = round(
+                max(self._blink_phase_elapsed_sec, self.blink_baseline_duration_sec), 1
+            )
+            self.is_completed = True
+            return self.existing_profile
+
         # If full calibration (including CENTER), verify center quality
-        if any(s.zone == PoseZone.CENTER for s in self.steps):
+        if any(s.zone == PoseZone.CENTER and s.step_type == "SPATIAL_ZONE" for s in self.steps):
             total_center = max(1, self._total_frames_by_zone.get(center_key, 0))
             valid_center = self._valid_frames_by_zone.get(center_key, 0)
             valid_ratio = valid_center / total_center
@@ -650,6 +876,8 @@ class GuidedCalibrationSession:
         # Trim bottom 10% of EAR samples in each zone to eliminate partial blink transitions
         zone_baselines: Dict[str, ZoneBaseline] = {}
         for step in self.steps:
+            if step.step_type != "SPATIAL_ZONE":
+                continue
             zk = step.zone.value
             ears = sorted(self._ear_samples_by_zone.get(zk, []))
             if len(ears) >= 3:
@@ -771,25 +999,16 @@ class GuidedCalibrationSession:
                 confidence_median=0.78,
             )
 
-        # Blink kinematics baseline (fallback to physiological priors mingled with observed blinks if few blinks occurred)
-        if len(self._collected_blinks) >= 2:
-            durs = [b.duration_ms for b in self._collected_blinks]
-            rcrs = [b.rcr for b in self._collected_blinks]
-            dur_med, dur_mad = compute_median_and_scaled_mad(durs, min_floor=25.0)
-            rcr_med, rcr_mad = compute_median_and_scaled_mad(rcrs, min_floor=0.08)
-            total_cal_min = max(0.25, sum(s.duration_sec for s in self.steps) / 60.0)
-            freq_med = float(np.clip(len(self._collected_blinks) / total_cal_min, 6.0, 32.0))
-            freq_mad = 4.0
-        else:
-            dur_med, dur_mad = 185.0, 35.0
-            rcr_med, rcr_mad = 0.90, 0.14
-            freq_med, freq_mad = 15.0, 4.0
-
         mean_rel = float(np.mean(self._reliabilities)) if self._reliabilities else 0.75
+        cal_mode = (
+            "FOUR_ZONE_PLUS_BLINK"
+            if (self.four_zone_mode and self.include_blink_baseline)
+            else ("FOUR_ZONE" if self.four_zone_mode else ("THREE_ZONE" if self.three_zone_mode else "CENTER_ONLY"))
+        )
 
         profile = DriverBehaviourProfile(
             driver_id=self.driver_id,
-            calibration_mode="FOUR_ZONE" if self.four_zone_mode else ("THREE_ZONE" if self.three_zone_mode else "CENTER_ONLY"),
+            calibration_mode=cal_mode,
             center_ear_median=center_zb.ear_median,
             center_ear_mad_scaled=center_zb.ear_mad_scaled,
             blink_duration_median_ms=dur_med,
@@ -802,6 +1021,13 @@ class GuidedCalibrationSession:
             neutral_yaw_deg=center_zb.yaw_median_deg,
             calibration_reliability=mean_rel,
             zone_baselines=zone_baselines,
+            baseline_perclos_pct=base_perclos_pct,
+            blink_amplitude_median=amp_med,
+            temporal_blinks_sampled=len(self._collected_blinks),
+            temporal_window_sec=round(
+                self._blink_phase_elapsed_sec if self.include_blink_baseline else sum(s.duration_sec for s in self.steps),
+                1,
+            ),
             version=1,
         )
         self.is_completed = True

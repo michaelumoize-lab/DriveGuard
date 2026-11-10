@@ -142,12 +142,17 @@ class SessionAIEngine:
         zone_duration_sec: float = 5.0,
         target_zone: Optional[str] = None,
         timestamp_ms: Optional[float] = None,
+        include_blink_baseline: bool = False,
+        blink_baseline_duration_sec: float = 120.0,
     ) -> CalibrationPhaseDTO:
         """Begin a new guided calibration session (4-Zone default, 3-Zone, 1-Zone, or single-zone recalibration)."""
-        t_zone = None
+        t_zone: Optional[PoseZone | str] = None
         if target_zone:
             is_4z, is_3z = False, False
-            t_zone = PoseZone(target_zone) if isinstance(target_zone, str) else target_zone
+            if str(target_zone) == "BLINK_CADENCE":
+                t_zone = "BLINK_CADENCE"
+            else:
+                t_zone = PoseZone(target_zone) if isinstance(target_zone, str) else target_zone
         elif four_zone_mode is None and three_zone_mode is None:
             # Default to full 4-Zone calibration
             is_4z, is_3z = True, False
@@ -162,6 +167,8 @@ class SessionAIEngine:
             step_duration_sec=zone_duration_sec,
             target_zone=t_zone,
             existing_profile=self.profile if (t_zone is not None and self.profile.calibration_mode != "UNCALIBRATED_DEFAULT") else None,
+            include_blink_baseline=include_blink_baseline,
+            blink_baseline_duration_sec=blink_baseline_duration_sec,
         )
         self.calibration_session.start(timestamp_ms=timestamp_ms)
         self._last_completed_calibration_dto = None
@@ -209,6 +216,7 @@ class SessionAIEngine:
                 is_completed=True,
                 rejection_reason=self.calibration_session.rejection_reason if self.calibration_session else None,
                 quality_warnings=list(self.calibration_session.quality_warnings) if self.calibration_session else [],
+                profile=self.export_profile_dto() if (self.calibration_session and self.calibration_session.is_completed) else None,
             )
 
         ts = timestamp_ms or (time.perf_counter() * 1000.0)
@@ -218,15 +226,25 @@ class SessionAIEngine:
         zone_samples = len(self.calibration_session._ear_samples_by_zone.get(step.zone.value, []))
         total_pct = max(0.0, min(100.0, (((phase_idx - 1) + ratio) / max(1, total_steps)) * 100.0))
         zone_pct = max(0.0, min(100.0, ratio * 100.0))
+        live_blink = self.calibration_session.get_live_blink_telemetry()
+        curr_zone_name = "BLINK_CADENCE" if step.step_type == "BLINK_CADENCE" else step.zone.value
 
         return CalibrationPhaseDTO(
-            current_zone=step.zone.value,
+            current_zone=curr_zone_name,
             phase_index=phase_idx,
             total_phases=total_steps,
+            phase_type=str(live_blink.get("phase_type", "SPATIAL_ZONE")),
             zone_progress_pct=round(zone_pct, 1),
             total_progress_pct=round(total_pct, 1),
             stable_samples_count=zone_samples,
             target_samples_count=self.calibration_session.target_samples_per_zone,
+            elapsed_sec=float(live_blink.get("elapsed_sec") or 0.0),
+            target_duration_sec=float(live_blink.get("target_duration_sec") or step.duration_sec),
+            collected_blinks_count=int(live_blink.get("collected_blinks_count") or 0),
+            live_blink_rate_per_min=float(live_blink.get("live_blink_rate_per_min") or 0.0),
+            last_blink_duration_ms=live_blink.get("last_blink_duration_ms"),  # type: ignore[arg-type]
+            live_median_blink_duration_ms=live_blink.get("live_median_blink_duration_ms"),  # type: ignore[arg-type]
+            live_median_blink_rcr=live_blink.get("live_median_blink_rcr"),  # type: ignore[arg-type]
             instruction=instruction,
             is_head_in_target_zone=is_aligned,
             stability_feedback=feedback,
@@ -281,6 +299,12 @@ class SessionAIEngine:
             blink_duration_mad_ms=round(self.profile.blink_duration_mad_ms, 1),
             blink_rcr_median=round(self.profile.blink_rcr_median, 3),
             blink_rcr_mad=round(self.profile.blink_rcr_mad, 3),
+            blink_freq_median_per_min=round(getattr(self.profile, "blink_freq_median_per_min", 16.0), 1),
+            blink_freq_mad_per_min=round(getattr(self.profile, "blink_freq_mad_per_min", 4.5), 1),
+            baseline_perclos_pct=round(getattr(self.profile, "baseline_perclos_pct", 3.5), 2),
+            blink_amplitude_median=round(getattr(self.profile, "blink_amplitude_median", 0.14), 4),
+            temporal_blinks_sampled=int(getattr(self.profile, "temporal_blinks_sampled", 0)),
+            temporal_window_sec=round(getattr(self.profile, "temporal_window_sec", 120.0), 1),
             neutral_pitch_deg=round(self.profile.neutral_pitch_deg, 2),
             neutral_yaw_deg=round(self.profile.neutral_yaw_deg, 2),
             calibration_reliability=round(self.profile.calibration_reliability, 3),
@@ -290,6 +314,8 @@ class SessionAIEngine:
         """Load and activate a driver profile from a Pydantic DTO."""
         baselines: Dict[str, ZoneBaseline] = {}
         for zk_str, zb_dto in dto.zone_baselines.items():
+            if zk_str.startswith("_"):
+                continue
             baselines[zk_str] = ZoneBaseline(
                 zone=zk_str,
                 ear_median=zb_dto.ear_median,
@@ -318,12 +344,16 @@ class SessionAIEngine:
             blink_duration_mad_ms=dto.blink_duration_mad_ms,
             blink_rcr_median=dto.blink_rcr_median,
             blink_rcr_mad=dto.blink_rcr_mad,
-            blink_freq_median_per_min=18.0,
-            blink_freq_mad_per_min=4.0,
+            blink_freq_median_per_min=getattr(dto, "blink_freq_median_per_min", 16.0) or 16.0,
+            blink_freq_mad_per_min=getattr(dto, "blink_freq_mad_per_min", 4.5) or 4.5,
             neutral_pitch_deg=dto.neutral_pitch_deg,
             neutral_yaw_deg=dto.neutral_yaw_deg,
             calibration_reliability=dto.calibration_reliability,
             zone_baselines=baselines,
+            baseline_perclos_pct=getattr(dto, "baseline_perclos_pct", 3.5) or 3.5,
+            blink_amplitude_median=getattr(dto, "blink_amplitude_median", 0.14) or 0.14,
+            temporal_blinks_sampled=int(getattr(dto, "temporal_blinks_sampled", 0) or 0),
+            temporal_window_sec=float(getattr(dto, "temporal_window_sec", 120.0) or 120.0),
             version=dto.version,
         )
         self.set_profile(new_profile)

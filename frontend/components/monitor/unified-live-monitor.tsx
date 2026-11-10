@@ -406,24 +406,67 @@ export function UnifiedLiveMonitor({
       backendType === "cloud"
         ? "/api/v1/profiles"
         : "http://127.0.0.1:8000/api/v1/profiles";
+
+    const rawZones = (initialDriverProfile.zoneBaselines || {}) as Record<string, any>;
+    const temporalMeta = (rawZones._temporalBaseline || {}) as Record<string, any>;
+    const hasTemporalCalibration = Boolean(temporalMeta && temporalMeta.calibratedAt);
+
+    // If profile was created before the 2-minute blink stream existed (fallback 185ms/35ms),
+    // upgrade to realistic webcam baseline (235ms/40ms) so normal blinks do not trigger false alarms.
+    const effectiveDurMed =
+      !hasTemporalCalibration && initialDriverProfile.blinkDurationMedianMs <= 190
+        ? 235.0
+        : initialDriverProfile.blinkDurationMedianMs;
+    const effectiveDurMad =
+      !hasTemporalCalibration && initialDriverProfile.blinkDurationMadMs <= 36
+        ? 40.0
+        : Math.max(35.0, initialDriverProfile.blinkDurationMadMs);
+
+    const cleanZones: Record<string, any> = {};
+    for (const [k, v] of Object.entries(rawZones)) {
+      if (!k.startsWith("_") && v && typeof v === "object" && typeof (v as any).ear_median === "number") {
+        const zv = v as Record<string, any>;
+        const earMed = Number(zv.ear_median);
+        const earMad = Number(zv.ear_mad_scaled ?? initialDriverProfile.centerEarMadScaled ?? 0.018);
+        cleanZones[k] = {
+          zone: k,
+          ear_median: earMed,
+          ear_mad_scaled: earMad,
+          dynamic_closure_threshold: Number(
+            zv.dynamic_closure_threshold ?? Math.max(0.12, Math.min(0.22, earMed - 2.3 * earMad))
+          ),
+          pitch_median_deg: Number(zv.pitch_median_deg ?? zv.pitch_deg_median ?? 0.0),
+          yaw_median_deg: Number(zv.yaw_median_deg ?? zv.yaw_deg_median ?? 0.0),
+          sample_count: Number(zv.sample_count ?? 35),
+        };
+      }
+    }
+
     try {
       await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          version: 1,
           driver_id: driverId,
-          calibrated_at_epoch: Math.floor(Date.now() / 1000),
+          calibrated_at: new Date().toISOString(),
+          is_calibrated: true,
           calibration_mode: initialDriverProfile.calibrationMode || "4_ZONE",
           center_ear_median: initialDriverProfile.centerEarMedian,
-          center_ear_mad_scaled: initialDriverProfile.centerEarMadScaled,
-          blink_duration_median_ms: initialDriverProfile.blinkDurationMedianMs,
-          blink_duration_mad_ms: initialDriverProfile.blinkDurationMadMs,
-          blink_rcr_median: initialDriverProfile.blinkRcrMedian,
-          blink_rcr_mad: initialDriverProfile.blinkRcrMad,
+          blink_duration_median_ms: effectiveDurMed,
+          blink_duration_mad_ms: effectiveDurMad,
+          blink_rcr_median: initialDriverProfile.blinkRcrMedian || 0.95,
+          blink_rcr_mad: Math.max(0.14, initialDriverProfile.blinkRcrMad || 0.18),
+          blink_freq_median_per_min: Number(temporalMeta.blinkFreqMedianPerMin ?? 16.0),
+          blink_freq_mad_per_min: Number(temporalMeta.blinkFreqMadPerMin ?? 4.5),
+          baseline_perclos_pct: Number(temporalMeta.baselinePerclosPct ?? 3.5),
+          blink_amplitude_median: Number(temporalMeta.blinkAmplitudeMedian ?? 0.14),
+          temporal_blinks_sampled: Number(temporalMeta.temporalBlinksSampled ?? 0),
+          temporal_window_sec: Number(temporalMeta.temporalWindowSec ?? 120.0),
           neutral_pitch_deg: initialDriverProfile.neutralPitchDeg,
           neutral_yaw_deg: initialDriverProfile.neutralYawDeg,
           calibration_reliability: initialDriverProfile.calibrationReliability,
-          zone_baselines: initialDriverProfile.zoneBaselines || {},
+          zone_baselines: cleanZones,
         }),
       });
     } catch {

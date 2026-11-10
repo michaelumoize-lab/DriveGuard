@@ -128,8 +128,20 @@ export const ReadinessChecklist = React.memo(function ReadinessChecklist({
           <div
             key={item.id}
             onClick={item.onClick}
-            className={`flex items-center justify-between gap-2 px-3 py-2 rounded-xl border text-xs transition-colors ${
-              item.onClick ? "cursor-pointer hover:bg-muted/60" : ""
+            role={item.onClick ? "button" : undefined}
+            tabIndex={item.onClick ? 0 : undefined}
+            onKeyDown={
+              item.onClick
+                ? (e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      item.onClick?.();
+                    }
+                  }
+                : undefined
+            }
+            className={`flex items-center justify-between gap-2 px-3 py-2 rounded-xl border text-xs transition-colors outline-none ${
+              item.onClick ? "cursor-pointer hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-primary" : ""
             } ${
               isReady
                 ? "border-emerald-500/30 bg-emerald-500/5 text-foreground"

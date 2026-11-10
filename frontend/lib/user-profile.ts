@@ -58,7 +58,7 @@ export async function saveOnboardingStep(
   }
 
   const nextStep = payload.isFinalStep
-    ? 4
+    ? 5
     : Math.max(currentProfile.onboardingStep, payload.step + 1);
 
   return await prisma.userProfile.update({

@@ -168,7 +168,8 @@ DriveGuard/
 │   ├── 01_competitive_analysis_and_uniqueness.md
 │   ├── 02_mathematical_and_algorithmic_spec.md
 │   ├── 03_system_architecture_and_schemas.md
-│   └── 04_experimental_protocol_and_wbs.md
+│   ├── 04_experimental_protocol_and_wbs.md
+│   └── 05_embedded_hardware_subsystem.md  # Cyber-Physical Hardware & Tri-Modal HMI Spec
 ├── backend/
 │   ├── app/
 │   │   ├── main.py                        # FastAPI entrypoint & lifespan handlers

@@ -793,21 +793,30 @@ class LiveKitAIWorkerSession:
                 four_zone = msg.get("four_zone", True)
                 three_zone = msg.get("three_zone", False)
                 duration = float(msg.get("zone_duration_sec", 5.0))
+                include_blink = bool(msg.get("include_blink_baseline", False))
+                blink_duration = float(msg.get("blink_baseline_duration_sec", 120.0))
                 cal_dto = self.engine.start_calibration(
                     four_zone_mode=four_zone,
                     three_zone_mode=three_zone,
                     zone_duration_sec=duration,
+                    include_blink_baseline=include_blink,
+                    blink_baseline_duration_sec=blink_duration,
                 )
-                print(f"[LiveKit Worker] Calibration started: zone={cal_dto.current_zone}, phase={cal_dto.phase_index}/{cal_dto.total_phases}")
+                print(
+                    f"[LiveKit Worker] Calibration started: zone={cal_dto.current_zone}, "
+                    f"phase={cal_dto.phase_index}/{cal_dto.total_phases}, include_blink={include_blink}"
+                )
                 await self._send_control_ack({"type": "CALIBRATION_STARTED", "calibration": cal_dto.model_dump()})
 
             elif action == "RECALIBRATE_ZONE":
                 self._calibration_completion_sent = False
                 target_zone = msg.get("zone", "CENTER")
                 duration = float(msg.get("zone_duration_sec", 5.0))
+                blink_duration = float(msg.get("blink_baseline_duration_sec", 120.0))
                 cal_dto = self.engine.start_calibration(
                     target_zone=target_zone,
                     zone_duration_sec=duration,
+                    blink_baseline_duration_sec=blink_duration,
                 )
                 print(f"[LiveKit Worker] Individual zone recalibration started for zone '{target_zone}'")
                 await self._send_control_ack({"type": "CALIBRATION_STARTED", "calibration": cal_dto.model_dump()})

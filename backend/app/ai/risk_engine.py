@@ -238,31 +238,42 @@ class PersonalisedAdaptiveRiskEngine:
             raw_z_ear *= 0.60
         z_ear = max(0.0, raw_z_ear)
 
+        effective_dur_mad = max(self.profile.blink_duration_mad_ms, 35.0)
         if kinematics.recent_blink_duration_ms is not None:
             raw_z_dur = compute_robust_z(
                 kinematics.recent_blink_duration_ms,
                 self.profile.blink_duration_median_ms,
-                self.profile.blink_duration_mad_ms,
+                effective_dur_mad,
             )
             z_blink_dur = max(0.0, raw_z_dur)
         else:
             z_blink_dur = 0.0
 
+        effective_rcr_mad = max(self.profile.blink_rcr_mad, 0.14)
         if kinematics.recent_blink_rcr is not None:
             # Slower reopening velocity -> lower RCR than baseline -> positive fatigue z_rcr
             raw_z_rcr = compute_robust_z(
                 self.profile.blink_rcr_median - kinematics.recent_blink_rcr,
                 0.0,
-                self.profile.blink_rcr_mad,
+                effective_rcr_mad,
             )
             z_blink_rcr = max(0.0, raw_z_rcr)
         else:
             z_blink_rcr = 0.0
 
-        # PERCLOS baseline for an alert driver is typically ~3-5%
+        # Personal blink rate deviation (elevated blink bursts relative to personal cadence baseline)
+        freq_med = getattr(self.profile, "blink_freq_median_per_min", 16.0) or 16.0
+        freq_mad = max(getattr(self.profile, "blink_freq_mad_per_min", 4.5) or 4.5, 3.5)
+        if kinematics.perclos_coverage_pct >= 35.0 and kinematics.blink_rate_per_min > 0:
+            z_blink_freq = max(0.0, compute_robust_z(kinematics.blink_rate_per_min, freq_med, freq_mad))
+        else:
+            z_blink_freq = 0.0
+
+        # PERCLOS baseline anchored to the driver's personal resting PERCLOS (default ~3.5-4.5%)
         # Only contribute to linear risk when observation coverage meets reliability threshold
+        base_perclos = float(np.clip(getattr(self.profile, "baseline_perclos_pct", 4.0) or 4.0, 1.5, 8.5))
         if kinematics.perclos_reliable:
-            z_perclos = max(0.0, (kinematics.perclos_60s_pct - 4.5) / 3.8)
+            z_perclos = max(0.0, (kinematics.perclos_60s_pct - max(4.2, base_perclos + 1.0)) / 3.8)
         else:
             z_perclos = 0.0
 
@@ -284,9 +295,10 @@ class PersonalisedAdaptiveRiskEngine:
         # Weighted combination of robust deviations
         linear_risk = (
             0.30 * min(z_perclos, 4.5)
-            + 0.26 * min(z_blink_dur, 4.5)
+            + 0.24 * min(z_blink_dur, 4.5)
             + 0.18 * min(z_blink_rcr, 4.0)
-            + 0.16 * min(z_ear, 4.0)
+            + 0.15 * min(z_ear, 4.0)
+            + 0.06 * min(z_blink_freq, 3.0)
             + (0.35 if is_head_nodding else 0.0)
             + (0.24 if is_abnormal_cluster else 0.0)
             + (0.20 if (kinematics.is_yawning or kinematics.yawn_count_5min >= 2) else 0.0)
@@ -319,11 +331,19 @@ class PersonalisedAdaptiveRiskEngine:
             BlinkClassification.MICROSLEEP_CANDIDATE,
         ):
             reasons.append("PROLONGED_BLINK_DETECTED")
-        if z_blink_dur >= 1.8 or (
-            kinematics.is_eye_closed and kinematics.current_closure_duration_ms >= 450.0
+        personal_dur_cutoff_ms = max(
+            310.0, self.profile.blink_duration_median_ms + 2.2 * effective_dur_mad
+        )
+        if (
+            z_blink_dur >= 2.2
+            and kinematics.recent_blink_duration_ms is not None
+            and kinematics.recent_blink_duration_ms >= personal_dur_cutoff_ms
+        ) or (
+            kinematics.is_eye_closed
+            and kinematics.current_closure_duration_ms >= max(480.0, self.profile.blink_duration_median_ms * 2.1)
         ):
             reasons.append("BLINK_DURATION_ABOVE_PERSONAL_BASELINE")
-        if z_blink_rcr >= 1.8:
+        if z_blink_rcr >= 2.0:
             reasons.append("EYELID_REOPENING_VELOCITY_SLOWED")
         if kinematics.perclos_reliable and (z_perclos >= 1.6 or kinematics.perclos_60s_pct >= 12.0):
             reasons.append("INCREASED_PERCLOS")

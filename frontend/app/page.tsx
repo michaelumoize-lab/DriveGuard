@@ -191,7 +191,7 @@ export default async function Home() {
         </section>
 
         {/* Section 2: How DriveGuard Works (6-Stage Pipeline) */}
-        <section id="pipeline" className="py-16 border-t border-border/60 bg-muted/20">
+        <section id="pipeline" className="py-16 border-t border-border/60 bg-muted/20 scroll-mt-16">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-10">
             <div className="text-center max-w-3xl mx-auto space-y-2">
               <Badge variant="outline" className="font-mono text-xs uppercase">End-to-End AI Pipeline</Badge>
@@ -274,7 +274,7 @@ export default async function Home() {
         </section>
 
         {/* Section 3: Why 4-Zone Personalization Matters */}
-        <section id="personalization" className="py-16 border-t border-border/60">
+        <section id="personalization" className="py-16 border-t border-border/60 scroll-mt-16">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-center">
               <div className="space-y-4">
@@ -332,7 +332,7 @@ export default async function Home() {
         </section>
 
         {/* Section 4: Privacy & Safety Prototype Disclaimer */}
-        <section id="safety-privacy" className="py-12 border-t border-border/60 bg-muted/10">
+        <section id="safety-privacy" className="py-12 border-t border-border/60 bg-muted/10 scroll-mt-16">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="p-5 rounded-xl border border-border bg-card flex items-start gap-3.5">

@@ -17,6 +17,8 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
+import { GuidedCalibrationWizard } from "@/components/calibration/guided-calibration-wizard";
+import { InitialDriverProfileData } from "@/components/monitor/unified-live-monitor";
 import {
   User,
   Car,
@@ -30,6 +32,8 @@ import {
   Glasses,
   Volume2,
   Eye,
+  Camera,
+  Activity,
 } from "lucide-react";
 
 interface InitialProfile {
@@ -57,16 +61,25 @@ interface OnboardingWizardProps {
     email: string;
   };
   initialProfile: InitialProfile;
+  initialDriverProfile?: InitialDriverProfileData | null;
 }
 
-export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps) {
+export function OnboardingWizard({
+  user,
+  initialProfile,
+  initialDriverProfile = null,
+}: OnboardingWizardProps) {
   const router = useRouter();
 
-  // Resume at the saved step (bounded between 1 and 4)
+  // Resume at the saved step (bounded between 1 and 5)
   const [currentStep, setCurrentStep] = useState<number>(
-    Math.min(4, Math.max(1, initialProfile.onboardingStep || 1))
+    Math.min(5, Math.max(1, initialProfile.onboardingStep || 1))
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Calibrated Biometric Profile State
+  const [calibratedDriverProfile, setCalibratedDriverProfile] =
+    useState<InitialDriverProfileData | null>(initialDriverProfile);
 
   // Form State
   const [fullName, setFullName] = useState(user.name || "");
@@ -91,8 +104,9 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
   const stepsList = [
     { number: 1, title: "Driver Profile", icon: User },
     { number: 2, title: "Vehicle Info", icon: Car },
-    { number: 3, title: "Safety Preferences", icon: Shield },
-    { number: 4, title: "Review & Activate", icon: CheckCircle2 },
+    { number: 3, title: "Safety Prefs", icon: Shield },
+    { number: 4, title: "4-Zone & Blink Cal", icon: Camera },
+    { number: 5, title: "Review & Activate", icon: CheckCircle2 },
   ];
 
   const progressPercentage = ((currentStep - 1) / (stepsList.length - 1)) * 100;
@@ -132,9 +146,15 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
           mirrorSuppression,
           wearsGlasses,
         };
-      } else if (stepNum === 4 && isFinal) {
+      } else if (stepNum === 4) {
         payload = {
           ...payload,
+          completedStepKey: "BIOMETRIC_BLINK_CALIBRATION",
+        };
+      } else if (stepNum === 5 || isFinal) {
+        payload = {
+          ...payload,
+          step: 5,
           completedStepKey: "ONBOARDING_COMPLETED",
           isFinalStep: true,
         };
@@ -155,7 +175,7 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
         router.push("/dashboard");
         router.refresh();
       } else {
-        setCurrentStep((prev) => Math.min(4, prev + 1));
+        setCurrentStep((prev) => Math.min(5, prev + 1));
       }
     } catch (err) {
       console.error(err);
@@ -165,19 +185,37 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
     }
   };
 
+  // Extract temporal blink metrics for Step 5 Review card
+  const temporalSummary = (() => {
+    const rawZones = (calibratedDriverProfile?.zoneBaselines || {}) as Record<string, any>;
+    const meta = (rawZones._temporalBaseline || {}) as Record<string, any>;
+    return {
+      blinkRatePerMin:
+        typeof meta.blinkFreqMedianPerMin === "number" ? meta.blinkFreqMedianPerMin : 16.0,
+      blinkDurationMs: calibratedDriverProfile?.blinkDurationMedianMs ?? 235.0,
+      blinkRcr: calibratedDriverProfile?.blinkRcrMedian ?? 0.95,
+      restingPerclosPct:
+        typeof meta.baselinePerclosPct === "number" ? meta.baselinePerclosPct : 3.5,
+      blinksSampled:
+        typeof meta.temporalBlinksSampled === "number" ? meta.temporalBlinksSampled : null,
+    };
+  })();
+
   return (
     <Card className="border-border/60 shadow-lg backdrop-blur-sm">
       <CardHeader className="pb-4">
         {/* Progress Tracker */}
         <div className="space-y-3">
           <div className="flex items-center justify-between text-xs font-medium text-muted-foreground">
-            <span>Step {currentStep} of {stepsList.length}</span>
+            <span>
+              Step {currentStep} of {stepsList.length}
+            </span>
             <span>{Math.round(progressPercentage)}% completed</span>
           </div>
           <Progress value={progressPercentage} className="h-1.5" />
 
           {/* Stepper Pills */}
-          <div className="grid grid-cols-4 gap-2 pt-2">
+          <div className="grid grid-cols-5 gap-2 pt-2">
             {stepsList.map((s) => {
               const Icon = s.icon;
               const isActive = s.number === currentStep;
@@ -206,13 +244,20 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
           {currentStep === 1 && "Personal & Driver Contact Information"}
           {currentStep === 2 && "Vehicle Details"}
           {currentStep === 3 && "AI Detection & Alert Preferences"}
-          {currentStep === 4 && "Review & System Activation"}
+          {currentStep === 4 && "4-Zone Spatial + 2-Minute Personal Blink Rate Calibration"}
+          {currentStep === 5 && "Review & System Activation"}
         </CardTitle>
         <CardDescription>
-          {currentStep === 1 && "Let's set up your profile and primary contact details for safety notifications."}
-          {currentStep === 2 && "Enter your primary vehicle's details to calibrate interior cabin perspective."}
-          {currentStep === 3 && "Customise the sensitivity of the early warning cascade and fatigue alerts."}
-          {currentStep === 4 && "Confirm your setup. You will be ready to begin live driving telemetry."}
+          {currentStep === 1 &&
+            "Let's set up your profile and primary contact details for safety notifications."}
+          {currentStep === 2 &&
+            "Enter your primary vehicle's details to calibrate interior cabin perspective."}
+          {currentStep === 3 &&
+            "Customise the sensitivity of the early warning cascade and fatigue alerts."}
+          {currentStep === 4 &&
+            "Calibrate your 4 cabin gaze zones (~20s) followed by a 2-minute natural blink stream so DriveGuard adapts to your personal blink rate and duration."}
+          {currentStep === 5 &&
+            "Confirm your personal baselines and vehicle setup. You will be ready to begin live driving telemetry."}
         </CardDescription>
       </CardHeader>
 
@@ -335,7 +380,8 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
             <div className="p-3 bg-muted/40 rounded-lg border border-border text-xs text-muted-foreground flex items-start gap-2">
               <Car className="size-4 text-primary shrink-0 mt-0.5" />
               <span>
-                Vehicle details help DriveGuard tailor camera field-of-view perspective angles for mirror glances and dashboard instrumentation.
+                Vehicle details help DriveGuard tailor camera field-of-view perspective angles for
+                mirror glances and dashboard instrumentation.
               </span>
             </div>
           </div>
@@ -374,7 +420,9 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
                     type="button"
                     role="radio"
                     aria-checked={sensitivityLevel === s.level}
-                    onClick={() => setSensitivityLevel(s.level as "STANDARD" | "HIGH" | "HIGHWAY")}
+                    onClick={() =>
+                      setSensitivityLevel(s.level as "STANDARD" | "HIGH" | "HIGHWAY")
+                    }
                     className={`cursor-pointer rounded-lg border p-3.5 transition-all text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                       sensitivityLevel === s.level
                         ? "border-primary bg-primary/10 shadow-sm"
@@ -423,7 +471,8 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
                     I Wear Eyeglasses
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    Activates Stage-2 CNN arbitration to eliminate glare and frame edge interference.
+                    Activates Stage-2 CNN arbitration to eliminate glare and frame edge
+                    interference.
                   </div>
                 </div>
                 <Switch checked={wearsGlasses} onCheckedChange={setWearsGlasses} />
@@ -432,43 +481,123 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
           </div>
         )}
 
-        {/* STEP 4: REVIEW & ACTIVATE */}
+        {/* STEP 4: 4-ZONE SPATIAL + 2-MINUTE BLINK RATE CALIBRATION */}
         {currentStep === 4 && (
           <div className="space-y-4">
-            <div className="p-4 bg-primary/5 border border-primary/20 rounded-xl space-y-3">
+            <GuidedCalibrationWizard
+              driverId={user.id}
+              initialDriverProfile={calibratedDriverProfile}
+              embeddedInOnboarding={true}
+              onCalibrationSaved={(savedProf) => {
+                setCalibratedDriverProfile(savedProf);
+              }}
+            />
+          </div>
+        )}
+
+        {/* STEP 5: REVIEW & ACTIVATE */}
+        {currentStep === 5 && (
+          <div className="space-y-4">
+            <div className="p-4 bg-primary/5 border border-primary/20 rounded-xl space-y-2">
               <div className="flex items-center gap-2 text-primary font-semibold text-base">
                 <Sparkles className="size-5" />
-                Your DriveGuard Profile is Configured!
+                Your Personal DriveGuard Profile is Ready!
               </div>
               <p className="text-xs text-muted-foreground">
-                All profile parameters have been validated. You can launch live monitoring immediately, or run a guided 4-zone calibration to customize eye-aspect ratio thresholds to your facial anatomy.
+                {calibratedDriverProfile?.isCalibrated
+                  ? "Your 4-Zone spatial EAR thresholds and 2-minute personal blink rate & duration baselines have been saved to PostgreSQL and synced to the AI engine."
+                  : "Your driver profile is configured. You can run or update your 4-Zone + 2-Minute Blink calibration anytime in Calibration Studio."}
               </p>
+            </div>
+
+            {/* Personal Biometric & Blink Cadence Summary */}
+            <div className="p-3.5 rounded-xl border border-border bg-muted/20 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold flex items-center gap-1.5 text-foreground">
+                  <Activity className="size-4 text-primary" />
+                  Personal Biometric & Blink Cadence Baseline
+                </span>
+                <Badge
+                  variant="outline"
+                  className={
+                    calibratedDriverProfile?.isCalibrated
+                      ? "border-emerald-500/40 text-emerald-500 bg-emerald-500/10 font-mono text-[10px]"
+                      : "border-amber-500/40 text-amber-500 bg-amber-500/10 font-mono text-[10px]"
+                  }
+                >
+                  {calibratedDriverProfile?.isCalibrated
+                    ? "CALIBRATED & STORED IN DB"
+                    : "POPULATION DEFAULTS"}
+                </Badge>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 font-mono text-xs">
+                <div className="p-2.5 rounded-lg border border-border bg-background">
+                  <span className="text-[10px] text-muted-foreground block">CENTER EAR</span>
+                  <span className="text-sm font-bold text-foreground">
+                    {(calibratedDriverProfile?.centerEarMedian ?? 0.285).toFixed(3)}
+                  </span>
+                </div>
+                <div className="p-2.5 rounded-lg border border-border bg-background">
+                  <span className="text-[10px] text-muted-foreground block">BLINK RATE</span>
+                  <span className="text-sm font-bold text-sky-500">
+                    {temporalSummary.blinkRatePerMin.toFixed(1)} /min
+                  </span>
+                </div>
+                <div className="p-2.5 rounded-lg border border-border bg-background">
+                  <span className="text-[10px] text-muted-foreground block">BLINK DURATION</span>
+                  <span className="text-sm font-bold text-amber-500">
+                    {Math.round(temporalSummary.blinkDurationMs)} ms
+                  </span>
+                </div>
+                <div className="p-2.5 rounded-lg border border-border bg-background">
+                  <span className="text-[10px] text-muted-foreground block">
+                    RCR / RESTING PERCLOS
+                  </span>
+                  <span className="text-sm font-bold text-emerald-500">
+                    {temporalSummary.blinkRcr.toFixed(2)} ·{" "}
+                    {temporalSummary.restingPerclosPct.toFixed(1)}%
+                  </span>
+                </div>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
               <div className="p-3 border border-border rounded-lg space-y-1">
                 <span className="text-muted-foreground block">Driver</span>
-                <span className="font-semibold text-foreground text-sm block">{fullName || user.email}</span>
-                <span className="text-muted-foreground block">{phoneNumber || "No phone provided"}</span>
+                <span className="font-semibold text-foreground text-sm block">
+                  {fullName || user.email}
+                </span>
+                <span className="text-muted-foreground block">
+                  {phoneNumber || "No phone provided"}
+                </span>
               </div>
 
               <div className="p-3 border border-border rounded-lg space-y-1">
                 <span className="text-muted-foreground block">Vehicle</span>
                 <span className="font-semibold text-foreground text-sm block">
-                  {vehicleMake && vehicleModel ? `${vehicleMake} ${vehicleModel} (${vehicleYear || "N/A"})` : "Not specified"}
+                  {vehicleMake && vehicleModel
+                    ? `${vehicleMake} ${vehicleModel} (${vehicleYear || "N/A"})`
+                    : "Not specified"}
                 </span>
-                <span className="text-muted-foreground block">{licensePlate ? `Plate: ${licensePlate}` : "Plate: N/A"}</span>
+                <span className="text-muted-foreground block">
+                  {licensePlate ? `Plate: ${licensePlate}` : "Plate: N/A"}
+                </span>
               </div>
 
               <div className="p-3 border border-border rounded-lg space-y-1">
                 <span className="text-muted-foreground block">Sensitivity Mode</span>
-                <Badge variant="outline" className="text-xs font-mono">{sensitivityLevel}</Badge>
+                <Badge variant="outline" className="text-xs font-mono">
+                  {sensitivityLevel}
+                </Badge>
               </div>
 
               <div className="p-3 border border-border rounded-lg space-y-1">
                 <span className="text-muted-foreground block">Safety Features</span>
                 <span className="text-foreground block font-medium">
-                  Audio: {audioAlerts ? "ON" : "OFF"} | Mirrors: {mirrorSuppression ? "SUPPRESSED" : "OFF"} | Glasses: {wearsGlasses ? "YES" : "NO"}
+                  Audio: {audioAlerts ? "ON" : "OFF"} | Mirrors:{" "}
+                  {mirrorSuppression ? "SUPPRESSED" : "OFF"} | Glasses:{" "}
+                  {wearsGlasses ? "YES" : "NO"}
                 </span>
               </div>
             </div>
@@ -489,20 +618,24 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
               Previous
             </Button>
           )}
-          {currentStep < 4 && (
+          {currentStep < 5 && (
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => saveStepData(4, true)}
+              onClick={() =>
+                currentStep === 4 ? saveStepData(4, false) : saveStepData(5, true)
+              }
               disabled={isSubmitting}
               className="text-xs text-muted-foreground hover:text-foreground"
             >
-              Skip for now (use defaults)
+              {currentStep === 4
+                ? "Skip calibration for now (calibrate later)"
+                : "Skip for now (use defaults)"}
             </Button>
           )}
         </div>
 
-        {currentStep < 4 ? (
+        {currentStep < 5 ? (
           <Button
             size="sm"
             onClick={() => saveStepData(currentStep, false)}
@@ -515,7 +648,11 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
               </>
             ) : (
               <>
-                Next Step
+                {currentStep === 4
+                  ? calibratedDriverProfile?.isCalibrated
+                    ? "Continue to Review"
+                    : "Continue Without Calibrating"
+                  : "Next Step"}
                 <ArrowRight className="size-4 ml-1.5" />
               </>
             )}
@@ -523,7 +660,7 @@ export function OnboardingWizard({ user, initialProfile }: OnboardingWizardProps
         ) : (
           <Button
             size="sm"
-            onClick={() => saveStepData(4, true)}
+            onClick={() => saveStepData(5, true)}
             disabled={isSubmitting}
             className="bg-primary text-primary-foreground hover:bg-primary/90 font-medium"
           >

@@ -14,6 +14,7 @@
 [![ONNX Runtime](https://img.shields.io/badge/ONNX%20Runtime-1.18+-005CED.svg?logo=onnx&logoColor=white)](https://onnxruntime.ai/)
 [![LiveKit](https://img.shields.io/badge/LiveKit-WebRTC%20SFU-FF3E00.svg?logo=webrtc&logoColor=white)](https://livekit.io/)
 [![PostgreSQL](https://img.shields.io/badge/Neon-PostgreSQL%20Serverless-00E599.svg?logo=postgresql&logoColor=white)](https://neon.tech/)
+[![ESP32 Hardware](https://img.shields.io/badge/Hardware-ESP32%20%7C%20FreeRTOS%20%7C%20I2C-E7352C.svg?logo=espressif&logoColor=white)](docs/05_embedded_hardware_subsystem.md)
 
 </div>
 
@@ -58,6 +59,10 @@ Traditional drowsiness detection systems rely on one-size-fits-all geometric thr
 - **Session Monitoring**: Tracks active driving sessions with frame counts, real-time latency diagnostics, and safety event logs.
 - **Session Analytics & Fatigue History**: Stores driving sessions and safety incident summaries in a persistent PostgreSQL database for historical trend analysis.
 - **Driver-Specific Baselines**: Replaces arbitrary global constants with driver-anchored thresholds that adapt safely over long trips.
+- **Cyber-Physical Safety Co-Processor**: Offloads mission-critical alert logic and hardware watchdog supervision to a dedicated real-time microcontroller (ESP32/STM32) via an isolated UART telemetry link.
+- **Tri-Modal Sensory Alert Subsystem**: Combines somatosensory haptics (DRV2605L + LRA motor on steering wheel/seat), visual HUD (0.96" SSD1306 OLED), and hardware PWM acoustic frequency sweeps (piezo buzzer).
+- **Closed-Loop Human-in-the-Loop (HITL)**: Physical steering-wheel acknowledge button silences alarms upon driver touch and logs microsecond reaction times ($t_{\text{reaction}}$), automatically escalating unacknowledged warnings.
+- **Empirical Energy Profiling**: Real-time current (mA) and power dissipation (mW) monitoring via an $I^2C$ INA219 sensor for academic power budgeting.
 
 ---
 
