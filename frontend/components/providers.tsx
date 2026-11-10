@@ -9,7 +9,6 @@ import { deleteUserPlugin } from "@/lib/auth/delete-user-plugin"
 import { authClient } from "@/lib/auth-client"
 import { lastLoginMethodPlugin } from "@/lib/auth/last-login-method-plugin"
 import { multiSessionPlugin } from "@/lib/auth/multi-session-plugin"
-import { passkeyPlugin } from "@/lib/auth/passkey-plugin"
 import { themePlugin } from "@/lib/auth/theme-plugin"
 import { getQueryClient } from "@/lib/query-client"
 import { AuthProvider } from "./auth/auth-provider"
@@ -35,15 +34,6 @@ export function Providers({ children }: { children: ReactNode }) {
           deleteUserPlugin(),
           lastLoginMethodPlugin(),
           multiSessionPlugin(),
-          passkeyPlugin({
-            localization: {
-              passkey: "Face ID / Touch ID / Passkey",
-              passkeys: "Biometric Passkeys & In-Cabin Authentication",
-              passkeysDescription:
-                "Authenticate securely and instantly using Face ID, Touch ID, Windows Hello, or FIDO2 keys without typing credentials in the cabin.",
-              addPasskey: "Register New Passkey",
-            },
-          }),
           themePlugin({ useTheme: () => theme }),
         ]}
         Link={Link}
