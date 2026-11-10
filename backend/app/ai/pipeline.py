@@ -370,6 +370,8 @@ class SessionAIEngine:
         self,
         frame_input: Union[np.ndarray, bytes],
         timestamp_ms: Optional[float] = None,
+        *,
+        is_rgb: bool = True,
     ) -> FrameTelemetryDTO:
         """
         Execute the complete DriveGuard pipeline on a single video frame.
@@ -388,12 +390,14 @@ class SessionAIEngine:
                     latency_ms=0.0,
                     reason="SESSION_CLOSED",
                 )
-            return self._process_frame_locked(frame_input, timestamp_ms)
+            return self._process_frame_locked(frame_input, timestamp_ms, is_rgb=is_rgb)
 
     def _process_frame_locked(
         self,
         frame_input: Union[np.ndarray, bytes],
         timestamp_ms: Optional[float] = None,
+        *,
+        is_rgb: bool = True,
     ) -> FrameTelemetryDTO:
         t_start = time.perf_counter()
         self.frame_index += 1
@@ -409,28 +413,44 @@ class SessionAIEngine:
             self.fps_ema = 0.90 * self.fps_ema + 0.10 * (1.0 / dt_sec)
         self.prev_timestamp_ms = ts_ms
 
-        # 2. Decode raw image bytes if necessary
-        frame_bgr: Optional[np.ndarray] = None
+        # 2. Decode raw image bytes if necessary (EXP-1A RGB Pass-Through)
+        frame_rgb: Optional[np.ndarray] = None
         if isinstance(frame_input, bytes):
             nparr = np.frombuffer(frame_input, np.uint8)
-            frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            decoded = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if decoded is not None:
+                frame_rgb = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
         elif isinstance(frame_input, np.ndarray):
-            frame_bgr = frame_input
+            if is_rgb:
+                frame_rgb = frame_input
+            else:
+                frame_rgb = cv2.cvtColor(frame_input, cv2.COLOR_BGR2RGB)
 
-        if frame_bgr is None or frame_bgr.size == 0:
+        if frame_rgb is None or frame_rgb.size == 0:
             return self._build_unavailable_frame(ts_ms, latency_ms=0.5, reason="IMAGE_DECODE_FAILED")
 
-        # 3. MediaPipe Face Landmark & 3D Pose Extraction
+        # 3. MediaPipe Face Landmark & 3D Pose Extraction (direct RGB pass-through)
         ref_ear = self.profile.center_ear_median
         try:
-            geom, _ = self.landmarker.process_frame(
-                frame_bgr=frame_bgr,
-                timestamp_ms=ts_ms,
-                neutral_pitch_deg=self.profile.neutral_pitch_deg,
-                neutral_yaw_deg=self.profile.neutral_yaw_deg,
-                reference_open_ear=ref_ear,
-                extract_crops=True,
-            )
+            try:
+                geom, _ = self.landmarker.process_frame(
+                    frame_bgr=frame_rgb,
+                    timestamp_ms=ts_ms,
+                    neutral_pitch_deg=self.profile.neutral_pitch_deg,
+                    neutral_yaw_deg=self.profile.neutral_yaw_deg,
+                    reference_open_ear=ref_ear,
+                    extract_crops=True,
+                    is_rgb=True,
+                )
+            except TypeError:
+                geom, _ = self.landmarker.process_frame(
+                    frame_bgr=frame_rgb,
+                    timestamp_ms=ts_ms,
+                    neutral_pitch_deg=self.profile.neutral_pitch_deg,
+                    neutral_yaw_deg=self.profile.neutral_yaw_deg,
+                    reference_open_ear=ref_ear,
+                    extract_crops=True,
+                )
         except Exception as exc:
             logger.error(f"[SessionAIEngine] Landmarker exception at {ts_ms}ms: {exc}", exc_info=True)
             self.kinematics.handle_face_lost(ts_ms)

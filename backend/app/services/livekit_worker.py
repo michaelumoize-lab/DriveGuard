@@ -506,14 +506,12 @@ class LiveKitAIWorkerSession:
                         (rgb_frame.height, rgb_frame.width, 3)
                     )
 
-                    # 3. Convert to BGR for OpenCV / DriveGuard pipeline
-                    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                    raw_h, raw_w = img_rgb.shape[:2]
 
-                    raw_h, raw_w = img_bgr.shape[:2]
-
-                    # Frame dimension normalization: bypass resize if already 640px wide,
-                    # with safe normalization fallbacks for unexpected camera resolutions.
-                    norm_img = normalize_frame_width(img_bgr)
+                    # 3. Frame dimension normalization (EXP-1A: RGB Pass-Through):
+                    # Retains native RGB24 data directly, bypassing redundant RGB->BGR->RGB roundtrips.
+                    # np.ascontiguousarray enforces C-contiguity for memory safety and thread dispatch.
+                    norm_img = np.ascontiguousarray(normalize_frame_width(img_rgb))
                     norm_h, norm_w = norm_img.shape[:2]
 
                     # Log dimension changes or first frame

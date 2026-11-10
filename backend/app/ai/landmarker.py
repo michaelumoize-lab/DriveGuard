@@ -158,16 +158,22 @@ class DriveGuardFaceLandmarker:
 
     def process_frame(
         self,
-        frame_bgr: np.ndarray,
-        timestamp_ms: float,
+        frame_bgr: Optional[np.ndarray] = None,
+        timestamp_ms: float = 0.0,
         neutral_pitch_deg: float = 0.0,
         neutral_yaw_deg: float = 0.0,
         reference_open_ear: float = 0.28,
         extract_crops: bool = True,
+        *,
+        frame_rgb: Optional[np.ndarray] = None,
+        is_rgb: bool = False,
     ) -> Tuple[FrameGeometryFeatures, Optional[np.ndarray]]:
         """
-        Process a BGR video frame and return `(FrameGeometryFeatures, landmarks_pixel_xyz)`.
+        Process a video frame and return `(FrameGeometryFeatures, landmarks_pixel_xyz)`.
         Thread-safe and guarded with monotonic timestamp enforcement.
+
+        EXP-1A RGB Pass-Through: Accepts either pre-decoded RGB directly via `frame_rgb`
+        (eliminating redundant color conversions) or legacy BGR via `frame_bgr`.
         """
         with self._lock:
             if self._is_closed:
@@ -192,17 +198,24 @@ class DriveGuardFaceLandmarker:
                     None,
                 )
 
-            h, w = frame_bgr.shape[:2]
-            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            # EXP-1A RGB Pass-Through: bypass cv2.cvtColor if frame_rgb or is_rgb is supplied
+            if frame_rgb is not None:
+                rgb = frame_rgb
+            elif frame_bgr is not None:
+                rgb = frame_bgr if is_rgb else cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            else:
+                raise ValueError("Either frame_rgb or frame_bgr must be provided to process_frame.")
+
+            h, w = rgb.shape[:2]
 
             if getattr(self, "_use_fallback_tracker", False):
                 return self._process_frame_headless_fallback(
-                    frame_bgr=frame_bgr,
-                    frame_rgb=frame_rgb,
+                    frame_rgb=rgb,
                     timestamp_ms=timestamp_ms,
                     neutral_pitch_deg=neutral_pitch_deg,
                     neutral_yaw_deg=neutral_yaw_deg,
                     reference_open_ear=reference_open_ear,
+                    frame_bgr=frame_bgr,
                 )
 
             landmarks_pixel_xyz: Optional[np.ndarray] = None
@@ -215,7 +228,7 @@ class DriveGuardFaceLandmarker:
             trans_matrix: Optional[np.ndarray] = None
 
             if self._use_tasks_api and self._tasks_landmarker is not None:
-                mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=frame_rgb)
+                mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
 
                 # Monotonic timestamp resolution for VIDEO mode
                 requested_ms = int(round(timestamp_ms))
@@ -272,7 +285,7 @@ class DriveGuardFaceLandmarker:
                             result.facial_transformation_matrixes[0], dtype=np.float64
                         )
             elif self._legacy_face_mesh is not None:
-                result = self._legacy_face_mesh.process(frame_rgb)
+                result = self._legacy_face_mesh.process(rgb)
                 if result.multi_face_landmarks:
                     lms = result.multi_face_landmarks[0].landmark
                     landmarks_pixel_xyz = np.array(
@@ -343,10 +356,10 @@ class DriveGuardFaceLandmarker:
         right_crop = None
         if extract_crops:
             left_crop = extract_eye_crop_with_quality(
-                frame_rgb, landmarks_pixel_xyz, LEFT_EYE_INDICES
+                rgb, landmarks_pixel_xyz, LEFT_EYE_INDICES
             )
             right_crop = extract_eye_crop_with_quality(
-                frame_rgb, landmarks_pixel_xyz, RIGHT_EYE_INDICES
+                rgb, landmarks_pixel_xyz, RIGHT_EYE_INDICES
             )
 
         features = FrameGeometryFeatures(
@@ -374,20 +387,20 @@ class DriveGuardFaceLandmarker:
 
     def _process_frame_headless_fallback(
         self,
-        frame_bgr: np.ndarray,
         frame_rgb: np.ndarray,
         timestamp_ms: float,
         neutral_pitch_deg: float,
         neutral_yaw_deg: float,
         reference_open_ear: float,
+        frame_bgr: Optional[np.ndarray] = None,
     ) -> Tuple[FrameGeometryFeatures, Optional[np.ndarray]]:
         """
         Robust analytical face & eye extraction fallback for headless cloud servers
         where system OpenGL/EGL libraries (libEGL.so.1) are unavailable.
         Uses intensity gradients and central driver facial priors, feeding eye crops directly to ONNX.
         """
-        h, w = frame_bgr.shape[:2]
-        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        h, w = frame_rgb.shape[:2]
+        gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
 
         # Central driver face bounding box prior
         fx, fy, fw, fh = int(w * 0.20), int(h * 0.15), int(w * 0.60), int(h * 0.70)
