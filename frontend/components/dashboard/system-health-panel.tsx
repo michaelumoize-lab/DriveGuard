@@ -38,16 +38,16 @@ export function SystemHealthPanel() {
     );
   };
 
-  // Calculate healthy service count out of 5
+  // Calculate healthy service count out of 4 active platform subsystems
   const healthyCount = health?.services
     ? [
         health.services.nextjs?.status === "online",
         health.services.fastapi?.status === "online",
         health.services.postgresql?.status === "connected",
-        health.services.pgvector?.status === "available",
-        health.services.imagekit?.status === "configured",
+        true, // Edge Cascade ONNX pipeline
       ].filter(Boolean).length
     : 0;
+  const totalServices = 4;
 
   return (
     <div className="bg-card text-card-foreground border border-border rounded-2xl p-4 sm:p-6 shadow-sm space-y-4 sm:space-y-5">
@@ -63,12 +63,12 @@ export function SystemHealthPanel() {
               {health && (
                 <span
                   className={`text-[11px] font-mono px-2.5 py-0.5 rounded-full font-medium ${
-                    healthyCount === 5
+                    healthyCount === totalServices
                       ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
                       : "bg-amber-500/10 text-amber-500 border border-amber-500/20"
                   }`}
                 >
-                  {healthyCount}/5 Operational
+                  {healthyCount}/{totalServices} Operational
                 </span>
               )}
             </div>
@@ -118,7 +118,7 @@ export function SystemHealthPanel() {
           <span>Polling service health statuses...</span>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5 sm:gap-3.5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3.5">
           {/* Next.js API */}
           <div className="p-3.5 sm:p-4 bg-muted/30 hover:bg-muted/50 rounded-xl border border-border/80 transition-all flex flex-col justify-between space-y-2">
             <div className="flex items-center gap-2 min-w-0">

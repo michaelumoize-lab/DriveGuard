@@ -270,6 +270,8 @@ export function OnboardingWizard({
                 <Label htmlFor="fullName">Full Name</Label>
                 <Input
                   id="fullName"
+                  name="fullName"
+                  autoComplete="name"
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
                   placeholder="e.g. John Doe"
@@ -278,13 +280,24 @@ export function OnboardingWizard({
 
               <div className="space-y-2">
                 <Label htmlFor="email">Email Address</Label>
-                <Input id="email" value={user.email} disabled className="bg-muted/50" />
+                <Input
+                  id="email"
+                  name="email"
+                  autoComplete="email"
+                  value={user.email}
+                  disabled
+                  className="bg-muted/50"
+                />
               </div>
 
               <div className="space-y-2">
                 <Label htmlFor="phone">Phone Number</Label>
                 <Input
                   id="phone"
+                  name="phoneNumber"
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="tel"
                   value={phoneNumber}
                   onChange={(e) => setPhoneNumber(e.target.value)}
                   placeholder="+1 (555) 000-0000"
@@ -295,6 +308,10 @@ export function OnboardingWizard({
                 <Label htmlFor="license">Driving License / Fleet ID</Label>
                 <Input
                   id="license"
+                  name="licenseNumber"
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  spellCheck={false}
                   value={licenseNumber}
                   onChange={(e) => setLicenseNumber(e.target.value)}
                   placeholder="Optional (e.g. DL-98214)"
@@ -312,6 +329,8 @@ export function OnboardingWizard({
                   <Label htmlFor="emName">Contact Name</Label>
                   <Input
                     id="emName"
+                    name="emergencyContactName"
+                    autoComplete="name"
                     value={emergencyName}
                     onChange={(e) => setEmergencyName(e.target.value)}
                     placeholder="e.g. Jane Doe (Spouse/Dispatch)"
@@ -321,6 +340,10 @@ export function OnboardingWizard({
                   <Label htmlFor="emPhone">Contact Phone</Label>
                   <Input
                     id="emPhone"
+                    name="emergencyContactPhone"
+                    type="tel"
+                    inputMode="tel"
+                    autoComplete="tel"
                     value={emergencyPhone}
                     onChange={(e) => setEmergencyPhone(e.target.value)}
                     placeholder="+1 (555) 999-9999"
@@ -339,6 +362,9 @@ export function OnboardingWizard({
                 <Label htmlFor="vMake">Vehicle Make</Label>
                 <Input
                   id="vMake"
+                  name="vehicleMake"
+                  autoComplete="off"
+                  autoCapitalize="words"
                   value={vehicleMake}
                   onChange={(e) => setVehicleMake(e.target.value)}
                   placeholder="e.g. Toyota, Ford, Volvo"
@@ -349,6 +375,9 @@ export function OnboardingWizard({
                 <Label htmlFor="vModel">Vehicle Model</Label>
                 <Input
                   id="vModel"
+                  name="vehicleModel"
+                  autoComplete="off"
+                  autoCapitalize="words"
                   value={vehicleModel}
                   onChange={(e) => setVehicleModel(e.target.value)}
                   placeholder="e.g. Camry, F-150, XC90"
@@ -359,7 +388,11 @@ export function OnboardingWizard({
                 <Label htmlFor="vYear">Model Year</Label>
                 <Input
                   id="vYear"
+                  name="vehicleYear"
                   type="number"
+                  inputMode="numeric"
+                  min={1970}
+                  max={2030}
                   value={vehicleYear}
                   onChange={(e) => setVehicleYear(e.target.value)}
                   placeholder="e.g. 2023"
@@ -370,6 +403,10 @@ export function OnboardingWizard({
                 <Label htmlFor="vPlate">License Plate</Label>
                 <Input
                   id="vPlate"
+                  name="licensePlate"
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  spellCheck={false}
                   value={licensePlate}
                   onChange={(e) => setLicensePlate(e.target.value)}
                   placeholder="e.g. ABC-1234"

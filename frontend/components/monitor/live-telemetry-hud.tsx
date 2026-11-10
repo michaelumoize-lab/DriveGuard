@@ -4,6 +4,7 @@ import React from "react";
 import { FrameTelemetry, LatencyDiagnostics } from "@/types/telemetry";
 import { CameraState } from "@/types/camera";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Activity,
   AlertOctagon,
@@ -50,6 +51,7 @@ interface LiveTelemetryHUDProps {
   onSetVolume?: (volume: number) => void;
   onUnlockAudio?: () => Promise<boolean>;
   onTestAudioTier?: (tier: "WARNING" | "DROWSY" | "CRITICAL" | "RECOVERY") => void;
+  onSwitchToCockpit?: () => void;
 }
 
 export function LiveTelemetryHUD({
@@ -67,6 +69,7 @@ export function LiveTelemetryHUD({
   onSetVolume,
   onUnlockAudio,
   onTestAudioTier,
+  onSwitchToCockpit,
 }: LiveTelemetryHUDProps) {
   const isCameraActive = cameraState === "active";
 
@@ -76,14 +79,28 @@ export function LiveTelemetryHUD({
       <div
         className={`p-5 rounded-2xl bg-card/90 backdrop-blur-md border border-border/80 shadow-md space-y-4 ${className}`}
       >
-        <div className="flex items-center justify-between border-b border-border/60 pb-3">
+        <div className="flex items-center justify-between border-b border-border/60 pb-3 flex-wrap gap-2">
           <div className="flex items-center gap-2">
             <Radio className="size-4 text-primary animate-pulse" />
             <h3 className="text-xs font-bold uppercase tracking-wider text-foreground">
-              Cockpit Telemetry HUD
+              Engineering Telemetry HUD
             </h3>
           </div>
           <div className="flex items-center gap-2">
+            {onSwitchToCockpit && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={onSwitchToCockpit}
+                className="h-7 text-xs text-muted-foreground hover:text-foreground gap-1 px-2 cursor-pointer"
+                title="Switch to driver safety cockpit view"
+                aria-label="Switch to driver safety cockpit view"
+              >
+                <Car className="size-3.5 text-primary" />
+                <span>Driver View</span>
+              </Button>
+            )}
             {audioStatus && (
               <Badge
                 variant="outline"
@@ -123,7 +140,7 @@ export function LiveTelemetryHUD({
             </div>
             <div className="space-y-1">
               <p className="text-xs font-semibold text-foreground">
-                Synthesizing Facial Landmarks &amp; Gaze Vector...
+                Synthesizing Facial Landmarks &amp; Gaze Vector…
               </p>
               <p className="text-[11px] text-muted-foreground max-w-xs mx-auto">
                 Connected to {backendType === "local" ? "Local AI Engine (127.0.0.1:8000)" : "DriveGuard LiveKit Engine"}. Awaiting first telemetry frame.
@@ -301,7 +318,7 @@ export function LiveTelemetryHUD({
       <div
         className={`p-3.5 rounded-2xl bg-card border ${stateStyle.cardBorder} shadow-xs space-y-2.5`}
       >
-        {/* Row 1: Dynamic Status Pill + Risk Index */}
+        {/* Row 1: Dynamic Status Pill + Risk Index + View Switcher */}
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div
             className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase tracking-wider inline-flex items-center gap-1.5 whitespace-nowrap ${stateStyle.pillBg}`}
@@ -310,13 +327,30 @@ export function LiveTelemetryHUD({
             <span>{stateStyle.label}</span>
           </div>
 
-          <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-xl bg-muted/50 border border-border/80">
-            <span className="text-[10px] uppercase font-mono text-muted-foreground whitespace-nowrap">
-              Risk Index
-            </span>
-            <span className={`text-sm font-black font-mono tabular-nums ${stateStyle.riskColor}`}>
-              {riskPct}%
-            </span>
+          <div className="flex items-center gap-2">
+            {onSwitchToCockpit && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={onSwitchToCockpit}
+                className="h-7 text-xs text-muted-foreground hover:text-foreground gap-1 px-2 cursor-pointer"
+                title="Switch to Driver Cockpit View"
+                aria-label="Switch to Driver Cockpit View"
+              >
+                <Car className="size-3.5 text-primary" />
+                <span className="hidden sm:inline">Driver View</span>
+              </Button>
+            )}
+
+            <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-xl bg-muted/50 border border-border/80">
+              <span className="text-[10px] uppercase font-mono text-muted-foreground whitespace-nowrap">
+                Risk Index
+              </span>
+              <span className={`text-sm font-black font-mono tabular-nums ${stateStyle.riskColor}`}>
+                {riskPct}%
+              </span>
+            </div>
           </div>
         </div>
 

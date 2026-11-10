@@ -50,16 +50,22 @@ export function ExperimentSelector({
   ];
 
   return (
-    <div className="grid grid-cols-1 gap-2">
+    <div
+      role="radiogroup"
+      aria-label="Cascade AI Inference Experiment Mode"
+      className="grid grid-cols-1 gap-2"
+    >
       {experiments.map((exp) => {
         const isSelected = currentMode === exp.id;
         return (
           <button
             key={exp.id}
             type="button"
+            role="radio"
+            aria-checked={isSelected}
             disabled={disabled}
             onClick={() => onSelectMode(exp.id)}
-            className={`w-full text-left p-2.5 rounded-xl border transition-all flex items-start justify-between gap-3 cursor-pointer ${
+            className={`w-full text-left p-2.5 rounded-xl border transition-all flex items-start justify-between gap-3 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-primary ${
               isSelected
                 ? "bg-primary/10 border-primary/40 shadow-xs"
                 : "bg-card/50 hover:bg-card border-border/80 text-muted-foreground hover:text-foreground"

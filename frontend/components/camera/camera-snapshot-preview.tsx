@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { FormattedTimestamp } from "@/components/ui/formatted-timestamp";
 import { Download, FileImage, Sparkles, Trash2 } from "lucide-react";
 import Image from "next/image";
 
@@ -86,7 +87,7 @@ export function CameraSnapshotPreview({
           <div className="p-2.5 rounded-xl bg-muted/40 border border-border">
             <div className="text-[10px] text-muted-foreground uppercase">Timestamp</div>
             <div className="font-bold text-foreground mt-0.5">
-              {new Date(frame.timestamp).toLocaleTimeString()}
+              <FormattedTimestamp date={frame.timestamp} mode="time" showSeconds={true} />
             </div>
           </div>
         </div>

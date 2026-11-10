@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/dashboard/stat-card";
+import { FormattedTimestamp } from "@/components/ui/formatted-timestamp";
 import {
   Activity,
   ShieldCheck,
@@ -412,10 +413,15 @@ export default async function AdminDashboardPage() {
                 No fatigue alerts recorded yet. Start a driving session to begin monitoring!
               </div>
             ) : (
-              <div className="overflow-x-auto">
+              <div
+                className="overflow-x-auto rounded-md focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+                tabIndex={0}
+                role="region"
+                aria-label="Recent fatigue intervention alerts"
+              >
                 <table className="w-full text-xs text-left">
                   <caption className="sr-only">Recent 5 fatigue intervention alerts</caption>
-                  <thead className="border-b border-border text-muted-foreground">
+                  <thead className="sticky top-0 bg-background/95 backdrop-blur-xs border-b border-border text-muted-foreground z-10">
                     <tr>
                       <th scope="col" className="py-2 px-3">Time</th>
                       <th scope="col" className="py-2 px-3">Severity</th>
@@ -427,8 +433,8 @@ export default async function AdminDashboardPage() {
                   <tbody className="divide-y divide-border">
                     {recentAlerts.map((alert) => (
                       <tr key={alert.id} className="hover:bg-muted/30">
-                        <td className="py-2.5 px-3 font-mono tabular-nums text-muted-foreground">
-                          {new Date(alert.createdAt).toLocaleTimeString()}
+                        <td className="py-2.5 px-3 font-mono tabular-nums text-muted-foreground whitespace-nowrap">
+                          <FormattedTimestamp date={alert.createdAt} mode="time" showSeconds={true} />
                         </td>
                         <td className="py-2.5 px-3">
                           <Badge

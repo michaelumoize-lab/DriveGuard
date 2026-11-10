@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Search } from "lucide-react";
 import { explainReasonCode } from "@/types/telemetry";
+import { FormattedTimestamp } from "@/components/ui/formatted-timestamp";
 import type { SerializedAlertItem } from "@/components/dashboard/sessions-table-interactive";
 
 interface AlertsTableInteractiveProps {
@@ -103,12 +104,17 @@ export function AlertsTableInteractive({
           No safety alert events match the active filters.
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-border/60">
+        <div
+          className="overflow-x-auto rounded-lg border border-border/60 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+          tabIndex={0}
+          role="region"
+          aria-label="Interactive Fatigue Alerts Table"
+        >
           <table className="w-full text-xs text-left">
             <caption className="sr-only">
               Auditable log of DriveGuard fatigue and drowsiness alert interventions
             </caption>
-            <thead className="border-b border-border bg-muted/30 text-muted-foreground">
+            <thead className="sticky top-0 bg-background/95 backdrop-blur-xs border-b border-border z-10 text-muted-foreground">
               <tr>
                 <th scope="col" className="py-2.5 px-3 font-medium">Timestamp</th>
                 <th scope="col" className="py-2.5 px-3 font-medium">Severity</th>
@@ -124,8 +130,7 @@ export function AlertsTableInteractive({
               {filteredAlerts.map((a) => (
                 <tr key={a.id} className="hover:bg-muted/30 transition-colors">
                   <td className="py-2.5 px-3 font-mono text-muted-foreground whitespace-nowrap">
-                    {new Date(a.createdAt).toLocaleDateString()}{" "}
-                    {new Date(a.createdAt).toLocaleTimeString()}
+                    <FormattedTimestamp date={a.createdAt} mode="datetime" showSeconds={true} />
                   </td>
                   <td className="py-2.5 px-3">
                     <Badge
