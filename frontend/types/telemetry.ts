@@ -86,6 +86,7 @@ export interface FrameTelemetry {
   fps: number;
   face_detected: boolean;
   state: AlertState;
+  monitoring_status?: "MONITORING_ACTIVE" | "FACE_VISIBILITY_DEGRADED" | "MONITORING_UNAVAILABLE" | "MONITORING_RECOVERING";
   risk_score: number;
   pose_zone: PoseZone;
   reason_codes: string[];

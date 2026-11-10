@@ -168,6 +168,7 @@ class FrameTelemetryDTO(BaseModel):
     
     # State & Risk
     state: AlertStateEnum = Field(description="DriveGuard FSM state: NORMAL, WARNING, CRITICAL, MONITORING_UNAVAILABLE")
+    monitoring_status: str = Field(default="MONITORING_ACTIVE", description="Monitoring availability: MONITORING_ACTIVE, FACE_VISIBILITY_DEGRADED, MONITORING_UNAVAILABLE, MONITORING_RECOVERING")
     risk_score: float = Field(description="Composite personalised fatigue risk score in [0.0, 1.0]", ge=0.0, le=1.0)
     pose_zone: PoseZoneEnum = Field(description="Classified spatial zone: CENTER, LEFT_MIRROR, RIGHT_MIRROR, DASHBOARD")
     reason_codes: List[str] = Field(default_factory=list, description="Machine-explainable alert rationale codes")

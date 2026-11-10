@@ -85,6 +85,7 @@ class SessionAIEngine:
         experiment_mode: ExperimentMode = ExperimentMode.C_CONFIDENCE_GATED_CASCADE,
         onnx_model_path: Optional[str | Path] = None,
         landmarker: Optional[DriveGuardFaceLandmarker] = None,
+        face_loss_grace_ms: float = 450.0,
     ) -> None:
         self.session_id = session_id
         self.driver_id = driver_id
@@ -137,6 +138,14 @@ class SessionAIEngine:
         self._command_lock = threading.Lock()
         self._pending_commands: Deque[EngineCommand] = deque()
         self._is_closed = False
+
+        # Face-Loss Grace Period & Monitoring Availability FSM
+        self.face_loss_grace_ms: float = float(face_loss_grace_ms)
+        self._face_lost_start_ms: Optional[float] = None
+        self._last_valid_risk_score: float = 0.0
+        self._last_valid_alert_state: AlertStateEnum = AlertStateEnum.NORMAL
+        self._monitoring_status: str = "MONITORING_ACTIVE"
+        self._recovery_frame_count: int = 0
 
     @property
     def latencies_ms(self) -> List[float]:
@@ -624,15 +633,80 @@ class SessionAIEngine:
         except Exception as exc:
             logger.error(f"[SessionAIEngine] Landmarker exception at {ts_ms}ms: {exc}", exc_info=True)
             self.kinematics.handle_face_lost(ts_ms)
+            self.gaze_tracker.handle_face_lost(ts_ms)
+            self._recovery_frame_count = 0
+            if self._face_lost_start_ms is None:
+                self._face_lost_start_ms = ts_ms
+            loss_duration_ms = ts_ms - self._face_lost_start_ms
             latency_ms = (time.perf_counter() - t_start) * 1000.0
-            return self._build_unavailable_frame(
-                ts_ms, latency_ms=latency_ms, reason=f"LANDMARKER_EXCEPTION: {type(exc).__name__}"
-            )
+            if loss_duration_ms < self.face_loss_grace_ms:
+                self._monitoring_status = "FACE_VISIBILITY_DEGRADED"
+                return self._build_unavailable_frame(
+                    ts_ms,
+                    latency_ms=latency_ms,
+                    reason=f"FACE_VISIBILITY_DEGRADED: {type(exc).__name__}",
+                    state=self._last_valid_alert_state,
+                    risk_score=self._last_valid_risk_score,
+                    monitoring_status="FACE_VISIBILITY_DEGRADED",
+                )
+            else:
+                self._monitoring_status = "MONITORING_UNAVAILABLE"
+                return self._build_unavailable_frame(
+                    ts_ms,
+                    latency_ms=latency_ms,
+                    reason=f"LANDMARKER_EXCEPTION: {type(exc).__name__}",
+                    state=AlertStateEnum.MONITORING_UNAVAILABLE,
+                    risk_score=0.0,
+                    monitoring_status="MONITORING_UNAVAILABLE",
+                )
 
         if not geom.face_detected:
             self.kinematics.handle_face_lost(ts_ms)
+            self.gaze_tracker.handle_face_lost(ts_ms)
+            self._recovery_frame_count = 0
+            if self._face_lost_start_ms is None:
+                self._face_lost_start_ms = ts_ms
+            loss_duration_ms = ts_ms - self._face_lost_start_ms
             latency_ms = (time.perf_counter() - t_start) * 1000.0
-            return self._build_unavailable_frame(ts_ms, latency_ms=latency_ms, reason="NO_FACE_DETECTED")
+            if loss_duration_ms < self.face_loss_grace_ms:
+                self._monitoring_status = "FACE_VISIBILITY_DEGRADED"
+                return self._build_unavailable_frame(
+                    ts_ms,
+                    latency_ms=latency_ms,
+                    reason="FACE_VISIBILITY_DEGRADED",
+                    state=self._last_valid_alert_state,
+                    risk_score=self._last_valid_risk_score,
+                    monitoring_status="FACE_VISIBILITY_DEGRADED",
+                )
+            else:
+                self._monitoring_status = "MONITORING_UNAVAILABLE"
+                return self._build_unavailable_frame(
+                    ts_ms,
+                    latency_ms=latency_ms,
+                    reason="NO_FACE_DETECTED",
+                    state=AlertStateEnum.MONITORING_UNAVAILABLE,
+                    risk_score=0.0,
+                    monitoring_status="MONITORING_UNAVAILABLE",
+                )
+
+        # 3b. Face detected: handle recovery transitions and temporal synchronization
+        was_lost = self._face_lost_start_ms is not None
+        was_unavailable = (self._monitoring_status == "MONITORING_UNAVAILABLE")
+
+        if was_lost:
+            self.kinematics.handle_gap(ts_ms)
+            self.gaze_tracker.handle_gap(ts_ms)
+            self._face_lost_start_ms = None
+
+        if was_unavailable:
+            self._recovery_frame_count += 1
+            if self._recovery_frame_count < 2:
+                self._monitoring_status = "MONITORING_RECOVERING"
+            else:
+                self._monitoring_status = "MONITORING_ACTIVE"
+        else:
+            self._recovery_frame_count = 0
+            self._monitoring_status = "MONITORING_ACTIVE"
 
         # 4. Zone-Adaptive Baseline Selection
         zone_baseline = self.profile.get_zone_baseline(geom.pose_zone)
@@ -769,6 +843,9 @@ class SessionAIEngine:
         self._lifetime_latency_sum_ms += latency_ms
         self._recent_latencies_ms.append(latency_ms)
 
+        self._last_valid_risk_score = round(risk_res.risk_score, 3)
+        self._last_valid_alert_state = AlertStateEnum(risk_res.state.value)
+
         # 10. Assemble validated Pydantic DTO
         return FrameTelemetryDTO(
             session_id=self.session_id,
@@ -778,6 +855,7 @@ class SessionAIEngine:
             fps=round(self.fps_ema, 1),
             face_detected=True,
             state=AlertStateEnum(risk_res.state.value),
+            monitoring_status=self._monitoring_status,
             risk_score=round(risk_res.risk_score, 3),
             pose_zone=PoseZoneEnum(geom.pose_zone.value),
             reason_codes=risk_res.reasons,
@@ -844,7 +922,13 @@ class SessionAIEngine:
         )
 
     def _build_unavailable_frame(
-        self, timestamp_ms: float, latency_ms: float, reason: str
+        self,
+        timestamp_ms: float,
+        latency_ms: float,
+        reason: str,
+        state: AlertStateEnum = AlertStateEnum.MONITORING_UNAVAILABLE,
+        risk_score: float = 0.0,
+        monitoring_status: str = "MONITORING_UNAVAILABLE",
     ) -> FrameTelemetryDTO:
         """Construct fallback telemetry when face tracking or video decoding drops."""
         return FrameTelemetryDTO(
@@ -854,8 +938,9 @@ class SessionAIEngine:
             timestamp_ms=round(timestamp_ms, 1),
             fps=round(self.fps_ema, 1),
             face_detected=False,
-            state=AlertStateEnum.MONITORING_UNAVAILABLE,
-            risk_score=0.0,
+            state=state,
+            monitoring_status=monitoring_status,
+            risk_score=risk_score,
             pose_zone=PoseZoneEnum.OUT_OF_BOUNDS,
             reason_codes=[reason],
             head_pose=HeadPoseDTO(pitch_deg=0.0, yaw_deg=0.0, roll_deg=0.0),
