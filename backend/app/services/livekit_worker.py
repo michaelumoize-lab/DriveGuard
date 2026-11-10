@@ -155,6 +155,9 @@ class LiveKitAIWorkerSession:
         self._frame_seq: int = 0
         self._event_seq: int = 0
         self._unacknowledged_events: Dict[str, dict] = {}
+        self._retry_tasks: Dict[str, asyncio.Task] = {}
+        self._max_unacked_events: int = 100
+        self._unacked_ttl_sec: float = 15.0
         self._latest_safety_event: Optional[dict] = None
         self._last_client_ping_ts: Optional[float] = None
         self._last_publish_duration_ms: Optional[float] = None
@@ -796,11 +799,21 @@ class LiveKitAIWorkerSession:
             "network_roundtrip_ms": round(server_total_ms, 1),
         }
 
-    async def _handle_client_control_message(self, data_packet: rtc.DataPacket) -> None:
+    async def _handle_client_control_message(self, data_packet: Any) -> None:
         """Handle control actions from frontend client over WebRTC Data Channel."""
         try:
-            raw_text = data_packet.data.decode("utf-8")
-            msg = json.loads(raw_text)
+            if isinstance(data_packet, dict):
+                msg = data_packet
+            elif isinstance(data_packet, (bytes, bytearray)):
+                raw_text = data_packet.decode("utf-8")
+                msg = json.loads(raw_text)
+            elif hasattr(data_packet, "data"):
+                raw_text = data_packet.data.decode("utf-8")
+                msg = json.loads(raw_text)
+            else:
+                raw_text = str(data_packet)
+                msg = json.loads(raw_text)
+
             action = msg.get("action")
 
             if not action:
@@ -813,9 +826,15 @@ class LiveKitAIWorkerSession:
                 event_id = msg.get("event_id")
                 if event_id:
                     acked = self._unacknowledged_events.pop(event_id, None)
+                    task = self._retry_tasks.pop(event_id, None)
+                    if task and not task.done():
+                        task.cancel()
                     if acked:
                         ack_rtt_ms = (time.perf_counter() - acked["sent_at"]) * 1000.0
-                        logger.info(f"[LiveKit Worker] Safety event '{event_id}' ACK confirmed in {ack_rtt_ms:.1f}ms.")
+                        logger.info(
+                            f"[LiveKit Worker Event] ACK_RECEIVED event_id='{event_id}' "
+                            f"ack_seq={msg.get('event_seq', '')} rtt_ms={ack_rtt_ms:.1f}ms."
+                        )
 
             elif action == "SYNC_STATE":
                 unacked = [entry["payload"] for entry in self._unacknowledged_events.values()]
@@ -913,52 +932,86 @@ class LiveKitAIWorkerSession:
                 pass
 
     async def _publish_reliable_safety_event(self, event_payload: dict) -> None:
-        """Publish important safety event with reliable DataChannel delivery and track ACK."""
+        """Publish important safety event with reliable DataChannel delivery, bounded retention, and tracked retry."""
         event_id = event_payload["event_id"]
+        now_mono = time.perf_counter()
+
+        logger.info(
+            f"[LiveKit Worker Event] CREATED event_id='{event_id}' "
+            f"seq={event_payload.get('event_seq', '0')} "
+            f"({event_payload.get('previous_state')} -> {event_payload.get('new_state')})."
+        )
+
+        # 1. Bound retention: evict entries older than TTL (15s) and cancel their retry tasks
+        expired_ids = [
+            eid
+            for eid, entry in self._unacknowledged_events.items()
+            if (now_mono - entry.get("sent_at", 0)) > self._unacked_ttl_sec
+        ]
+        for eid in expired_ids:
+            self._unacknowledged_events.pop(eid, None)
+            task = self._retry_tasks.pop(eid, None)
+            if task and not task.done():
+                task.cancel()
+
+        # 2. Bound retention: enforce maximum capacity (100 events)
+        if len(self._unacknowledged_events) >= self._max_unacked_events:
+            oldest_id = next(iter(self._unacknowledged_events))
+            self._unacknowledged_events.pop(oldest_id, None)
+            task = self._retry_tasks.pop(oldest_id, None)
+            if task and not task.done():
+                task.cancel()
+
         self._unacknowledged_events[event_id] = {
             "payload": event_payload,
             "retries": 0,
-            "sent_at": time.perf_counter(),
+            "sent_at": now_mono,
         }
-        logger.info(
-            f"[LiveKit Worker] Emitting reliable safety event '{event_id}' "
-            f"({event_payload['previous_state']} -> {event_payload['new_state']})."
-        )
+
+        # 3. Transmit attempt 0
+        logger.info(f"[LiveKit Worker Event] TRANSMIT attempt=0 event_id='{event_id}'")
         try:
             payload_bytes = json.dumps(event_payload).encode("utf-8")
             await self.room.local_participant.publish_data(payload_bytes, reliable=True)
         except Exception as exc:
-            logger.error(f"[LiveKit Worker] Failed to publish initial safety event '{event_id}': {exc}")
+            logger.error(f"[LiveKit Worker Event] Failed to publish initial safety event '{event_id}': {exc}")
 
-        # Non-blocking retry task
-        asyncio.create_task(self._retry_unacknowledged_event(event_id))
+        # 4. Centralized tracked retry task
+        task = asyncio.create_task(self._retry_unacknowledged_event(event_id))
+        self._retry_tasks[event_id] = task
 
     async def _retry_unacknowledged_event(self, event_id: str) -> None:
         """Retry unacknowledged safety events with bounded backoff without blocking inference."""
-        for attempt in range(1, 4):
-            await asyncio.sleep(0.4 * attempt)
-            if not self.is_running:
-                break
-            entry = self._unacknowledged_events.get(event_id)
-            if not entry:
-                # Confirmed ACK
-                return
-            entry["retries"] += 1
-            logger.warning(
-                f"[LiveKit Worker] Retrying unacknowledged event '{event_id}' (attempt {entry['retries']}/3)..."
-            )
-            try:
-                payload_bytes = json.dumps(entry["payload"]).encode("utf-8")
-                await self.room.local_participant.publish_data(payload_bytes, reliable=True)
-            except Exception as exc:
-                logger.warning(f"[LiveKit Worker] Retry {attempt} failed: {exc}")
+        try:
+            for attempt in range(1, 4):
+                await asyncio.sleep(0.4 * attempt)
+                if not self.is_running:
+                    break
+                entry = self._unacknowledged_events.get(event_id)
+                if not entry:
+                    # Confirmed ACK arrived
+                    return
+                entry["retries"] += 1
+                logger.warning(
+                    f"[LiveKit Worker Event] TRANSMIT attempt={attempt} event_id='{event_id}' "
+                    f"(attempt {entry['retries']}/3)..."
+                )
+                try:
+                    payload_bytes = json.dumps(entry["payload"]).encode("utf-8")
+                    await self.room.local_participant.publish_data(payload_bytes, reliable=True)
+                except Exception as exc:
+                    logger.warning(f"[LiveKit Worker Event] Retry {attempt} failed for '{event_id}': {exc}")
 
-        entry = self._unacknowledged_events.get(event_id)
-        if entry and self.is_running:
-            entry["exhausted"] = True
-            logger.warning(
-                f"[LiveKit Worker] Event '{event_id}' unacknowledged after 3 retries (client may be disconnected)."
-            )
+            entry = self._unacknowledged_events.get(event_id)
+            if entry and self.is_running:
+                entry["exhausted"] = True
+                logger.warning(
+                    f"[LiveKit Worker Event] RETRY_EXHAUSTED event_id='{event_id}' attempts=3 (client may be disconnected)."
+                )
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._retry_tasks.pop(event_id, None)
 
     async def _send_control_ack(self, payload: dict) -> None:
         """Send reliable ACK or state change confirmation back to client."""
@@ -1065,6 +1118,13 @@ class LiveKitAIWorkerSession:
                 )
         except Exception as exc:
             logger.error(f"[LiveKit Worker] Error terminating session in session_manager: {exc}")
+
+        # Cancel all active retry tasks and clear unacknowledged events
+        for r_task in self._retry_tasks.values():
+            if not r_task.done():
+                r_task.cancel()
+        self._retry_tasks.clear()
+        self._unacknowledged_events.clear()
 
         self.state = WorkerState.STOPPED
         logger.info(f"[LiveKit Worker] Worker cleanly disconnected and released for room '{self.room_name}'.")
