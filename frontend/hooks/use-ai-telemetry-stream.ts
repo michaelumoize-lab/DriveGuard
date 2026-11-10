@@ -6,6 +6,7 @@ import {
   FrameTelemetry,
   ServerTelemetryMessage,
 } from "@/types/telemetry";
+import { resolveCloudFastApiWsUrl } from "@/lib/fastapi-url";
 
 export interface UseAiTelemetryStreamOptions {
   sessionId?: string;
@@ -26,17 +27,8 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
     onError,
   } = options;
 
-  // Consistent initial state on both SSR and client to prevent hydration mismatch
-  const [backendType, setBackendType] = useState<"cloud" | "local">(defaultBackend || "local");
-
-  // Sync client hostname strictly after mount
-  useEffect(() => {
-    if (!defaultBackend && typeof window !== "undefined") {
-      const hostname = window.location.hostname;
-      const isLocal = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
-      setBackendType(isLocal ? "local" : "cloud");
-    }
-  }, [defaultBackend]);
+  // Default AI backend to Cloud ("cloud") unless explicitly overridden
+  const [backendType, setBackendType] = useState<"cloud" | "local">(defaultBackend || "cloud");
 
   // Stable session identifier that does NOT regenerate on re-renders
   const stableSessionId = useMemo(
@@ -44,8 +36,7 @@ export function useAiTelemetryStream(options: UseAiTelemetryStreamOptions = {}) 
     [initialSessionId]
   );
 
-  const cloudWsBase =
-    process.env.NEXT_PUBLIC_FASTAPI_WS_URL || "wss://driveguard-x048.onrender.com";
+  const cloudWsBase = resolveCloudFastApiWsUrl();
   const localWsBase = "ws://127.0.0.1:8000";
   const [connectionStatus, setConnectionStatus] = useState<
     "disconnected" | "connecting" | "connected" | "reconnecting" | "error"

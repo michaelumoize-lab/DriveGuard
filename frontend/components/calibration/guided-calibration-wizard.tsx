@@ -62,6 +62,7 @@ export function GuidedCalibrationWizard({
     () => `cal_${Math.random().toString(36).slice(2, 9)}`,
     []
   );
+  const hasHandledCompletionRef = useRef<boolean>(false);
 
   // 1. Unified Camera Hook (Exact same camera engine as Live Monitor)
   const {
@@ -97,9 +98,20 @@ export function GuidedCalibrationWizard({
     driverId,
     onCalibration: (cal) => {
       setCalState(cal);
+      if (!cal.is_completed) {
+        hasHandledCompletionRef.current = false;
+        return;
+      }
+      if (hasHandledCompletionRef.current) {
+        return;
+      }
+      hasHandledCompletionRef.current = true;
+
       if (cal.is_completed && !cal.rejection_reason) {
         setIsSuccess(true);
-        toast.success("Calibration Completed Successfully! Personal baselines activated.");
+        toast.success("Calibration Completed Successfully! Personal baselines activated.", {
+          id: "calibration-completed-toast",
+        });
 
         // Persist calibrated baseline to PostgreSQL & update local inspector state
         const prof = (cal as unknown as { profile?: Record<string, unknown> })?.profile;
@@ -188,6 +200,7 @@ export function GuidedCalibrationWizard({
 
   // User Actions
   const handleStartCalibration = async () => {
+    hasHandledCompletionRef.current = false;
     setIsSuccess(false);
     setCalState(null);
 
@@ -213,6 +226,7 @@ export function GuidedCalibrationWizard({
   };
 
   const handleRecalibrateZone = async (zone: string) => {
+    hasHandledCompletionRef.current = false;
     setIsSuccess(false);
     if (cameraState !== "active") {
       await startCamera();
@@ -280,7 +294,13 @@ export function GuidedCalibrationWizard({
               <div className="flex items-center bg-muted/60 rounded-md p-0.5 text-[11px] font-mono border border-border">
                 <button
                   type="button"
-                  onClick={() => switchBackend("local")}
+                  onClick={() => {
+                    if (backendType !== "local") {
+                      if (cameraState === "active") handleStopCalibration();
+                      switchBackend("local");
+                      toast.info("Calibration reset. Switched AI Engine to Localhost (127.0.0.1:8000).");
+                    }
+                  }}
                   className={`px-2 py-0.5 rounded transition-colors ${
                     backendType === "local"
                       ? "bg-primary text-primary-foreground font-semibold shadow-xs"
@@ -292,7 +312,13 @@ export function GuidedCalibrationWizard({
                 </button>
                 <button
                   type="button"
-                  onClick={() => switchBackend("cloud")}
+                  onClick={() => {
+                    if (backendType !== "cloud") {
+                      if (cameraState === "active") handleStopCalibration();
+                      switchBackend("cloud");
+                      toast.info("Calibration reset. Switched AI Engine to LiveKit Cloud.");
+                    }
+                  }}
                   className={`px-2 py-0.5 rounded transition-colors ${
                     backendType === "cloud"
                       ? "bg-primary text-primary-foreground font-semibold shadow-xs"

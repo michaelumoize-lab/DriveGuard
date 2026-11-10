@@ -19,6 +19,7 @@ import { POST as startSessionPost } from "../app/api/sessions/start/route";
 import { POST as endSessionPost } from "../app/api/sessions/end/route";
 import { POST as logAlertPost } from "../app/api/alerts/log/route";
 import { explainReasonCode, REASON_CODE_CATALOG } from "../types/telemetry";
+import { sanitizeFastApiUrl, PRODUCTION_FASTAPI_URL } from "../lib/fastapi-url";
 
 let passed = 0;
 let total = 0;
@@ -120,6 +121,14 @@ async function runTests() {
     expect(fallback.code).toBe("CUSTOM_DRIVER_FATIGUE_SIGNAL");
     expect(fallback.title).toBe("Custom Driver Fatigue Signal");
     expect(fallback.severity).toBe("WARNING");
+  });
+
+  await it("7. sanitizeFastApiUrl rewrites stale Render PR preview URLs (driveguard-pr-1.onrender.com) to production", () => {
+    const sanitized = sanitizeFastApiUrl(
+      "https://driveguard-pr-1.onrender.com/",
+      PRODUCTION_FASTAPI_URL
+    );
+    expect(sanitized).toBe("https://driveguard-x048.onrender.com");
   });
 
   // Restore mock

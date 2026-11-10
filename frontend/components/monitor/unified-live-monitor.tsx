@@ -33,6 +33,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { useSidebar } from "@/components/ui/sidebar";
 import {
   AlertTriangle,
   Camera,
@@ -86,6 +87,13 @@ export function UnifiedLiveMonitor({
   initialPreferences,
 }: UnifiedLiveMonitorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const { setOpen: setSidebarOpen } = useSidebar();
+
+  // Auto-collapse the left navigation sidebar when entering the Live Monitoring Console
+  // so the two-column cockpit has maximum horizontal breathing room (+256px).
+  useEffect(() => {
+    setSidebarOpen(false);
+  }, [setSidebarOpen]);
 
   // Layout & UI States
   const [viewOrientation, setViewOrientation] = useState<"portrait" | "landscape">("landscape");
@@ -138,6 +146,7 @@ export function UnifiedLiveMonitor({
   const sessionStartWallMsRef = useRef<number>(0);
   const lastAlertTimeRef = useRef<number>(0);
   const handledEventIdsRef = useRef<Set<string>>(new Set());
+  const calibrationToastShownRef = useRef<boolean>(false);
   const sessionStatsRef = useRef({
     totalFrames: 0,
     normalFramesCount: 0,
@@ -340,6 +349,15 @@ export function UnifiedLiveMonitor({
     driverId,
     onSafetyEvent: handleSafetyEvent,
     onCalibration: (cal) => {
+      if (!cal.is_completed) {
+        calibrationToastShownRef.current = false;
+        return;
+      }
+      if (calibrationToastShownRef.current) {
+        return;
+      }
+      calibrationToastShownRef.current = true;
+
       const calWithProfile = cal as typeof cal & {
         profile?: Record<string, any>;
       };
@@ -367,11 +385,15 @@ export function UnifiedLiveMonitor({
           }),
         })
           .then(() => {
-            toast.success("4-Zone Personal Calibration saved to PostgreSQL & AI Worker!");
+            toast.success("4-Zone Personal Calibration saved to PostgreSQL & AI Worker!", {
+              id: "calibration-completed-toast",
+            });
           })
           .catch(() => {});
       } else if (cal.is_completed && cal.rejection_reason) {
-        toast.error(`Calibration rejected: ${cal.rejection_reason}`);
+        toast.error(`Calibration rejected: ${cal.rejection_reason}`, {
+          id: "calibration-rejected-toast",
+        });
       }
     },
   });
@@ -379,12 +401,13 @@ export function UnifiedLiveMonitor({
   // Sync saved PostgreSQL DriverProfile to Python FastAPI worker whenever backendType or profile is ready
   const syncProfileToWorker = useCallback(async () => {
     if (!initialDriverProfile?.isCalibrated || !driverId) return;
-    const base =
+    // In cloud mode, route through same-origin `/api/v1/profiles` proxy to avoid CORS preflight failures
+    const endpoint =
       backendType === "cloud"
-        ? process.env.NEXT_PUBLIC_FASTAPI_URL || "https://driveguard-x048.onrender.com"
-        : "http://127.0.0.1:8000";
+        ? "/api/v1/profiles"
+        : "http://127.0.0.1:8000/api/v1/profiles";
     try {
-      await fetch(`${base.replace(/\/$/, "")}/api/v1/profiles`, {
+      await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -605,17 +628,23 @@ export function UnifiedLiveMonitor({
     } catch (_) {}
   }, [startCamera, experimentMode, isMobileDevice, unlockAudio, resetSessionStats]);
 
-  // Stop live monitoring & persist full session summary
+  // Stop live monitoring, persist full session summary & completely clear the cockpit
   const handleStopMonitoring = useCallback(async () => {
     audioEngine?.stopCurrentAlert();
     audioEngine?.setRiskState("NORMAL");
     stopStreamingLoop();
     stopCamera();
+    setChartHistory([]);
+    setCapturedSnapshot(null);
+    setShowInlineCalibration(false);
+    setSrAnnouncement("");
+    lastAnnouncedStateRef.current = "NORMAL";
 
     const code = activeSessionCodeRef.current;
     if (code) {
       activeSessionCodeRef.current = null;
       const payload = buildSessionEndPayload(code, streamDurationSec);
+      resetSessionStats();
       try {
         const res = await fetch("/api/sessions/end", {
           method: "POST",
@@ -624,12 +653,44 @@ export function UnifiedLiveMonitor({
         });
         if (res.ok) {
           toast.success(
-            `Session ${code} saved (${payload.durationSeconds}s, Avg PERCLOS ${payload.averagePerclosPct.toFixed(1)}%)`
+            `Session ${code} ended & saved (${payload.durationSeconds}s, Avg PERCLOS ${payload.averagePerclosPct.toFixed(1)}%)`
           );
         }
       } catch (_) {}
+    } else {
+      resetSessionStats();
     }
-  }, [audioEngine, stopStreamingLoop, stopCamera, buildSessionEndPayload, streamDurationSec]);
+  }, [audioEngine, stopStreamingLoop, stopCamera, buildSessionEndPayload, streamDurationSec, resetSessionStats]);
+
+  // Switch between Cloud and Localhost engines: cleanly ends any active session, stops camera, and resets cockpit
+  const handleSwitchBackend = useCallback(
+    async (targetBackend: "cloud" | "local") => {
+      if (targetBackend === backendType) return;
+      const wasActive =
+        cameraState === "active" ||
+        cameraState === "paused" ||
+        Boolean(activeSessionCodeRef.current);
+
+      if (wasActive) {
+        await handleStopMonitoring();
+      } else {
+        stopStreamingLoop();
+        setChartHistory([]);
+      }
+
+      switchBackend(targetBackend);
+      toast.info(
+        wasActive
+          ? `Session ended & cockpit cleared. Switched AI Engine to ${
+              targetBackend === "cloud" ? "LiveKit Cloud" : "Localhost (127.0.0.1:8000)"
+            }.`
+          : `Switched AI Engine to ${
+              targetBackend === "cloud" ? "LiveKit Cloud" : "Localhost (127.0.0.1:8000)"
+            }.`
+      );
+    },
+    [backendType, cameraState, handleStopMonitoring, stopStreamingLoop, switchBackend]
+  );
 
   // Snapshot capture handler
   const handleCaptureSnapshot = useCallback(async () => {
@@ -864,7 +925,7 @@ export function UnifiedLiveMonitor({
             <Button
               size="sm"
               variant="secondary"
-              onClick={() => switchBackend(backendType === "cloud" ? "local" : "cloud")}
+              onClick={() => handleSwitchBackend(backendType === "cloud" ? "local" : "cloud")}
               className="h-8 text-xs"
             >
               Switch to {backendType === "cloud" ? "Localhost" : "Cloud"}
@@ -1234,7 +1295,7 @@ export function UnifiedLiveMonitor({
                       <Button
                         size="sm"
                         variant={backendType === "cloud" ? "default" : "outline"}
-                        onClick={() => switchBackend("cloud")}
+                        onClick={() => handleSwitchBackend("cloud")}
                         className="text-xs h-9 flex-1 rounded-xl"
                       >
                         LiveKit Cloud
@@ -1242,7 +1303,7 @@ export function UnifiedLiveMonitor({
                       <Button
                         size="sm"
                         variant={backendType === "local" ? "default" : "outline"}
-                        onClick={() => switchBackend("local")}
+                        onClick={() => handleSwitchBackend("local")}
                         className="text-xs h-9 flex-1 rounded-xl"
                       >
                         Localhost (8000)

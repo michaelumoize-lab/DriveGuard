@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "@/lib/get-session";
 import { prisma } from "@/lib/prisma";
+import { resolveCloudFastApiUrl } from "@/lib/fastapi-url";
 
 export async function POST(req: NextRequest) {
   try {
@@ -61,12 +62,9 @@ export async function POST(req: NextRequest) {
     });
 
     // Best-effort sync to FastAPI worker so the live session uses the latest profile immediately
-    const apiBaseUrl =
-      process.env.NEXT_PUBLIC_API_BASE_URL ||
-      process.env.NEXT_PUBLIC_FASTAPI_URL ||
-      "http://localhost:8000";
+    const apiBaseUrl = resolveCloudFastApiUrl();
 
-    fetch(`${apiBaseUrl.replace(/\/$/, "")}/api/v1/profiles`, {
+    fetch(`${apiBaseUrl}/api/v1/profiles`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

@@ -297,35 +297,35 @@ export function LiveTelemetryHUD({
         </div>
       )}
 
-      {/* 1. Top Cockpit Telemetry Banner: State, Risk, & Stream Health */}
+      {/* 1. Top Cockpit Telemetry Banner: State, Risk, & Stream Health (2 Clean Non-Overlapping Rows) */}
       <div
-        className={`p-3 sm:p-3.5 rounded-2xl bg-card border ${stateStyle.cardBorder} shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3`}
+        className={`p-3.5 rounded-2xl bg-card border ${stateStyle.cardBorder} shadow-xs space-y-2.5`}
       >
-        {/* Left: Dynamic Status Pill + Risk Rating */}
-        <div className="flex items-center gap-3">
+        {/* Row 1: Dynamic Status Pill + Risk Index */}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
           <div
-            className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 ${stateStyle.pillBg}`}
+            className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase tracking-wider inline-flex items-center gap-1.5 whitespace-nowrap ${stateStyle.pillBg}`}
           >
             {stateStyle.icon}
             <span>{stateStyle.label}</span>
           </div>
 
-          <div className="flex flex-col">
-            <span className="text-[10px] uppercase font-mono text-muted-foreground leading-none">
+          <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-xl bg-muted/50 border border-border/80">
+            <span className="text-[10px] uppercase font-mono text-muted-foreground whitespace-nowrap">
               Risk Index
             </span>
-            <span className={`text-sm font-black font-mono leading-tight ${stateStyle.riskColor}`}>
+            <span className={`text-sm font-black font-mono tabular-nums ${stateStyle.riskColor}`}>
               {riskPct}%
             </span>
           </div>
         </div>
 
-        {/* Right: Stream Health Metrics (FPS, DataChannel RTT, Server Queue, Inference, Estimated E2E) */}
-        <div className="flex items-center gap-1.5 flex-wrap font-mono text-[11px]">
+        {/* Row 2: Stream Health Metrics Strip (FPS, RTT, Queue, AI, Server, Audio) */}
+        <div className="flex items-center gap-1.5 flex-wrap font-mono text-[11px] pt-2 border-t border-border/50">
           {/* FPS Badge with warning color if dropped */}
           <Badge
             variant="outline"
-            className={`px-2 py-0.5 rounded-lg border gap-1 ${
+            className={`px-2 py-0.5 rounded-lg border gap-1 whitespace-nowrap ${
               fps < 10
                 ? "border-amber-500/40 text-amber-500 bg-amber-500/10"
                 : "border-border text-foreground"
@@ -351,7 +351,7 @@ export function LiveTelemetryHUD({
             return (
               <Badge
                 variant="outline"
-                className={`px-2 py-0.5 rounded-lg border gap-1 ${
+                className={`px-2 py-0.5 rounded-lg border gap-1 whitespace-nowrap ${
                   selectedRtt > 300
                     ? "border-rose-500/40 text-rose-500 bg-rose-500/10"
                     : selectedRtt > 120
@@ -366,37 +366,25 @@ export function LiveTelemetryHUD({
             );
           })()}
 
-          {/* Server Ingest Queue Latency (Exact Measurement) */}
+          {/* Server Ingest Queue Latency */}
           {telemetry.timing?.queue_latency_ms !== undefined && (
             <Badge
               variant="outline"
-              className="px-2 py-0.5 rounded-lg border-border text-muted-foreground hidden sm:inline-flex"
+              className="px-2 py-0.5 rounded-lg border-border text-muted-foreground whitespace-nowrap"
               title="Server-side async frame queue dwell time before thread pool dispatch"
             >
               Q: {telemetry.timing.queue_latency_ms.toFixed(0)}ms
             </Badge>
           )}
 
-          {/* AI Inference Latency Badge (Exact Measurement) */}
+          {/* AI Inference Latency Badge */}
           {(telemetry.timing?.infer_duration_ms != null || (inference_latency_ms != null && inference_latency_ms > 0)) && (
             <Badge
               variant="outline"
-              className="px-2 py-0.5 rounded-lg border-border text-muted-foreground hidden xs:inline-flex"
+              className="px-2 py-0.5 rounded-lg border-border text-muted-foreground whitespace-nowrap"
               title="MediaPipe + MobileNetV3 CPU pipeline inference latency"
             >
               AI: {(telemetry.timing?.infer_duration_ms != null ? telemetry.timing.infer_duration_ms : inference_latency_ms ?? 0).toFixed(0)}ms
-            </Badge>
-          )}
-
-          {/* Server Total Processing Latency (Exact Measurement: Queue + Inference) */}
-          {latencyDiagnostics?.server_total_ms != null && latencyDiagnostics.server_total_ms > 0 && (
-            <Badge
-              variant="outline"
-              className="px-2 py-0.5 rounded-lg border-primary/30 text-primary bg-primary/5 hidden md:inline-flex"
-              title="Authoritative Server Processing Duration: Ingest Queue Dwell + Pipeline Inference"
-            >
-              <Timer className="size-3 mr-0.5 text-primary" />
-              Server: {latencyDiagnostics.server_total_ms.toFixed(0)}ms
             </Badge>
           )}
 
@@ -411,7 +399,7 @@ export function LiveTelemetryHUD({
                   onToggleMute();
                 }
               }}
-              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border text-[11px] font-mono transition-colors ${
+              className={`ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-lg border text-[11px] font-mono whitespace-nowrap transition-colors ${
                 audioStatus === "blocked"
                   ? "border-amber-500/40 text-amber-500 bg-amber-500/10 hover:bg-amber-500/20 cursor-pointer animate-pulse"
                   : audioStatus === "muted" || isMuted
@@ -458,55 +446,21 @@ export function LiveTelemetryHUD({
         </div>
       </div>
 
-      {/* 2. Explainable Reason Banner (If active warnings exist) */}
-      {reason_codes && reason_codes.length > 0 && (
-        <div className="px-3 py-2 rounded-xl bg-destructive/10 border border-destructive/20 text-xs flex items-center gap-2 flex-wrap">
-          <div className="flex items-center gap-1 text-destructive font-semibold shrink-0">
-            <AlertOctagon className="size-3.5" />
-            <span className="text-[11px] uppercase tracking-wide">Triggers:</span>
-          </div>
-          <div className="flex items-center gap-1.5 flex-wrap">
-            {reason_codes.map((code, idx) => (
-              <span
-                key={idx}
-                className="px-2 py-0.5 rounded-md bg-destructive/20 text-destructive text-[11px] font-medium"
-              >
-                {getReasonLabel(code)}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* 3. Hero Gauge Grid: EAR (Left) vs PERCLOS (Right) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {/* 2. Hero Gauge Grid: EAR (Left) vs PERCLOS (Right) — Stacked until xl so cards never overlap */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
         {/* Card A: Eye Aspect Ratio (EAR) */}
         <div className="p-3.5 rounded-2xl bg-card border border-border shadow-xs space-y-2.5">
-          <div className="flex items-start justify-between gap-2">
-            <div className="space-y-0.5 min-w-0">
-              <div className="flex items-center gap-1.5">
-                <Eye className="size-4 text-primary shrink-0" />
-                <span className="text-xs font-bold text-foreground truncate">
-                  Eye Aspect Ratio
-                </span>
-                <Badge variant="secondary" className="text-[9px] px-1 py-0 font-mono">
-                  EAR
-                </Badge>
-              </div>
-              {earLeft !== undefined && earRight !== undefined ? (
-                <div className="text-[10px] font-mono text-muted-foreground">
-                  L: {earLeft.toFixed(3)} | R: {earRight.toFixed(3)}
-                </div>
-              ) : (
-                <div className="text-[10px] text-muted-foreground">
-                  Dynamic facial geometry
-                </div>
-              )}
+          {/* Header Row 1: Title + Status Pill */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <Eye className="size-4 text-primary shrink-0" />
+              <span className="text-xs font-bold text-foreground truncate">
+                Eye Aspect Ratio (EAR)
+              </span>
             </div>
 
-            {/* EAR Status Badge */}
             <span
-              className={`text-xs font-mono font-bold px-2 py-0.5 rounded-lg flex items-center gap-1 shrink-0 ${
+              className={`text-xs font-mono tabular-nums font-bold px-2 py-0.5 rounded-lg inline-flex items-center gap-1 shrink-0 whitespace-nowrap ${
                 isEyeClosed
                   ? "bg-rose-500/20 text-rose-500 border border-rose-500/30"
                   : "bg-emerald-500/20 text-emerald-500 border border-emerald-500/30"
@@ -520,21 +474,31 @@ export function LiveTelemetryHUD({
             </span>
           </div>
 
+          {/* Header Row 2: Dedicated full-width sub-metrics row (never wraps vertically) */}
+          <div className="flex items-center justify-between gap-2 text-[11px] font-mono tabular-nums text-muted-foreground">
+            {earLeft !== undefined && earRight !== undefined ? (
+              <span>
+                L: {earLeft.toFixed(3)} &bull; R: {earRight.toFixed(3)}
+              </span>
+            ) : (
+              <span>Dynamic facial geometry</span>
+            )}
+            <span className="text-amber-500 font-semibold">
+              Cutoff: {threshold.toFixed(3)}
+            </span>
+          </div>
+
           {/* Visual EAR Bar with Cutoff Marker */}
           <div className="space-y-1 pt-0.5">
             <div className="relative h-3 w-full bg-muted/60 rounded-full overflow-hidden">
-              {/* Progress bar fill */}
               <div
                 className={`h-full transition-all duration-100 rounded-full ${
-                  isEyeClosed
-                    ? "bg-rose-500"
-                    : "bg-emerald-500"
+                  isEyeClosed ? "bg-rose-500" : "bg-emerald-500"
                 }`}
                 style={{
                   width: `${Math.min(100, Math.max(0, (ear / 0.45) * 100))}%`,
                 }}
               />
-              {/* Dynamic Threshold Cutoff Needle */}
               <div
                 className="absolute top-0 bottom-0 w-1 bg-amber-400 shadow-sm z-10"
                 style={{
@@ -544,12 +508,8 @@ export function LiveTelemetryHUD({
               />
             </div>
 
-            {/* Micro Scale Tick Labels */}
             <div className="flex justify-between text-[10px] font-mono text-muted-foreground">
               <span>0.00 (Closed)</span>
-              <span className="text-amber-500 font-semibold">
-                Cutoff ({threshold.toFixed(3)})
-              </span>
               <span>0.45 (Open)</span>
             </div>
           </div>
@@ -560,85 +520,77 @@ export function LiveTelemetryHUD({
           const formattedCoveragePct = Math.round(eye_metrics?.perclos_coverage_pct ?? 100);
           return (
             <div className="p-3.5 rounded-2xl bg-card border border-border shadow-xs space-y-2.5">
-              <div className="flex items-start justify-between gap-2">
-                <div className="space-y-0.5 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <Activity className="size-4 text-primary shrink-0" />
-                    <span className="text-xs font-bold text-foreground truncate">
-                      PERCLOS Fatigue
-                    </span>
-                    <Badge
-                      variant={eye_metrics?.perclos_reliable === false ? "outline" : "secondary"}
-                      className={`text-[9px] px-1 py-0 font-mono ${
-                        eye_metrics?.perclos_reliable === false
-                          ? "border-amber-500/50 text-amber-500 bg-amber-500/10"
-                          : ""
-                      }`}
-                      title={`Observation coverage across 60s window: ${formattedCoveragePct}%`}
-                    >
-                      {eye_metrics?.perclos_reliable === false
-                        ? `Cov ${formattedCoveragePct}%`
-                        : `60s`}
-                    </Badge>
-                  </div>
-                  <div className="text-[10px] text-muted-foreground flex items-center gap-1.5">
-                    <span>Time eyes closed &ge; 80%</span>
-                    {eye_metrics?.perclos_reliable === false && (
-                      <span className="text-amber-500 font-medium">⚠️ Low observation coverage</span>
-                    )}
-                  </div>
+              {/* Header Row 1: Title + Status Pill */}
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Activity className="size-4 text-primary shrink-0" />
+                  <span className="text-xs font-bold text-foreground truncate">
+                    PERCLOS (60s)
+                  </span>
                 </div>
 
-                {/* PERCLOS Level Badge */}
-            <span
-              className={`text-xs font-mono font-bold px-2 py-0.5 rounded-lg flex items-center gap-1 shrink-0 ${
-                eye_metrics?.perclos_reliable === false
-                  ? "bg-muted text-muted-foreground border border-border"
-                  : perclos > 25
-                  ? "bg-rose-500/20 text-rose-500 border border-rose-500/30"
-                  : perclos > 15
-                  ? "bg-amber-500/20 text-amber-500 border border-amber-500/30"
-                  : "bg-emerald-500/20 text-emerald-500 border border-emerald-500/30"
-              }`}
-            >
-              <span>{perclos.toFixed(1)}%</span>
-              <span className="text-[10px] uppercase font-sans">
-                {eye_metrics?.perclos_reliable === false
-                  ? "Uncertain"
-                  : perclos > 25
-                  ? "Critical"
-                  : perclos > 15
-                  ? "Drowsy"
-                  : "Alert"}
-              </span>
-            </span>
-          </div>
+                <span
+                  className={`text-xs font-mono tabular-nums font-bold px-2 py-0.5 rounded-lg inline-flex items-center gap-1 shrink-0 whitespace-nowrap ${
+                    eye_metrics?.perclos_reliable === false
+                      ? "bg-muted text-muted-foreground border border-border"
+                      : perclos > 25
+                      ? "bg-rose-500/20 text-rose-500 border border-rose-500/30"
+                      : perclos > 15
+                      ? "bg-amber-500/20 text-amber-500 border border-amber-500/30"
+                      : "bg-emerald-500/20 text-emerald-500 border border-emerald-500/30"
+                  }`}
+                >
+                  <span>{perclos.toFixed(1)}%</span>
+                  <span className="text-[10px] uppercase font-sans">
+                    {eye_metrics?.perclos_reliable === false
+                      ? "Warmup"
+                      : perclos > 25
+                      ? "Critical"
+                      : perclos > 15
+                      ? "Drowsy"
+                      : "Alert"}
+                  </span>
+                </span>
+              </div>
 
-          {/* Visual Segmented PERCLOS Bar */}
-          <div className="space-y-1 pt-0.5">
-            <div className="relative h-3 w-full bg-muted/60 rounded-full overflow-hidden">
-              <div
-                className={`h-full transition-all duration-150 rounded-full ${
-                  perclos > 25
-                    ? "bg-rose-500"
-                    : perclos > 15
-                    ? "bg-amber-500"
-                    : "bg-emerald-500"
-                }`}
-                style={{ width: `${Math.min(100, Math.max(0, perclos))}%` }}
-              />
-            </div>
+              {/* Header Row 2: Dedicated full-width sub-metrics row */}
+              <div className="flex items-center justify-between gap-2 text-[11px] font-mono tabular-nums text-muted-foreground">
+                <span>Time eyes closed &ge; 80%</span>
+                <span
+                  className={
+                    eye_metrics?.perclos_reliable === false
+                      ? "text-amber-500 font-medium"
+                      : "text-emerald-500 font-medium"
+                  }
+                >
+                  Window Coverage: {formattedCoveragePct}%
+                </span>
+              </div>
 
-            {/* Visual Zone Legend */}
-            <div className="flex justify-between text-[10px] font-mono">
-              <span className="text-emerald-500 font-medium">Safe (&lt;15%)</span>
-              <span className="text-amber-500 font-medium">Caution (15-25%)</span>
-              <span className="text-rose-500 font-medium">Critical (&gt;25%)</span>
+              {/* Visual Segmented PERCLOS Bar */}
+              <div className="space-y-1 pt-0.5">
+                <div className="relative h-3 w-full bg-muted/60 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-150 rounded-full ${
+                      perclos > 25
+                        ? "bg-rose-500"
+                        : perclos > 15
+                        ? "bg-amber-500"
+                        : "bg-emerald-500"
+                    }`}
+                    style={{ width: `${Math.min(100, Math.max(0, perclos))}%` }}
+                  />
+                </div>
+
+                <div className="flex justify-between text-[10px] font-mono">
+                  <span className="text-emerald-500 font-medium">&lt;15% Safe</span>
+                  <span className="text-amber-500 font-medium">15–25% Warn</span>
+                  <span className="text-rose-500 font-medium">&gt;25% Crit</span>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-      );
-    })()}
+          );
+        })()}
       </div>
 
       {/* 4. Cockpit Kinematics & Spatial Tracking (4 Tile Instruments) */}

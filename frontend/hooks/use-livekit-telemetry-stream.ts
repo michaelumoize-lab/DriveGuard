@@ -17,6 +17,7 @@ import {
   AlertState,
   EventAck,
 } from "@/types/telemetry";
+import { LOCAL_FASTAPI_URL, resolveCloudFastApiUrl } from "@/lib/fastapi-url";
 
 export interface UseLivekitTelemetryStreamOptions {
   sessionId?: string;
@@ -39,26 +40,19 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     onError,
   } = options;
 
-  // Consistent initial state on both SSR and client to prevent hydration mismatch
-  const [backendType, setBackendType] = useState<"cloud" | "local">(defaultBackend || "local");
-
-  // Sync client hostname strictly after mount
-  useEffect(() => {
-    if (!defaultBackend && typeof window !== "undefined") {
-      const hostname = window.location.hostname;
-      const isLocal = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
-      setBackendType(isLocal ? "local" : "cloud");
-    }
-  }, [defaultBackend]);
+  // Default AI backend to Cloud ("cloud") unless explicitly overridden
+  const [backendType, setBackendType] = useState<"cloud" | "local">(defaultBackend || "cloud");
 
   const stableSessionId = useMemo(
     () => initialSessionId || `dg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
     [initialSessionId]
   );
 
-  const cloudApiBase =
-    process.env.NEXT_PUBLIC_FASTAPI_URL || "https://driveguard-x048.onrender.com";
-  const localApiBase = "http://127.0.0.1:8000";
+  // Use same-origin `/api/v1/*` proxy in cloud mode to avoid browser CORS preflight issues,
+  // with direct sanitized Render URL fallback.
+  const cloudApiBase = "";
+  const directCloudApiBase = resolveCloudFastApiUrl();
+  const localApiBase = LOCAL_FASTAPI_URL;
   const [connectionStatus, setConnectionStatus] = useState<
     "disconnected" | "connecting" | "connected" | "reconnecting" | "error"
   >("disconnected");
@@ -79,6 +73,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
   const isLoopActiveRef = useRef<boolean>(false);
   const pendingCommandsRef = useRef<Array<Record<string, any>>>([]);
   const lastTelemetryReceivedAtRef = useRef<number>(0);
+  const calibrationCompletionEmittedRef = useRef<boolean>(false);
 
   // Telemetry deduplication, state guard, and latency tracking refs
   const lastTelemetrySeqRef = useRef<bigint>(BigInt(-1));
@@ -133,15 +128,20 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     return () => clearInterval(timer);
   }, [connectionStatus]);
 
-  // Disconnect & cleanup LiveKit room
+  // Disconnect & cleanup LiveKit room and reset all cockpit telemetry state
   const disconnectRoom = useCallback(async () => {
     isConnectingRef.current = false;
     isLoopActiveRef.current = false;
     lastTelemetrySeqRef.current = BigInt(-1);
     lastTelemetryReceivedAtRef.current = 0;
+    calibrationCompletionEmittedRef.current = false;
+    activeStateRef.current = "NORMAL";
     latestRttRef.current = 0;
     rttSamplesRef.current = [];
     setIsStale(false);
+    setTelemetry(null);
+    setActiveSafetyEvent(null);
+    setCalibration(null);
     setLatencyDiagnostics(null);
     setRoundtripLatencyMs(0);
 
@@ -157,7 +157,8 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     if (currentRoom) {
       try {
         if (currentRoom.state !== ConnectionState.Disconnected) {
-          await currentRoom.disconnect();
+          // Pass stopTracks=false so LiveKit does not kill the browser's MediaStreamTrack behind useCamera
+          await currentRoom.disconnect(false);
         }
       } catch (_) {}
       const base = backendType === "cloud" ? cloudApiBase : localApiBase;
@@ -214,10 +215,16 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
 
       try {
         const base = backendType === "cloud" ? cloudApiBase : localApiBase;
-        const tokenUrl = `${base}/api/v1/livekit/token?room_name=${stableSessionId}&driver_id=${driverId}&experiment_mode=${experimentMode}&auto_start_worker=true`;
+        const query = `room_name=${encodeURIComponent(stableSessionId)}&driver_id=${encodeURIComponent(driverId)}&experiment_mode=${encodeURIComponent(experimentMode)}&auto_start_worker=true`;
+        const tokenUrl = `${base}/api/v1/livekit/token?${query}`;
 
         console.log(`[DriveGuard LiveKit] Requesting token from: ${tokenUrl}`);
-        const tokenRes = await fetch(tokenUrl);
+        let tokenRes = await fetch(tokenUrl);
+        if (!tokenRes.ok && backendType === "cloud") {
+          const fallbackUrl = `${directCloudApiBase}/api/v1/livekit/token?${query}`;
+          console.warn(`[DriveGuard LiveKit] Proxy returned ${tokenRes.status}, retrying direct cloud URL: ${fallbackUrl}`);
+          tokenRes = await fetch(fallbackUrl);
+        }
         if (!tokenRes.ok) {
           throw new Error(`Failed to acquire LiveKit token (${tokenRes.status}): ${await tokenRes.text()}`);
         }
@@ -365,8 +372,19 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
               if (onTelemetryRef.current) {
                 onTelemetryRef.current(enriched);
               }
-              if (msg.calibration && onCalibrationRef.current) {
-                onCalibrationRef.current(msg.calibration as CalibrationPhase);
+              if (msg.calibration) {
+                const calFrame = msg.calibration as CalibrationPhase;
+                if (!calFrame.is_completed) {
+                  calibrationCompletionEmittedRef.current = false;
+                  if (onCalibrationRef.current) {
+                    onCalibrationRef.current(calFrame);
+                  }
+                } else if (!calibrationCompletionEmittedRef.current) {
+                  calibrationCompletionEmittedRef.current = true;
+                  if (onCalibrationRef.current) {
+                    onCalibrationRef.current(calFrame);
+                  }
+                }
               }
 
               // Throttle React state updates to ~20 FPS (max 1 update per 48ms) to prevent UI overload
@@ -446,6 +464,9 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
               msg.type === "CALIBRATION_COMPLETED" ||
               msg.type === "CALIBRATION_REJECTED"
             ) {
+              if (msg.type === "CALIBRATION_STARTED") {
+                calibrationCompletionEmittedRef.current = false;
+              }
               if (msg.calibration) {
                 const cal = msg.calibration as CalibrationPhase & { profile?: unknown };
                 if (msg.profile) {
@@ -455,11 +476,20 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
                   cal.rejection_reason = msg.rejection_reason;
                 }
                 setCalibration(cal);
-                if (onCalibrationRef.current) {
-                  onCalibrationRef.current(cal);
+                if (!cal.is_completed) {
+                  calibrationCompletionEmittedRef.current = false;
+                  if (onCalibrationRef.current) {
+                    onCalibrationRef.current(cal);
+                  }
+                } else if (!calibrationCompletionEmittedRef.current) {
+                  calibrationCompletionEmittedRef.current = true;
+                  if (onCalibrationRef.current) {
+                    onCalibrationRef.current(cal);
+                  }
                 }
               }
             } else if (msg.type === "CALIBRATION_CANCELLED") {
+              calibrationCompletionEmittedRef.current = false;
               setCalibration(null);
             } else if (msg.type === "EXPERIMENT_SWITCHED" && msg.mode) {
               setExperimentMode(msg.mode as ExperimentMode);
@@ -643,6 +673,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
 
   const startCalibration = useCallback(
     (fourZone = true, durationSec = 4.0) => {
+      calibrationCompletionEmittedRef.current = false;
       sendCommand({
         action: "START_CALIBRATION",
         four_zone: fourZone,
@@ -653,6 +684,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
   );
 
   const cancelCalibration = useCallback(() => {
+    calibrationCompletionEmittedRef.current = false;
     sendCommand({ action: "CANCEL_CALIBRATION" });
   }, [sendCommand]);
 
@@ -662,6 +694,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
 
   const recalibrateZone = useCallback(
     (zone: string, durationSec = 4.0) => {
+      calibrationCompletionEmittedRef.current = false;
       sendCommand({
         action: "RECALIBRATE_ZONE",
         zone,
@@ -684,20 +717,10 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
 
   const switchBackend = useCallback(
     (type: "cloud" | "local") => {
-      const wasActive = isLoopActiveRef.current;
       setBackendType(type);
-      disconnectRoom().then(() => {
-        if (wasActive && lastVideoElementRef.current) {
-          isLoopActiveRef.current = true;
-          setTimeout(() => {
-            if (lastVideoElementRef.current) {
-              connectLivekit(lastVideoElementRef.current);
-            }
-          }, 150);
-        }
-      });
+      disconnectRoom();
     },
-    [disconnectRoom, connectLivekit]
+    [disconnectRoom]
   );
 
   // Unmount cleanup
