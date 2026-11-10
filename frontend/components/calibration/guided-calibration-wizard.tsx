@@ -1136,7 +1136,9 @@ export function GuidedCalibrationWizard({
                     Active Calibration Phase
                   </span>
                   <span className="font-bold text-foreground text-sm">
-                    {currentZoneInfo.label}
+                    {calState?.stability_feedback && calState.stability_feedback.includes("Get ready")
+                      ? calState.stability_feedback
+                      : currentZoneInfo.label}
                   </span>
                 </div>
               </div>
@@ -1238,7 +1240,7 @@ export function GuidedCalibrationWizard({
                       >
                         {calState?.is_head_in_target_zone
                           ? "HEAD ALIGNED [OK]"
-                          : "PLEASE TURN HEAD"}
+                          : (calState?.stability_feedback || "PLEASE TURN HEAD")}
                       </Badge>
                     </div>
                     <p className="text-[11px] text-muted-foreground">
