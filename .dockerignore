@@ -1,16 +1,46 @@
+# Python bytecode & virtual environments
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
 .venv/
 venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Git & CI/CD
 .git/
 .gitignore
+.github/
+
+# Documentation & Specifications
 docs/
+*.md
+
+# Next.js Frontend & Node dependencies (MUST NOT be copied into Python container)
+frontend/
+node_modules/
+.next/
+out/
+
+# Offline Datasets & Training Scripts
 backend/datasets/
-backend/research/outputs/*.mp4
-backend/research/outputs/*.avi
+backend/research/
+backend/benchmarks/
+backend/tests/
+
+# Model training checkpoints (preserve inference weights .task and .onnx)
 backend/weights/*.pt
 backend/weights/*.pth
+backend/weights/*.ckpt
+
+# OS & Editor files
 .DS_Store
 Thumbs.db
+.vscode/
+.idea/
+.env
+.env.*
+!.env.example

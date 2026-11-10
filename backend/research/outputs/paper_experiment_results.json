@@ -1,0 +1,104 @@
+{
+  "cal_comparison": {
+    "FIXED_022": {
+      "false_alarm_frames": 1076.0,
+      "mirror_check_fa_frames": 34.0,
+      "glare_blur_fa_frames": 1042.0,
+      "false_alarm_episodes_per_hour": 1938.5,
+      "precision_pct": 50.6,
+      "recall_pct": 100.0,
+      "f1_pct": 67.2,
+      "early_warning_lead_time_sec": 0.0,
+      "cnn_trigger_rate_pct": 0.0,
+      "mean_latency_ms": 0.085,
+      "p95_latency_ms": 0.14
+    },
+    "PDBP_1ZONE": {
+      "false_alarm_frames": 899.0,
+      "mirror_check_fa_frames": 2.0,
+      "glare_blur_fa_frames": 370.0,
+      "false_alarm_episodes_per_hour": 166.2,
+      "precision_pct": 55.0,
+      "recall_pct": 100.0,
+      "f1_pct": 71.0,
+      "early_warning_lead_time_sec": 40.0,
+      "cnn_trigger_rate_pct": 41.3,
+      "mean_latency_ms": 2.442,
+      "p95_latency_ms": 5.924
+    },
+    "PDBP_4ZONE": {
+      "false_alarm_frames": 537.0,
+      "mirror_check_fa_frames": 0.0,
+      "glare_blur_fa_frames": 370.0,
+      "false_alarm_episodes_per_hour": 55.4,
+      "precision_pct": 67.2,
+      "recall_pct": 100.0,
+      "f1_pct": 80.4,
+      "early_warning_lead_time_sec": 40.0,
+      "cnn_trigger_rate_pct": 39.7,
+      "mean_latency_ms": 2.409,
+      "p95_latency_ms": 6.047
+    }
+  },
+  "cascade_comparison": {
+    "EXP_A_GEOM_ONLY": {
+      "false_alarm_frames": 537.0,
+      "mirror_check_fa_frames": 0.0,
+      "glare_blur_fa_frames": 370.0,
+      "false_alarm_episodes_per_hour": 55.4,
+      "precision_pct": 67.2,
+      "recall_pct": 100.0,
+      "f1_pct": 80.4,
+      "early_warning_lead_time_sec": 40.0,
+      "cnn_trigger_rate_pct": 0.0,
+      "mean_latency_ms": 0.327,
+      "p95_latency_ms": 0.471
+    },
+    "EXP_B_CNN_ALWAYS": {
+      "false_alarm_frames": 900.0,
+      "mirror_check_fa_frames": 2.0,
+      "glare_blur_fa_frames": 371.0,
+      "false_alarm_episodes_per_hour": 166.2,
+      "precision_pct": 55.0,
+      "recall_pct": 100.0,
+      "f1_pct": 71.0,
+      "early_warning_lead_time_sec": 40.0,
+      "cnn_trigger_rate_pct": 100.0,
+      "mean_latency_ms": 5.356,
+      "p95_latency_ms": 6.932
+    },
+    "EXP_C_NAIVE_BLIND_CNN": {
+      "false_alarm_frames": 899.0,
+      "mirror_check_fa_frames": 2.0,
+      "glare_blur_fa_frames": 370.0,
+      "false_alarm_episodes_per_hour": 166.2,
+      "precision_pct": 55.0,
+      "recall_pct": 100.0,
+      "f1_pct": 71.0,
+      "early_warning_lead_time_sec": 40.0,
+      "cnn_trigger_rate_pct": 39.7,
+      "mean_latency_ms": 2.58,
+      "p95_latency_ms": 6.522
+    },
+    "EXP_C_DRIVEGUARD_CASCADE": {
+      "false_alarm_frames": 537.0,
+      "mirror_check_fa_frames": 0.0,
+      "glare_blur_fa_frames": 370.0,
+      "false_alarm_episodes_per_hour": 55.4,
+      "precision_pct": 67.2,
+      "recall_pct": 100.0,
+      "f1_pct": 80.4,
+      "early_warning_lead_time_sec": 40.0,
+      "cnn_trigger_rate_pct": 39.7,
+      "mean_latency_ms": 2.409,
+      "p95_latency_ms": 6.047
+    }
+  },
+  "figure_paths": [
+    "C:\\Users\\Michael Umoize\\Desktop\\DriveGuard\\backend\\research\\outputs\\figures\\fig1_ear_vs_zone_thresholds.png",
+    "C:\\Users\\Michael Umoize\\Desktop\\DriveGuard\\backend\\research\\outputs\\figures\\fig2_risk_timeline_and_early_warning.png",
+    "C:\\Users\\Michael Umoize\\Desktop\\DriveGuard\\backend\\research\\outputs\\figures\\fig3_calibration_false_alarm_comparison.png",
+    "C:\\Users\\Michael Umoize\\Desktop\\DriveGuard\\backend\\research\\outputs\\figures\\fig4_cascade_experiments_abc_tradeoff.png"
+  ],
+  "generated_at": "2026-11-10T03:44:23Z"
+}

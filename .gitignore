@@ -26,6 +26,10 @@ backend/datasets/
 !backend/weights/face_landmarker.task
 !backend/weights/mobilenetv3_eye.onnx
 
+# Runtime operational driver profiles (preserve directory structure)
+backend/data/profiles/*.json
+!backend/data/profiles/.gitkeep
+
 # Live personal webcam session outputs (keep benchmark sample outputs)
 backend/research/outputs/live_*.json
 backend/research/outputs/profiles/*.json

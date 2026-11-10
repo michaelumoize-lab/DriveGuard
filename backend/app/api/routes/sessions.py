@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from backend.app.schemas.profile import DriverProfileDTO
 from backend.app.services.session_manager import session_manager
 
 router = APIRouter(prefix="/sessions", tags=["Sessions"])
@@ -18,6 +19,10 @@ class CreateSessionRequest(BaseModel):
     experiment_mode: str = Field(
         default="EXPERIMENT_C_CONFIDENCE_GATED_CASCADE",
         description="A_GEOMETRIC_ONLY, B_CNN_ALWAYS, or C_CONFIDENCE_GATED_CASCADE",
+    )
+    profile: Optional[DriverProfileDTO] = Field(
+        default=None,
+        description="Optional pre-calibrated baseline profile transmitted directly from PostgreSQL",
     )
 
 
@@ -35,6 +40,7 @@ async def create_session(request: CreateSessionRequest) -> Dict[str, Any]:
         session_id=sess_id,
         driver_id=request.driver_id,
         experiment_mode=request.experiment_mode,
+        profile_dto=request.profile,
     )
     return {
         "session_id": engine.session_id,

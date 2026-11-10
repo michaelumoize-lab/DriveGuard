@@ -4,18 +4,18 @@
 
 | Configuration | Total False Alarm Frames | Mirror-Check False Alarms | False Alarms / Hour | Precision (%) | Recall (%) | F1-Score (%) | Early Warning Lead Time (s) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Conventional Fixed (`EAR < 0.22`)** | 872 | 34 | 2104.6 | 55.8% | 100.0% | **71.6%** | 0.0 s |
-| **1-Zone Personalised (`CENTER_ONLY`)** | 367 | 2 | 110.8 | 74.1% | 95.5% | **83.5%** | 37.5 s |
-| **DriveGuard 4-Zone (`FOUR_ZONE` + Context)** | 0 | 0 | 0.0 | 100.0% | 92.1% | **95.9%** | 35.7 s |
+| **Conventional Fixed (`EAR < 0.22`)** | 1076 | 34 | 1938.5 | 50.6% | 100.0% | **67.2%** | 0.0 s |
+| **1-Zone Personalised (`CENTER_ONLY`)** | 899 | 2 | 166.2 | 55.0% | 100.0% | **71.0%** | 40.0 s |
+| **DriveGuard 4-Zone (`FOUR_ZONE` + Context)** | 537 | 0 | 55.4 | 67.2% | 100.0% | **80.4%** | 40.0 s |
 
 ## 2. Experiment 2: Confidence-Gated Cascade & Disagreement Arbitration (RQ3 & RQ4)
 
 | Cascade Mode | Glare & Blur False Alarms | Total False Alarms | Precision (%) | Recall (%) | F1-Score (%) | CNN Trigger Rate (%) | Mean Latency (ms) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Experiment A: MediaPipe EAR + Blendshapes Only** | 370 | 537 | 67.2% | 100.0% | **80.4%** | 0.0% | 0.254 ms |
-| **Experiment B: Stage-2 Verifier Always On (100%)** | 0 | 0 | 100.0% | 92.1% | **95.9%** | 100.0% | 1.090 ms |
-| **Experiment C (Naive): Blindly Trust CNN on Disagreement** | 128 | 177 | 86.1% | 100.0% | **92.6%** | 40.0% | 0.592 ms |
-| **Experiment C (DriveGuard): Reliability-Weighted Cascade** | 0 | 0 | 100.0% | 92.1% | **95.9%** | 40.0% | 0.596 ms |
+| **Experiment A: MediaPipe EAR + Blendshapes Only** | 370 | 537 | 67.2% | 100.0% | **80.4%** | 0.0% | 0.327 ms |
+| **Experiment B: Stage-2 Verifier Always On (100%)** | 371 | 900 | 55.0% | 100.0% | **71.0%** | 100.0% | 5.356 ms |
+| **Experiment C (Naive): Blindly Trust CNN on Disagreement** | 370 | 899 | 55.0% | 100.0% | **71.0%** | 39.7% | 2.580 ms |
+| **Experiment C (DriveGuard): Reliability-Weighted Cascade** | 370 | 537 | 67.2% | 100.0% | **80.4%** | 39.7% | 2.409 ms |
 
 ## 3. Generated Thesis Figures (300 DPI)
 
