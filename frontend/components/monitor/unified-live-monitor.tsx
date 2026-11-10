@@ -1434,26 +1434,6 @@ export function UnifiedLiveMonitor({
             )}
           </div>
         )}
-                        onClick={() => handleSwitchBackend("cloud")}
-                        className="text-xs h-9 flex-1 rounded-xl"
-                      >
-                        LiveKit Cloud
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant={backendType === "local" ? "default" : "outline"}
-                        onClick={() => handleSwitchBackend("local")}
-                        className="text-xs h-9 flex-1 rounded-xl"
-                      >
-                        Localhost (8000)
-                      </Button>
-                    </div>
-                  </TabsContent>
-                </Tabs>
-              </CardContent>
-            </Card>
-          </div>
-        )}
       </div>
 
       {/* Snapshot Preview Dialog */}

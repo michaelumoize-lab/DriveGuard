@@ -12,6 +12,7 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   Camera,
+  Car,
   CheckCircle2,
   Clock,
   Compass,
