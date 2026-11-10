@@ -362,13 +362,12 @@ class TestMeasurementInfrastructure(unittest.IsolatedAsyncioTestCase):
             # Call worker.stop() while thread is running
             await worker.stop()
 
-            # At this instant:
-            # Queued frame was drained into aborted (+1).
-            # In-flight frame is STILL executing in thread (1 in-flight, aborted=1).
+            # In Phase 1 Workstream D, stop() safely awaits the active thread up to bounded timeout.
+            # Upon return, the thread has completed, queued frames were aborted, and in-flight is reconciled:
             snap_after_stop = worker.get_frame_accounting_snapshot()
-            self.assertEqual(snap_after_stop.frames_in_flight, 1)
-            self.assertEqual(snap_after_stop.threads_executing, 1)
-            self.assertEqual(snap_after_stop.frames_aborted, 1)  # the queued frame
+            self.assertEqual(snap_after_stop.frames_in_flight, 0)
+            self.assertEqual(snap_after_stop.threads_executing, 0)
+            self.assertEqual(snap_after_stop.frames_aborted, 2)
             self.assertTrue(snap_after_stop.is_invariant_satisfied)
 
             # Wait for thread to terminate and callback to reconcile

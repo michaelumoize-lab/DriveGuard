@@ -1149,7 +1149,7 @@ class LiveKitWorkerManager:
 
         async with self._lock:
             existing = self._workers.get(room_name)
-            if existing and existing.state == WorkerState.RUNNING:
+            if existing and (existing.state == WorkerState.RUNNING or existing.is_running):
                 return existing
 
             existing_startup = self._startup_tasks.get(room_name)
@@ -1165,6 +1165,8 @@ class LiveKitWorkerManager:
                 async def _do_start() -> LiveKitAIWorkerSession:
                     try:
                         await worker.start()
+                        worker.is_running = True
+                        worker.state = WorkerState.RUNNING
                         async with self._lock:
                             self._workers[room_name] = worker
                         return worker
