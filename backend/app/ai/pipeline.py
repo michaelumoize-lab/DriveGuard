@@ -655,6 +655,11 @@ class SessionAIEngine:
                     and abs(cascade_res.geom_closure_score - cascade_res.cnn_closed_prob) >= 0.30
                 ),
                 cnn_latency_ms=round(cascade_res.stage_latency_ms, 2),
+                cnn_execution_mode=cascade_res.cnn_execution_mode,
+                verifier_invoked=cascade_res.cnn_invoked,
+                gate_trigger_reason=cascade_res.gate_trigger_reason,
+                onnx_inference_executed=cascade_res.onnx_inference_executed,
+                cnn_inference_duration_ms=round(cascade_res.cnn_inference_duration_ms, 2) if cascade_res.cnn_inference_duration_ms is not None else None,
             ),
             comparison=ConventionalFixedComparisonDTO(
                 fixed_cutoff_ear=0.22,
@@ -714,6 +719,11 @@ class SessionAIEngine:
                 arbitration_winner="NONE",
                 disagreement_flag=False,
                 cnn_latency_ms=0.0,
+                cnn_execution_mode="UNAVAILABLE",
+                verifier_invoked=False,
+                gate_trigger_reason=reason,
+                onnx_inference_executed=False,
+                cnn_inference_duration_ms=None,
             ),
             comparison=ConventionalFixedComparisonDTO(
                 fixed_cutoff_ear=0.22,

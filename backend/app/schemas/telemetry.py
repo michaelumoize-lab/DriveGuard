@@ -78,6 +78,26 @@ class CascadeStatusDTO(BaseModel):
     arbitration_winner: str = Field(description="Authority source: 'GEOMETRY', 'CNN', or 'CONSENSUS'")
     disagreement_flag: bool = Field(default=False, description="True if geometry and CNN disagreed on eye closure")
     cnn_latency_ms: float = Field(default=0.0, description="MobileNetV3-Small inference latency in ms")
+    cnn_execution_mode: str = Field(
+        default="UNAVAILABLE",
+        description="Execution mode: 'MOBILENET_ONNX', 'ANALYTICAL_FALLBACK', or 'UNAVAILABLE'",
+    )
+    verifier_invoked: bool = Field(
+        default=False,
+        description="Whether the second-stage eye verifier was invoked",
+    )
+    gate_trigger_reason: str = Field(
+        default="NONE",
+        description="Rationale for cascade gate decision (e.g. HIGH_GEOM_CONFIDENCE, LOW_GEOMETRIC_RELIABILITY, BORDERLINE_CLOSURE_THRESHOLD)",
+    )
+    onnx_inference_executed: bool = Field(
+        default=False,
+        description="True strictly if ONNX runtime model inference was physically executed",
+    )
+    cnn_inference_duration_ms: Optional[float] = Field(
+        default=None,
+        description="Isolated second-stage verifier execution time in milliseconds",
+    )
 
 
 class ConventionalFixedComparisonDTO(BaseModel):
@@ -104,6 +124,30 @@ class TimingBreakdownDTO(BaseModel):
     server_ingest_mono_ms: float = Field(default=0.0, description="Server monotonic timestamp when frame arrived in Python worker (perf_counter in ms)")
     server_publish_mono_ms: float = Field(default=0.0, description="Server monotonic timestamp when telemetry was published (perf_counter in ms)")
     server_wall_epoch_ms: float = Field(default=0.0, description="Server epoch wall-clock timestamp in milliseconds")
+    frame_received_mono_ms: Optional[float] = Field(
+        default=None, description="Server monotonic timestamp when frame became available in Python"
+    )
+    frame_queue_wait_ms: Optional[float] = Field(
+        default=None, description="Duration frame spent waiting in the application queue"
+    )
+    frame_convert_ms: Optional[float] = Field(
+        default=None, description="Duration of VideoFrame to RGB buffer conversion"
+    )
+    frame_preprocess_ms: Optional[float] = Field(
+        default=None, description="Duration of NumPy buffer mapping, normalization, and resizing"
+    )
+    executor_wait_ms: Optional[float] = Field(
+        default=None, description="Duration from thread submission to thread execution start"
+    )
+    process_frame_ms: Optional[float] = Field(
+        default=None, description="Duration of SessionAIEngine.process_frame()"
+    )
+    publish_ms: Optional[float] = Field(
+        default=None, description="Duration of telemetry publication"
+    )
+    frame_age_ms: Optional[float] = Field(
+        default=None, description="End-to-end frame capture age, populated only when clocks are synchronized"
+    )
 
 
 class FrameTelemetryDTO(BaseModel):

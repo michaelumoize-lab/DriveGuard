@@ -94,6 +94,24 @@ def normalize_frame_width(img_bgr: np.ndarray) -> np.ndarray:
         return img_bgr
 
 
+def _timed_process_frame(
+    engine: SessionAIEngine,
+    norm_img: np.ndarray,
+    recv_mono_ms: float,
+    t_submit: float,
+) -> Tuple[Any, float, float]:
+    """Execute engine.process_frame measuring executor wait and actual inference duration."""
+    t_start = time.perf_counter()
+    executor_wait_ms = max(0.0, (t_start - t_submit) * 1000.0)
+    try:
+        telemetry_dto = engine.process_frame(norm_img, recv_mono_ms, is_rgb=True)
+    except TypeError:
+        telemetry_dto = engine.process_frame(norm_img, recv_mono_ms)
+    t_end = time.perf_counter()
+    process_frame_ms = max(0.0, (t_end - t_start) * 1000.0)
+    return telemetry_dto, executor_wait_ms, process_frame_ms
+
+
 class LiveKitAIWorkerSession:
     """Manages an autonomous Python AI participant in a single LiveKit room."""
 
@@ -126,6 +144,7 @@ class LiveKitAIWorkerSession:
         self._unacknowledged_events: Dict[str, dict] = {}
         self._latest_safety_event: Optional[dict] = None
         self._last_client_ping_ts: Optional[float] = None
+        self._last_publish_duration_ms: Optional[float] = None
 
         # Thread-Safe Frame Accounting Counters (owned strictly on asyncio event loop)
         self._frames_received: int = 0
@@ -498,10 +517,17 @@ class LiveKitAIWorkerSession:
                 self._frames_in_flight = 1
 
                 try:
+                    t_dequeue_mono_ms = time.perf_counter() * 1000.0
+                    frame_queue_wait_ms = max(0.0, t_dequeue_mono_ms - recv_mono_ms)
+
                     # 1. Convert WebRTC VideoFrame to packed RGB24 bytes
+                    t_conv_start = time.perf_counter()
                     rgb_frame = frame.convert(rtc.VideoBufferType.RGB24)
+                    t_conv_end = time.perf_counter()
+                    frame_convert_ms = (t_conv_end - t_conv_start) * 1000.0
 
                     # 2. Map directly to NumPy array without disk/JPEG encoding overhead
+                    t_prep_start = time.perf_counter()
                     img_rgb = np.frombuffer(rgb_frame.data, dtype=np.uint8).reshape(
                         (rgb_frame.height, rgb_frame.width, 3)
                     )
@@ -513,6 +539,8 @@ class LiveKitAIWorkerSession:
                     # np.ascontiguousarray enforces C-contiguity for memory safety and thread dispatch.
                     norm_img = np.ascontiguousarray(normalize_frame_width(img_rgb))
                     norm_h, norm_w = norm_img.shape[:2]
+                    t_prep_end = time.perf_counter()
+                    frame_preprocess_ms = (t_prep_end - t_prep_start) * 1000.0
 
                     # Log dimension changes or first frame
                     current_dims = (raw_w, raw_h, norm_w, norm_h)
@@ -531,7 +559,9 @@ class LiveKitAIWorkerSession:
                     loop = asyncio.get_running_loop()
                     self._threads_executing = 1
                     self._coro_cancelled_for_active_frame = False
-                    self._active_cfut = self._executor.submit(self.engine.process_frame, norm_img, recv_mono_ms)
+                    self._active_cfut = self._executor.submit(
+                        _timed_process_frame, self.engine, norm_img, recv_mono_ms, t_infer_start
+                    )
 
                     def _safe_dispatch_done(f: concurrent.futures.Future) -> None:
                         if not loop.is_closed():
@@ -542,7 +572,7 @@ class LiveKitAIWorkerSession:
 
                     self._active_cfut.add_done_callback(_safe_dispatch_done)
                     afut = asyncio.wrap_future(self._active_cfut)
-                    telemetry_dto = await afut
+                    telemetry_dto, executor_wait_ms, process_frame_ms = await afut
                     t_infer_end = time.perf_counter()
                     t_infer_end_ms = t_infer_end * 1000.0
                     infer_duration_ms = max(0.0, t_infer_end_ms - t_infer_start_ms)
@@ -558,6 +588,14 @@ class LiveKitAIWorkerSession:
                         server_ingest_mono_ms=round(recv_mono_ms, 2),
                         server_publish_mono_ms=round(server_publish_mono_ms, 2),
                         server_wall_epoch_ms=round(server_wall_epoch_ms, 1),
+                        frame_received_mono_ms=round(recv_mono_ms, 2),
+                        frame_queue_wait_ms=round(frame_queue_wait_ms, 2),
+                        frame_convert_ms=round(frame_convert_ms, 2),
+                        frame_preprocess_ms=round(frame_preprocess_ms, 2),
+                        executor_wait_ms=round(executor_wait_ms, 2),
+                        process_frame_ms=round(process_frame_ms, 2),
+                        publish_ms=round(self._last_publish_duration_ms, 2) if self._last_publish_duration_ms is not None else None,
+                        frame_age_ms=None,
                     )
                     telemetry_dto.frame_seq = str(frame_seq_num)
                     telemetry_dto.worker_boot_id = self.worker_boot_id
@@ -655,8 +693,10 @@ class LiveKitAIWorkerSession:
 
                     # Publish lossy/unreliable for telemetry (fastest WebRTC UDP delivery)
                     try:
+                        t_pub_start = time.perf_counter()
                         payload_bytes = json.dumps(response_payload).encode("utf-8")
                         await self.room.local_participant.publish_data(payload_bytes, reliable=False)
+                        self._last_publish_duration_ms = (time.perf_counter() - t_pub_start) * 1000.0
                     except Exception as pub_exc:
                         logger.warning(f"[LiveKit Worker] Non-fatal telemetry publication failure: {pub_exc}")
 
