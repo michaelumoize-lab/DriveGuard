@@ -18,6 +18,7 @@ import json
 import logging
 import time
 import uuid
+from enum import Enum
 from typing import Any, Dict, Optional, Tuple
 
 import cv2
@@ -34,6 +35,17 @@ logger = logging.getLogger("driveguard.livekit_worker")
 logger.setLevel(logging.INFO)
 
 WORKER_BOOT_ID = uuid.uuid4().hex
+
+
+class WorkerState(str, Enum):
+    """Explicit lifecycle states for LiveKit AI Worker Sessions."""
+
+    CREATED = "CREATED"
+    STARTING = "STARTING"
+    RUNNING = "RUNNING"
+    STOPPING = "STOPPING"
+    STOPPED = "STOPPED"
+    FAILED = "FAILED"
 
 
 def generate_session_epoch() -> str:
@@ -128,6 +140,7 @@ class LiveKitAIWorkerSession:
         self.room = rtc.Room()
         self.engine: Optional[SessionAIEngine] = None
         self.is_running = False
+        self.state: WorkerState = WorkerState.CREATED
         self._calibration_completion_sent = False
         self._shutdown_task: Optional[asyncio.Task] = None
         self._last_logged_dims: Optional[Tuple[int, int, int, int]] = None
@@ -226,50 +239,58 @@ class LiveKitAIWorkerSession:
 
     async def start(self) -> None:
         """Connect to LiveKit room and listen for video tracks and client control messages."""
-        if self.is_running:
+        if self.state in (WorkerState.STARTING, WorkerState.RUNNING):
             return
 
-        # 1. Initialize or acquire existing DriveGuard AI Engine
-        self.engine = await session_manager.get_or_create_session(
-            session_id=self.room_name,
-            driver_id=self.driver_id,
-            experiment_mode=self.experiment_mode,
-        )
-
-        # Auto-activate calibration mode if room is designated for calibration
-        if self.room_name.startswith("cal_"):
-            cal_dto = self.engine.start_calibration(four_zone_mode=False, zone_duration_sec=5.0)
-            print(f"[LiveKit Worker] Auto-activated calibration for room '{self.room_name}' (Zone 1: {cal_dto.current_zone})")
-
-        # 2. Mint LiveKit JWT for the AI Worker
-        worker_identity = f"ai_worker_{self.room_name}"
-        token = (
-            api.AccessToken(settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET)
-            .with_identity(worker_identity)
-            .with_name("DriveGuard AI Engine")
-            .with_grants(
-                api.VideoGrants(
-                    room_join=True,
-                    room=self.room_name,
-                    can_subscribe=True,
-                    can_publish_data=True,
-                    can_publish=False,
-                )
+        self.state = WorkerState.STARTING
+        try:
+            # 1. Initialize or acquire existing DriveGuard AI Engine
+            self.engine = await session_manager.get_or_create_session(
+                session_id=self.room_name,
+                driver_id=self.driver_id,
+                experiment_mode=self.experiment_mode,
             )
-            .to_jwt()
-        )
 
-        # 3. Setup event listeners
-        self._register_event_handlers()
+            # Auto-activate calibration mode if room is designated for calibration
+            if self.room_name.startswith("cal_"):
+                cal_dto = self.engine.start_calibration(four_zone_mode=False, zone_duration_sec=5.0)
+                print(f"[LiveKit Worker] Auto-activated calibration for room '{self.room_name}' (Zone 1: {cal_dto.current_zone})")
 
-        # 4. Connect to LiveKit Cloud SFU
-        logger.info(f"[LiveKit Worker] Connecting to room '{self.room_name}' at {settings.LIVEKIT_URL}...")
-        await self.room.connect(settings.LIVEKIT_URL, token)
-        self.is_running = True
-        logger.info(f"[LiveKit Worker] Successfully joined room '{self.room_name}'.")
+            # 2. Mint LiveKit JWT for the AI Worker
+            worker_identity = f"ai_worker_{self.room_name}"
+            token = (
+                api.AccessToken(settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET)
+                .with_identity(worker_identity)
+                .with_name("DriveGuard AI Engine")
+                .with_grants(
+                    api.VideoGrants(
+                        room_join=True,
+                        room=self.room_name,
+                        can_subscribe=True,
+                        can_publish_data=True,
+                        can_publish=False,
+                    )
+                )
+                .to_jwt()
+            )
 
-        # 5. Start background inference task
-        self._inference_task = asyncio.create_task(self._inference_loop())
+            # 3. Setup event listeners
+            self._register_event_handlers()
+
+            # 4. Connect to LiveKit Cloud SFU
+            logger.info(f"[LiveKit Worker] Connecting to room '{self.room_name}' at {settings.LIVEKIT_URL}...")
+            await self.room.connect(settings.LIVEKIT_URL, token)
+            self.is_running = True
+            self.state = WorkerState.RUNNING
+            logger.info(f"[LiveKit Worker] Successfully joined room '{self.room_name}'.")
+
+            # 5. Start background inference task
+            self._inference_task = asyncio.create_task(self._inference_loop())
+        except Exception as exc:
+            self.is_running = False
+            self.state = WorkerState.FAILED
+            logger.error(f"[LiveKit Worker] Failed to start worker for room '{self.room_name}': {exc}", exc_info=True)
+            raise
 
     async def _safe_close_video_stream(self, stream_to_close: Optional[rtc.VideoStream] = None) -> None:
         """
@@ -950,11 +971,10 @@ class LiveKitAIWorkerSession:
     async def stop(self) -> None:
         """Cleanly disconnect the worker from the LiveKit room, terminate tasks, and flush session summaries."""
         async with self._stop_lock:
-            if self._is_stopped:
+            if self._is_stopped or self.state in (WorkerState.STOPPING, WorkerState.STOPPED):
                 return
             self._is_stopped = True
-            if not self.is_running and not self.room:
-                return
+            self.state = WorkerState.STOPPING
             self.is_running = False
 
         shutdown_task = self._shutdown_task
@@ -991,26 +1011,45 @@ class LiveKitAIWorkerSession:
             except asyncio.QueueEmpty:
                 break
 
+        # Bounded wait for in-flight inference execution before executor shutdown
         if self._active_cfut and not self._active_cfut.done():
             self._coro_cancelled_for_active_frame = True
             logger.info(
                 f"[LiveKit Worker] stop() called while inference thread active. "
-                f"Preserving in-flight frame ({self._frames_in_flight}) until background thread terminates."
+                f"Awaiting in-flight frame up to 2.5s bounded timeout for room '{self.room_name}'."
             )
+            try:
+                await asyncio.wait_for(asyncio.wrap_future(self._active_cfut), timeout=2.5)
+                logger.info(
+                    f"[LiveKit Worker] In-flight inference finished cleanly before worker stop for room '{self.room_name}'."
+                )
+            except (asyncio.TimeoutError, asyncio.CancelledError) as err:
+                logger.warning(
+                    f"[LiveKit Worker] In-flight inference timed out or cancelled after 2.5s timeout during stop() for room '{self.room_name}': {err}"
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"[LiveKit Worker] In-flight inference raised exception during stop() for room '{self.room_name}': {exc}"
+                )
         else:
             if self._frames_in_flight > 0:
                 self._frames_aborted += self._frames_in_flight
                 self._frames_in_flight = 0
 
+        # Now shut down executor with wait=True to guarantee thread has terminated before closing native engine resources
         if self._executor:
-            self._executor.shutdown(wait=False, cancel_futures=True)
+            try:
+                self._executor.shutdown(wait=True, cancel_futures=True)
+            except Exception as exc:
+                logger.warning(f"[LiveKit Worker] Error shutting down executor for '{self.room_name}': {exc}")
+            self._executor = None
 
         try:
             await self.room.disconnect()
         except Exception as exc:
             logger.warning(f"[LiveKit Worker] Disconnect warning for '{self.room_name}': {exc}")
 
-        # Terminate active session in session_manager to release in-memory state and auto-persist profile
+        # Terminate active session in session_manager only AFTER inference thread has completely terminated
         try:
             summary = await session_manager.terminate_session(self.room_name)
             if self.engine is not None and not getattr(self.engine, "_is_closed", False):
@@ -1027,14 +1066,16 @@ class LiveKitAIWorkerSession:
         except Exception as exc:
             logger.error(f"[LiveKit Worker] Error terminating session in session_manager: {exc}")
 
+        self.state = WorkerState.STOPPED
         logger.info(f"[LiveKit Worker] Worker cleanly disconnected and released for room '{self.room_name}'.")
 
 
 class LiveKitWorkerManager:
-    """Singleton manager tracking and dispatching worker sessions per room."""
+    """Singleton manager tracking and dispatching worker sessions per room with atomic startup and shutdown."""
 
     def __init__(self) -> None:
         self._workers: Dict[str, LiveKitAIWorkerSession] = {}
+        self._startup_tasks: Dict[str, asyncio.Task[LiveKitAIWorkerSession]] = {}
         self._lock = asyncio.Lock()
 
     async def ensure_worker_running(
@@ -1043,34 +1084,72 @@ class LiveKitWorkerManager:
         driver_id: str = "driver_default",
         experiment_mode: Optional[str] = None,
     ) -> LiveKitAIWorkerSession:
-        """Ensure an active AI worker participant exists for the given room."""
+        """Atomically ensure an active AI worker participant exists for the given room."""
+        task_to_await: Optional[asyncio.Task[LiveKitAIWorkerSession]] = None
+
         async with self._lock:
             existing = self._workers.get(room_name)
-            if existing and existing.is_running:
+            if existing and existing.state == WorkerState.RUNNING:
                 return existing
 
-            worker = LiveKitAIWorkerSession(
-                room_name=room_name,
-                driver_id=driver_id,
-                experiment_mode=experiment_mode,
-            )
-            # Start worker in background
-            asyncio.create_task(worker.start())
-            self._workers[room_name] = worker
-            return worker
+            existing_startup = self._startup_tasks.get(room_name)
+            if existing_startup and not existing_startup.done():
+                task_to_await = existing_startup
+            else:
+                worker = LiveKitAIWorkerSession(
+                    room_name=room_name,
+                    driver_id=driver_id,
+                    experiment_mode=experiment_mode,
+                )
+
+                async def _do_start() -> LiveKitAIWorkerSession:
+                    try:
+                        await worker.start()
+                        async with self._lock:
+                            self._workers[room_name] = worker
+                        return worker
+                    except Exception:
+                        async with self._lock:
+                            self._workers.pop(room_name, None)
+                        raise
+                    finally:
+                        async with self._lock:
+                            self._startup_tasks.pop(room_name, None)
+
+                task_to_await = asyncio.create_task(_do_start())
+                self._startup_tasks[room_name] = task_to_await
+
+        return await task_to_await
 
     async def stop_worker(self, room_name: str) -> bool:
-        """Stop and remove a worker session."""
+        """Stop and remove a worker session without holding manager lock during teardown."""
+        worker_to_stop: Optional[LiveKitAIWorkerSession] = None
+        startup_task_to_cancel: Optional[asyncio.Task] = None
+
         async with self._lock:
-            worker = self._workers.pop(room_name, None)
-            if worker:
-                await worker.stop()
-                return True
-            return False
+            startup_task_to_cancel = self._startup_tasks.pop(room_name, None)
+            worker_to_stop = self._workers.pop(room_name, None)
+
+        if startup_task_to_cancel and not startup_task_to_cancel.done():
+            startup_task_to_cancel.cancel()
+            try:
+                await startup_task_to_cancel
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        if worker_to_stop:
+            await worker_to_stop.stop()
+            return True
+
+        return False
+
+    def get_worker(self, room_name: str) -> Optional[LiveKitAIWorkerSession]:
+        """Return the active worker session for a room if running, else None."""
+        return self._workers.get(room_name)
 
     def list_active_workers(self) -> list[str]:
         """Return list of active room names with running workers."""
-        return [k for k, v in self._workers.items() if v.is_running]
+        return [k for k, v in self._workers.items() if v.state == WorkerState.RUNNING]
 
 
 livekit_worker_manager = LiveKitWorkerManager()
