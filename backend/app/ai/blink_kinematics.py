@@ -466,17 +466,27 @@ class TemporalKinematicsTracker:
         observed_window_min = max(0.25, min(1.0, valid_observed_ms / 60000.0))
         blink_rate_per_min = len(blinks_in_window) / observed_window_min
 
-        recent_blinks: List[BlinkEvent] = list(self.blink_history)[-3:]
-        recent_blink_duration_ms = (
-            float(sum(b.duration_ms for b in recent_blinks) / len(recent_blinks))
-            if recent_blinks
-            else None
-        )
-        recent_blink_rcr = (
-            float(sum(b.rcr for b in recent_blinks) / len(recent_blinks))
-            if recent_blinks
-            else None
-        )
+        # Use median over recent 30s binocular blinks so a single outlier or stale blink does not stick
+        cutoff_recent_30s = timestamp_ms - 30_000.0
+        recent_valid_blinks: List[BlinkEvent] = [
+            b for b in blinks_in_window if b.end_ts_ms >= cutoff_recent_30s and b.is_binocular
+        ][-4:]
+        if not recent_valid_blinks and blinks_in_window:
+            recent_valid_blinks = [b for b in blinks_in_window if b.end_ts_ms >= cutoff_recent_30s][-3:]
+
+        if recent_valid_blinks:
+            sorted_durs = sorted(b.duration_ms for b in recent_valid_blinks)
+            sorted_rcrs = sorted(b.rcr for b in recent_valid_blinks)
+            mid = len(recent_valid_blinks) // 2
+            if len(recent_valid_blinks) % 2 == 1:
+                recent_blink_duration_ms = float(sorted_durs[mid])
+                recent_blink_rcr = float(sorted_rcrs[mid])
+            else:
+                recent_blink_duration_ms = float(0.5 * (sorted_durs[mid - 1] + sorted_durs[mid]))
+                recent_blink_rcr = float(0.5 * (sorted_rcrs[mid - 1] + sorted_rcrs[mid]))
+        else:
+            recent_blink_duration_ms = None
+            recent_blink_rcr = None
 
         # Repeated abnormal blink cluster detection (e.g. 2 of last 4 blinks prolonged or RCR < 0.45)
         recent_last_4 = blinks_in_window[-4:] if len(blinks_in_window) >= 2 else []

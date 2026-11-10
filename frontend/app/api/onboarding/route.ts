@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { step, completedStepKey, isFinalStep, ...stepData } = body;
 
-    if (typeof step !== "number" || step < 1 || step > 4) {
+    if (typeof step !== "number" || step < 1 || step > 5) {
       return NextResponse.json({ error: "Invalid step number" }, { status: 400 });
     }
 

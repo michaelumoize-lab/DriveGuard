@@ -13,18 +13,46 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const {
-      calibrationMode = "4_ZONE",
+      calibrationMode = "FOUR_ZONE_PLUS_BLINK",
       centerEarMedian = 0.285,
       centerEarMadScaled = 0.018,
-      blinkDurationMedianMs = 185.0,
-      blinkDurationMadMs = 35.0,
-      blinkRcrMedian = 0.92,
-      blinkRcrMad = 0.14,
+      blinkDurationMedianMs = 235.0,
+      blinkDurationMadMs = 40.0,
+      blinkRcrMedian = 0.95,
+      blinkRcrMad = 0.18,
+      blinkFreqMedianPerMin = 16.0,
+      blinkFreqMadPerMin = 4.5,
+      baselinePerclosPct = 3.5,
+      blinkAmplitudeMedian = 0.14,
+      temporalBlinksSampled = 0,
+      temporalWindowSec = 120.0,
       neutralPitchDeg = 0.0,
       neutralYawDeg = 0.0,
       calibrationReliability = 0.85,
       zoneBaselines = null,
     } = body;
+
+    const baseZones =
+      zoneBaselines && typeof zoneBaselines === "object" && !Array.isArray(zoneBaselines)
+        ? { ...(zoneBaselines as Record<string, any>) }
+        : {};
+
+    const enrichedZoneBaselines = {
+      ...baseZones,
+      _temporalBaseline: {
+        blinkFreqMedianPerMin: Number(blinkFreqMedianPerMin),
+        blinkFreqMadPerMin: Number(blinkFreqMadPerMin),
+        blinkDurationMedianMs: Number(blinkDurationMedianMs),
+        blinkDurationMadMs: Number(blinkDurationMadMs),
+        blinkRcrMedian: Number(blinkRcrMedian),
+        blinkRcrMad: Number(blinkRcrMad),
+        baselinePerclosPct: Number(baselinePerclosPct),
+        blinkAmplitudeMedian: Number(blinkAmplitudeMedian),
+        temporalBlinksSampled: Number(temporalBlinksSampled),
+        temporalWindowSec: Number(temporalWindowSec),
+        calibratedAt: new Date().toISOString(),
+      },
+    };
 
     const profile = await prisma.driverProfile.upsert({
       where: { userId },
@@ -40,7 +68,7 @@ export async function POST(req: NextRequest) {
         neutralPitchDeg: Number(neutralPitchDeg),
         neutralYawDeg: Number(neutralYawDeg),
         calibrationReliability: Number(calibrationReliability),
-        zoneBaselines: zoneBaselines || undefined,
+        zoneBaselines: enrichedZoneBaselines,
         isCalibrated: true,
         calibratedAt: new Date(),
       },
@@ -55,11 +83,32 @@ export async function POST(req: NextRequest) {
         neutralPitchDeg: Number(neutralPitchDeg),
         neutralYawDeg: Number(neutralYawDeg),
         calibrationReliability: Number(calibrationReliability),
-        zoneBaselines: zoneBaselines || undefined,
+        zoneBaselines: enrichedZoneBaselines,
         isCalibrated: true,
         calibratedAt: new Date(),
       },
     });
+
+    // Extract pure spatial zones for FastAPI DriverProfileDTO validation
+    const spatialZonesForWorker: Record<string, any> = {};
+    for (const [k, v] of Object.entries(baseZones)) {
+      if (!k.startsWith("_") && v && typeof v === "object") {
+        const zv = v as Record<string, any>;
+        const earMed = Number(zv.ear_median ?? centerEarMedian);
+        const earMad = Number(zv.ear_mad_scaled ?? centerEarMadScaled);
+        spatialZonesForWorker[k] = {
+          zone: k,
+          ear_median: earMed,
+          ear_mad_scaled: earMad,
+          dynamic_closure_threshold: Number(
+            zv.dynamic_closure_threshold ?? Math.max(0.12, Math.min(0.22, earMed - 2.3 * earMad))
+          ),
+          pitch_median_deg: Number(zv.pitch_median_deg ?? zv.pitch_deg_median ?? 0.0),
+          yaw_median_deg: Number(zv.yaw_median_deg ?? zv.yaw_deg_median ?? 0.0),
+          sample_count: Number(zv.sample_count ?? 35),
+        };
+      }
+    }
 
     // Best-effort sync to FastAPI worker so the live session uses the latest profile immediately
     const apiBaseUrl = resolveCloudFastApiUrl();
@@ -68,18 +117,26 @@ export async function POST(req: NextRequest) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        version: 1,
         driver_id: userId,
+        calibrated_at: new Date().toISOString(),
+        is_calibrated: true,
         calibration_mode: profile.calibrationMode,
-        ear_median: profile.centerEarMedian,
-        ear_mad_scaled: profile.centerEarMadScaled,
+        center_ear_median: profile.centerEarMedian,
         blink_duration_median_ms: profile.blinkDurationMedianMs,
         blink_duration_mad_ms: profile.blinkDurationMadMs,
         blink_rcr_median: profile.blinkRcrMedian,
         blink_rcr_mad: profile.blinkRcrMad,
+        blink_freq_median_per_min: Number(blinkFreqMedianPerMin),
+        blink_freq_mad_per_min: Number(blinkFreqMadPerMin),
+        baseline_perclos_pct: Number(baselinePerclosPct),
+        blink_amplitude_median: Number(blinkAmplitudeMedian),
+        temporal_blinks_sampled: Number(temporalBlinksSampled),
+        temporal_window_sec: Number(temporalWindowSec),
         neutral_pitch_deg: profile.neutralPitchDeg,
         neutral_yaw_deg: profile.neutralYawDeg,
         calibration_reliability: profile.calibrationReliability,
-        zone_baselines: profile.zoneBaselines ?? {},
+        zone_baselines: spatialZonesForWorker,
       }),
     }).catch(() => {
       // Non-fatal if worker is offline during profile save

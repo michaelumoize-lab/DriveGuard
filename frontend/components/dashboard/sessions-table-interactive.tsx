@@ -216,7 +216,7 @@ export function SessionsTableInteractive({ sessions }: SessionsTableInteractiveP
 
       {/* Session Detail Modal / Drawer */}
       <Dialog open={Boolean(selectedSession)} onOpenChange={(open) => !open && setSelectedSession(null)}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto overscroll-contain">
           {selectedSession && (
             <>
               <DialogHeader>

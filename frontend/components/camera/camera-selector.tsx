@@ -35,6 +35,7 @@ export function CameraSelector({
     <div className="flex items-center gap-2 w-full">
       <div className="relative flex-1">
         <select
+          aria-label="Select camera input device"
           value={selectedDeviceId}
           onChange={(e) => onSelectDevice(e.target.value)}
           disabled={disabled || devices.length === 0}
@@ -61,6 +62,7 @@ export function CameraSelector({
         disabled={isRefreshing || disabled}
         className="min-h-[44px] min-w-[44px] rounded-xl shrink-0 border-border"
         title="Rescan camera devices"
+        aria-label="Rescan available camera devices"
       >
         <RefreshCw className={`size-4 ${isRefreshing ? "animate-spin text-primary" : ""}`} />
       </Button>

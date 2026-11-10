@@ -2,6 +2,7 @@ import React from "react";
 import { redirect } from "next/navigation";
 import { getServerSession } from "@/lib/get-session";
 import { getOrCreateUserProfile } from "@/lib/user-profile";
+import { prisma } from "@/lib/prisma";
 import { OnboardingWizard } from "@/components/onboarding/onboarding-wizard";
 
 export default async function OnboardingPage() {
@@ -11,7 +12,10 @@ export default async function OnboardingPage() {
     redirect("/auth/sign-in?redirectTo=/onboarding");
   }
 
-  const profile = await getOrCreateUserProfile(session.user.id);
+  const [profile, driverProfile] = await Promise.all([
+    getOrCreateUserProfile(session.user.id),
+    prisma.driverProfile.findUnique({ where: { userId: session.user.id } }),
+  ]);
 
   if (profile.onboardingCompleted) {
     redirect("/dashboard");
@@ -41,6 +45,25 @@ export default async function OnboardingPage() {
         mirrorSuppression: profile.mirrorSuppression,
         wearsGlasses: profile.wearsGlasses,
       }}
+      initialDriverProfile={
+        driverProfile
+          ? {
+              isCalibrated: driverProfile.isCalibrated,
+              calibrationMode: driverProfile.calibrationMode,
+              centerEarMedian: driverProfile.centerEarMedian,
+              centerEarMadScaled: driverProfile.centerEarMadScaled,
+              blinkDurationMedianMs: driverProfile.blinkDurationMedianMs,
+              blinkDurationMadMs: driverProfile.blinkDurationMadMs,
+              blinkRcrMedian: driverProfile.blinkRcrMedian,
+              blinkRcrMad: driverProfile.blinkRcrMad,
+              neutralPitchDeg: driverProfile.neutralPitchDeg,
+              neutralYawDeg: driverProfile.neutralYawDeg,
+              calibrationReliability: driverProfile.calibrationReliability,
+              zoneBaselines:
+                (driverProfile.zoneBaselines as Record<string, unknown> | null) ?? null,
+            }
+          : null
+      }
     />
   );
 }

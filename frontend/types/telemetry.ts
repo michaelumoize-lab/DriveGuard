@@ -153,19 +153,49 @@ export interface LatencyDiagnostics {
   last_measured_at: number;
 }
 
+export interface CalibratedProfilePayload {
+  driver_id: string;
+  calibration_mode: string;
+  center_ear_median: number;
+  blink_duration_median_ms: number;
+  blink_duration_mad_ms: number;
+  blink_rcr_median: number;
+  blink_rcr_mad: number;
+  blink_freq_median_per_min?: number;
+  blink_freq_mad_per_min?: number;
+  baseline_perclos_pct?: number;
+  blink_amplitude_median?: number;
+  temporal_blinks_sampled?: number;
+  temporal_window_sec?: number;
+  neutral_pitch_deg: number;
+  neutral_yaw_deg: number;
+  calibration_reliability: number;
+  zone_baselines?: Record<string, ZoneBaselineEntry>;
+}
+
 export interface CalibrationPhase {
   current_zone: string;
   phase_index: number;
   total_phases: number;
+  phase_type?: "SPATIAL_ZONE" | "BLINK_CADENCE" | string;
   zone_progress_pct: number;
   total_progress_pct: number;
   stable_samples_count: number;
   target_samples_count: number;
+  elapsed_sec?: number;
+  target_duration_sec?: number;
+  collected_blinks_count?: number;
+  live_blink_rate_per_min?: number;
+  last_blink_duration_ms?: number | null;
+  live_median_blink_duration_ms?: number | null;
+  live_median_blink_rcr?: number | null;
   instruction: string;
   is_head_in_target_zone: boolean;
   stability_feedback: string;
   is_completed: boolean;
   rejection_reason?: string | null;
+  quality_warnings?: string[];
+  profile?: CalibratedProfilePayload | null;
 }
 
 export interface ServerTelemetryMessage {

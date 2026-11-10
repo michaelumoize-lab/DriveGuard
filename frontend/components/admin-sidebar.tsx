@@ -66,7 +66,7 @@ import {
   DropdownMenuSubContent,
 } from "@/components/ui/dropdown-menu";
 
-type UserRole = "CUSTOMER" | "CRAFTSMAN" | "ADMIN" | string;
+type UserRole = "USER" | "ADMIN" | "DRIVER" | string;
 
 interface AdminSidebarProps extends React.ComponentProps<typeof Sidebar> {
   user: {
@@ -135,9 +135,7 @@ export function AdminSidebar({ user, className, ...props }: AdminSidebarProps) {
   const { isMobile, setOpenMobile } = useSidebar();
   const { theme, setTheme } = useTheme();
   const [isLoading, setIsLoading] = React.useState(false);
-  const [openSubmenus, setOpenSubmenus] = React.useState<Record<string, boolean>>({
-    "Person Management": true,
-  });
+  const [openSubmenus, setOpenSubmenus] = React.useState<Record<string, boolean>>({});
 
   const handleLogout = async () => {
     setIsLoading(true);
@@ -279,22 +277,6 @@ export function AdminSidebar({ user, className, ...props }: AdminSidebarProps) {
         <SidebarGroup className="mt-auto">
           <SidebarGroupLabel>Support</SidebarGroupLabel>
           <SidebarMenu>
-            {/* Project Overview — Exclusive to Admin */}
-            {user.role === "ADMIN" && (
-              <SidebarMenuItem key="/dashboard/project-overview">
-                <SidebarMenuButton
-                  asChild
-                  isActive={pathname === "/dashboard/project-overview"}
-                  tooltip="Project Overview"
-                >
-                  <Link href="/dashboard/project-overview" onClick={handleNavClick}>
-                    <Sparkles className="size-4 text-primary" />
-                    <span className="font-medium text-foreground">Project Overview</span>
-                  </Link>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            )}
-
             {supportNavItems.map((item) => {
               const Icon = item.icon;
               const isActive = pathname === item.href || (item.title === "Settings" && pathname.startsWith("/settings"));

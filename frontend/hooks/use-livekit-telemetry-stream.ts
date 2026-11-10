@@ -363,8 +363,18 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
               const measuredRtt =
                 latestRttRef.current > 0 ? latestRttRef.current : undefined;
 
+              // Guard against normal-blink false positives (< 310ms while driver is in NORMAL state)
+              const rawReasons = Array.isArray(tel.reason_codes) ? tel.reason_codes : [];
+              const filteredReasons =
+                tel.state === "NORMAL" &&
+                (tel.eye_metrics?.eye_closure_duration_ms ?? 0) < 310 &&
+                (tel.eye_metrics?.blink_duration_ms ?? 0) < 310
+                  ? rawReasons.filter((r) => r !== "BLINK_DURATION_ABOVE_PERSONAL_BASELINE")
+                  : rawReasons;
+
               const enriched: FrameTelemetry = {
                 ...tel,
+                reason_codes: filteredReasons,
                 network_roundtrip_ms: measuredRtt,
               };
 
@@ -672,12 +682,14 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
   );
 
   const startCalibration = useCallback(
-    (fourZone = true, durationSec = 4.0) => {
+    (fourZone = true, durationSec = 4.0, includeBlinkBaseline = false, blinkDurationSec = 120.0) => {
       calibrationCompletionEmittedRef.current = false;
       sendCommand({
         action: "START_CALIBRATION",
         four_zone: fourZone,
         zone_duration_sec: durationSec,
+        include_blink_baseline: includeBlinkBaseline,
+        blink_baseline_duration_sec: blinkDurationSec,
       });
     },
     [sendCommand]
@@ -693,12 +705,13 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
   }, [sendCommand]);
 
   const recalibrateZone = useCallback(
-    (zone: string, durationSec = 4.0) => {
+    (zone: string, durationSec = 4.0, blinkDurationSec = 120.0) => {
       calibrationCompletionEmittedRef.current = false;
       sendCommand({
         action: "RECALIBRATE_ZONE",
         zone,
         zone_duration_sec: durationSec,
+        blink_baseline_duration_sec: blinkDurationSec,
       });
     },
     [sendCommand]

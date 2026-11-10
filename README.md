@@ -14,6 +14,7 @@
 [![ONNX Runtime](https://img.shields.io/badge/ONNX%20Runtime-1.18+-005CED.svg?logo=onnx&logoColor=white)](https://onnxruntime.ai/)
 [![LiveKit](https://img.shields.io/badge/LiveKit-WebRTC%20SFU-FF3E00.svg?logo=webrtc&logoColor=white)](https://livekit.io/)
 [![PostgreSQL](https://img.shields.io/badge/Neon-PostgreSQL%20Serverless-00E599.svg?logo=postgresql&logoColor=white)](https://neon.tech/)
+[![ESP32 Hardware](https://img.shields.io/badge/Hardware-ESP32%20%7C%20FreeRTOS%20%7C%20I2C-E7352C.svg?logo=espressif&logoColor=white)](docs/05_embedded_hardware_subsystem.md)
 
 </div>
 
@@ -58,6 +59,10 @@ Traditional drowsiness detection systems rely on one-size-fits-all geometric thr
 - **Session Monitoring**: Tracks active driving sessions with frame counts, real-time latency diagnostics, and safety event logs.
 - **Session Analytics & Fatigue History**: Stores driving sessions and safety incident summaries in a persistent PostgreSQL database for historical trend analysis.
 - **Driver-Specific Baselines**: Replaces arbitrary global constants with driver-anchored thresholds that adapt safely over long trips.
+- **Cyber-Physical Safety Co-Processor**: Offloads mission-critical alert logic and hardware watchdog supervision to a dedicated real-time microcontroller (ESP32/STM32) via an isolated UART telemetry link.
+- **Tri-Modal Sensory Alert Subsystem**: Combines somatosensory haptics (DRV2605L + LRA motor on steering wheel/seat), visual HUD (0.96" SSD1306 OLED), and hardware PWM acoustic frequency sweeps (piezo buzzer).
+- **Closed-Loop Human-in-the-Loop (HITL)**: Physical steering-wheel acknowledge button silences alarms upon driver touch and logs microsecond reaction times ($t_{\text{reaction}}$), automatically escalating unacknowledged warnings.
+- **Empirical Energy Profiling**: Real-time current (mA) and power dissipation (mW) monitoring via an $I^2C$ INA219 sensor for academic power budgeting.
 
 ---
 
@@ -80,7 +85,7 @@ Behind the scenes, DriveGuard processes video through a 6-stage real-time pipeli
 
 ## 5. System Architecture
 
-DriveGuard is organized into three decoupled layers: a Next.js web application, a WebRTC media routing server, and a high-performance Python AI worker service.
+DriveGuard is organized into four decoupled layers: a Next.js web application, a WebRTC media routing server, a high-performance Python AI worker service, and an embedded cyber-physical safety sub-processor.
 
 ```mermaid
 flowchart TD
@@ -128,6 +133,23 @@ flowchart TD
         RISK -->|Live Frame Telemetry DTO| WORKER
     end
 
+    subgraph EmbeddedSubsystem ["Cyber-Physical Safety Subsystem (ESP32)"]
+        MCU["ESP32 Safety Co-Processor\n(Hardware Watchdog & Alert FSM)"]
+        HAPTIC["TI DRV2605L + LRA Motor\n(Steering Wheel Vibration)"]
+        OLED_HUD["0.96'' SSD1306 OLED HUD\n(Line-of-Sight PERCLOS Gauge)"]
+        PIEZO["Passive Piezo Buzzer\n(Hardware PWM Frequency Siren)"]
+        ACK_BTN["Driver Acknowledge Button\n(Reaction Time & Alarm Reset)"]
+        INA_MON["INA219 Power Monitor\n(Real-Time Energy Profiling)"]
+
+        MCU --> HAPTIC
+        MCU --> OLED_HUD
+        MCU --> PIEZO
+        MCU --> INA_MON
+        ACK_BTN --> MCU
+    end
+
+    WORKER <==>|Isolated USB-UART Link (115200 Baud)| MCU
+
     subgraph Storage ["Persistence Layer"]
         DB[("Neon Serverless PostgreSQL\n(Profiles, Sessions, Alert Logs)")]
         PRISMA["Prisma ORM Client"]
@@ -148,11 +170,93 @@ flowchart TD
 | **Personalized Baseline** | PDBP Module | Learns and applies driver-specific thresholds across 4 gaze zones. |
 | **Neural Verifier** | MobileNetV3-Small, ONNX Runtime | Executes ocular classification on demand to arbitrate ambiguous eye states. |
 | **Kinematics & PERCLOS** | TemporalKinematicsTracker | Computes sub-frame blink duration, eyelid velocity ($\text{RCR}$), and 60s PERCLOS. |
+| **Safety Co-Processor** | ESP32-WROOM-32, FreeRTOS | Independent hardware supervisor, 500ms watchdog timer, and UART packet parser. |
+| **Tri-Modal HMI & Actuation** | DRV2605L (Haptic), SSD1306 (OLED), Piezo | Steering wheel vibration, line-of-sight HUD, and zero-latency hardware PWM acoustic siren. |
+| **Closed-Loop Feedback** | Tactile Switch Interrupt | Human-in-the-Loop alarm reset and microsecond driver reaction-time ($t_{\text{reaction}}$) logging. |
+| **Power Profiling** | TI INA219 ($I^2C$) | High-side voltage/current sensing for real-time empirical power budgeting ($\text{mW}$). |
 | **Data Persistence** | Neon PostgreSQL, Prisma ORM | Stores driver profiles, authenticated accounts, and historical alert sessions. |
 
 ---
 
-## 6. AI Models and Detection Techniques
+## 6. Cyber-Physical Embedded Hardware Subsystem
+
+To satisfy the rigorous requirements of an accredited **Computer Engineering (CpE)** curriculum, DriveGuard bridges edge computer vision with physical automotive safety engineering. General-purpose operating systems suffer from non-deterministic thread scheduling, audio server latency, and unhandled software crashes. DriveGuard resolves this by pairing the host AI engine with a dedicated **secondary safety microcontroller (ESP32/STM32)**.
+
+> [!NOTE]
+> For the complete technical schematic, FreeRTOS task breakdown, and pinout diagrams, refer to [**docs/05_embedded_hardware_subsystem.md**](docs/05_embedded_hardware_subsystem.md).
+
+```
+                +-----------------------------------------+
+                |           ESP32-WROOM-32                |
+                |                                         |
+                | [3V3] ----------------+---------------+ |
+                | [GND] ------------+---|-----------+---| |
+                |                   |   |           |   | |
+                | [GPIO 21 / SDA] --|---|-------+---|---| |
+                | [GPIO 22 / SCL] --|---|---+---|---|---| |
+                |                   |   |   |   |   |   | |
+                | [GPIO 25] --------|---|---|---|---|---|---> [+] Passive Piezo Buzzer [-] -> GND
+                | [GPIO 14] --------|---|---|---|---|---|---> Push Button (to GND, internal pull-up)
+                +-------------------|---|---|---|---|---+-+
+                                    |   |   |   |   |   |
+         +--------------------------+   |   |   |   |   |
+         |         +--------------------+   |   |   |   |
+         |         |                        |   |   |   |
+   +-----+---------+-----+            +-----+---+---+---+---+
+   | VCC  GND  SDA  SCL  |            | VCC  GND  SDA  SCL  |
+   |   0.96" SSD1306     |            |    TI DRV2605L      |
+   |   OLED (0x3C)       |            |   Haptic (0x5A)     |
+   +---------------------+            +-----+-----------+---+
+                                            |           |
+                                         [OUT+]      [OUT-]
+                                            |           |
+                                     +------+-----------+------+
+                                     |   LRA Vibration Motor   |
+                                     | (Steering Wheel / Seat) |
+                                     +-------------------------+
+                                                |
+                                     +----------+----------+
+                                     | VCC  GND  SDA  SCL  |
+                                     |   TI INA219 Power   |
+                                     |   Monitor (0x40)    |
+                                     +---------------------+
+```
+
+### Hardware Components & Project Utilization
+
+1. **ESP32 Microcontroller (Safety Co-Processor)**:
+   - Communicates with the host Python backend via full-duplex USB-UART at $115200\text{ baud}$.
+   - Runs an independent **Hardware Watchdog Timer (WDT)** with a $500\text{ ms}$ expiration threshold. If the host camera hangs or drops below $10\text{ FPS}$, the MCU trips an autonomous `SYSTEM_FAULT` siren.
+2. **Texas Instruments DRV2605L Haptic Driver + LRA Coin Motor**:
+   - Actuates tactile warnings on the steering wheel or driver's seat using an internal library of licensed Immersion TS2000 industrial vibration waveforms.
+   - Linear Resonant Actuators (LRA) achieve $<10\text{ ms}$ transient rise times, delivering crisp tactile cues before visual or audible confusion occurs.
+3. **0.96" I2C SSD1306 Monochrome OLED Mini-HUD**:
+   - Positioned on the steering column directly within the driver's forward peripheral vision.
+   - Displays real-time rolling PERCLOS gauge ($0\text{ to }100\%$), vigilance state (`NORMAL`, `WARN`, `DROWSY`, `CRITICAL`), vision FPS, and host link status.
+4. **Passive Piezo Buzzer (Hardware Timer PWM)**:
+   - Generates dual-tone frequency-modulated acoustic sirens ($2.0\text{ kHz} \leftrightarrow 4.2\text{ kHz}$) directly via microcontroller hardware timers, completely bypassing OS audio mixer latency.
+5. **Driver Acknowledge Button (Closed-Loop HITL)**:
+   - A steering-wheel mounted tactile switch wired to an interrupt-driven GPIO pin with internal pull-up.
+   - Silences active alarms and logs driver reaction time ($t_{\text{reaction}}$ in milliseconds). Automatically escalates warnings to maximum emergency sirens if left unacknowledged after $3.0\text{ seconds}$.
+6. **Texas Instruments INA219 I2C Current & Power Monitor**:
+   - High-side current sensing ($0.1\ \Omega$ precision shunt) for empirical energy budgeting.
+   - Captures power consumption curves across system states ($59.4\text{ mW}$ idle $\to$ $478.5\text{ mW}$ critical alert) for academic evaluation.
+
+### Compact 8-Byte Binary Serial Telemetry Protocol
+
+To conserve microcontroller memory and eliminate JSON parsing latency, telemetry frames are transmitted as a fixed-size 8-byte binary structure:
+
+```text
++---------------+---------------+---------------+---------------+
+| Magic (0xAA)  |  Alert State  | PERCLOS (0-100)|   Gaze Zone   |
++---------------+---------------+---------------+---------------+
+| Host FPS      | Heartbeat Seq | Checksum(XOR) | Footer (0x55) |
++---------------+---------------+---------------+---------------+
+```
+
+---
+
+## 7. AI Models and Detection Techniques
 
 DriveGuard combines classical geometric computer vision with modern deep learning to achieve both high speed and high classification accuracy:
 
@@ -182,7 +286,7 @@ Rather than running heavy deep neural networks on every single frame, DriveGuard
 
 ---
 
-## 7. Datasets
+## 8. Datasets
 
 DriveGuard's development and evaluation clearly distinguish between datasets used for model training, datasets used for multi-subject benchmarking, and live driver calibration:
 
@@ -203,7 +307,7 @@ DriveGuard's development and evaluation clearly distinguish between datasets use
 
 ---
 
-## 8. What Makes DriveGuard Different?
+## 9. What Makes DriveGuard Different?
 
 | Conventional Driver Monitoring | DriveGuard Approach | Why It Matters |
 | :--- | :--- | :--- |
@@ -212,10 +316,11 @@ DriveGuard's development and evaluation clearly distinguish between datasets use
 | **All-or-Nothing Deep Learning** | **Confidence-Gated Dual Cascade** | Running heavy neural networks on every frame drains device battery. Gating saves >80% of neural inferences without sacrificing accuracy. |
 | **Single-Frame Blink Snapshots** | **Sub-Frame Kinematics & Velocity Ratio** | Evaluates how the eyelid moves over time ($\text{RCR}$ velocity). Neuromuscular fatigue causes slow reopening before the driver completely falls asleep. |
 | **Stateless Frame Ingestion** | **Mathematical Frame Accounting Invariant** | Every video frame is mathematically accounted for ($\Delta = 0$). Eliminates silent data loss, memory leaks, and pipeline stalls. |
+| **Pure Software / Laptop Alerts** | **Cyber-Physical Safety Co-Processor** | Hardware watchdog, tri-modal haptic/visual/acoustic alerts, and closed-loop driver reaction measurement. |
 
 ---
 
-## 9. Technology Stack
+## 10. Technology Stack
 
 | Category | Technologies | Purpose |
 | :--- | :--- | :--- |
@@ -226,12 +331,13 @@ DriveGuard's development and evaluation clearly distinguish between datasets use
 | **Computer Vision** | Google MediaPipe (Tasks API 0.10.21), OpenCV | 478 3D facial landmark mesh extraction and head pose estimation. |
 | **Machine Learning** | MobileNetV3-Small, PyTorch, ONNX Runtime | On-demand eye state classification with CPU-optimized inference. |
 | **Media Transport** | LiveKit WebRTC Python & Client SDKs | Sub-100ms bidirectional WebRTC video streaming and reliable DataChannels. |
+| **Embedded & Hardware** | ESP32-WROOM-32, FreeRTOS, DRV2605L, SSD1306, INA219 | Real-time safety co-processor, tri-modal HMI actuation, and empirical power profiling. |
 | **Database & ORM** | Neon PostgreSQL, Prisma ORM | Serverless persistence for driver baselines, driving sessions, and alerts. |
 | **Testing & Quality** | Python `unittest`, Vitest / tsx | 105 automated backend tests and 28 frontend integration tests. |
 
 ---
 
-## 10. Application Screenshots
+## 11. Application Screenshots
 
 ```
 +-----------------------------------------------------------------------+
@@ -280,7 +386,7 @@ DriveGuard's development and evaluation clearly distinguish between datasets use
 
 ---
 
-## 11. Getting Started
+## 12. Getting Started
 
 Follow these steps to run DriveGuard locally on your workstation.
 
@@ -358,7 +464,7 @@ npm run build --prefix frontend
 
 ---
 
-## 12. Limitations and Safety Notice
+## 13. Limitations and Safety Notice
 
 > [!WARNING]
 > **Academic & Experimental Prototype Notice**  
@@ -370,7 +476,7 @@ npm run build --prefix frontend
 
 ---
 
-## 13. Future Improvements
+## 14. Future Improvements
 
 - **Near-Infrared (NIR) Hardware Validation**: Expanding dataset benchmarks to active IR illuminator sensors to guarantee high contrast in zero-light night driving.
 - **Multi-Camera Cab Support**: Supporting wide-angle cabin cameras and A-pillar mounted sensors with automatic extrinsic coordinate calibration.
@@ -379,7 +485,7 @@ npm run build --prefix frontend
 
 ---
 
-## 14. License
+## 15. License
 
 This repository is maintained as an academic engineering research project. All source code, models, and documentation are proprietary and confidential unless explicitly licensed under an open-source agreement. See repository commit history for ownership and attribution.
 

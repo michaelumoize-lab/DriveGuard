@@ -42,10 +42,16 @@ class DriverProfileDTO(BaseModel):
     center_ear_median: float = Field(default=0.28, description="Center reference open EAR", ge=0.0, le=1.0)
     
     # Temporal Kinematics Baselines
-    blink_duration_median_ms: float = Field(default=210.0, description="Median alert blink duration in ms", ge=0.0)
-    blink_duration_mad_ms: float = Field(default=28.0, description="Robust MAD of blink duration in ms", ge=0.0)
-    blink_rcr_median: float = Field(default=2.10, description="Median Reopening-to-Closing velocity ratio", ge=0.0)
-    blink_rcr_mad: float = Field(default=0.25, description="Robust MAD of RCR velocity ratio", ge=0.0)
+    blink_duration_median_ms: float = Field(default=235.0, description="Median alert blink duration in ms", ge=0.0)
+    blink_duration_mad_ms: float = Field(default=40.0, description="Robust MAD of blink duration in ms", ge=0.0)
+    blink_rcr_median: float = Field(default=0.95, description="Median Reopening-to-Closing velocity ratio", ge=0.0)
+    blink_rcr_mad: float = Field(default=0.18, description="Robust MAD of RCR velocity ratio", ge=0.0)
+    blink_freq_median_per_min: float = Field(default=16.0, description="Personal natural blink rate in blinks/min", ge=0.0)
+    blink_freq_mad_per_min: float = Field(default=4.5, description="Robust MAD of personal blink rate in blinks/min", ge=0.0)
+    baseline_perclos_pct: float = Field(default=3.5, description="Personal alert resting PERCLOS percentage", ge=0.0, le=100.0)
+    blink_amplitude_median: float = Field(default=0.14, description="Personal median blink EAR excursion amplitude", ge=0.0, le=1.0)
+    temporal_blinks_sampled: int = Field(default=0, description="Number of natural blinks sampled during 2-min cadence stream", ge=0)
+    temporal_window_sec: float = Field(default=120.0, description="Duration of temporal blink baseline window in seconds", ge=0.0)
     
     # Neutral Head Pose
     neutral_pitch_deg: float = Field(default=0.0, description="Learned neutral head pitch in degrees")
