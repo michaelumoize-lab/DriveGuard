@@ -376,6 +376,11 @@ class DriveGuardFaceLandmarker:
         left_crop = frame_rgb[ly1:ly2, lx1:lx2]
         right_crop = frame_rgb[ry1:ry2, rx1:rx2]
 
+        if left_crop.size > 0 and (left_crop.shape[0] != 64 or left_crop.shape[1] != 64):
+            left_crop = cv2.resize(left_crop, (64, 64), interpolation=cv2.INTER_AREA)
+        if right_crop.size > 0 and (right_crop.shape[0] != 64 or right_crop.shape[1] != 64):
+            right_crop = cv2.resize(right_crop, (64, 64), interpolation=cv2.INTER_AREA)
+
         def _calc_crop_ear(crop: np.ndarray) -> float:
             if crop.size == 0:
                 return reference_open_ear
