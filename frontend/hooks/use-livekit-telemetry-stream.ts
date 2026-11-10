@@ -78,6 +78,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
   // Telemetry deduplication, state guard, and latency tracking refs
   const lastTelemetrySeqRef = useRef<bigint>(BigInt(-1));
   const activeStateRef = useRef<AlertState>("NORMAL");
+  const lastRenderedStateRef = useRef<AlertState>("NORMAL");
   const processedEventIdsRef = useRef<Set<string>>(new Set());
   const rttSamplesRef = useRef<number[]>([]);
   const latestRttRef = useRef<number>(0);
@@ -136,6 +137,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     lastTelemetryReceivedAtRef.current = 0;
     calibrationCompletionEmittedRef.current = false;
     activeStateRef.current = "NORMAL";
+    lastRenderedStateRef.current = "NORMAL";
     latestRttRef.current = 0;
     rttSamplesRef.current = [];
     setIsStale(false);
@@ -397,11 +399,17 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
                 }
               }
 
-              // Throttle React state updates to ~20 FPS (max 1 update per 48ms) to prevent UI overload
+              // EXP-3A Event-Tiered Frontend Updates:
+              // Tier 1: Safety state transitions (e.g. NORMAL -> WARNING/CRITICAL) bypass
+              // the continuous telemetry throttle and dispatch immediately to React state.
+              // Tier 2: Continuous needle/gauge telemetry throttles to ~30 FPS (33ms) for smooth rendering.
+              const isSafetyTransition = tel.state !== lastRenderedStateRef.current;
               const now = performance.now();
-              const shouldRender = now - lastReactUpdateRef.current >= 48;
+              const shouldRender = isSafetyTransition || (now - lastReactUpdateRef.current >= 33);
+
               if (shouldRender) {
                 lastReactUpdateRef.current = now;
+                lastRenderedStateRef.current = tel.state;
                 setTelemetry(enriched);
                 updateServerTimings(qLat, infLat, sTotal);
                 if (msg.calibration) {
@@ -446,7 +454,11 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
                 }
 
                 activeStateRef.current = safetyEvent.new_state;
+                lastRenderedStateRef.current = safetyEvent.new_state;
                 setActiveSafetyEvent(safetyEvent);
+
+                // EXP-3A: Synchronously update active telemetry state so visual HUD alerts update immediately
+                setTelemetry((prev) => (prev ? { ...prev, state: safetyEvent.new_state } : prev));
 
                 if (onSafetyEventRef.current) {
                   onSafetyEventRef.current(safetyEvent);
@@ -458,6 +470,8 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
               );
               if (msg.current_state) {
                 activeStateRef.current = msg.current_state;
+                lastRenderedStateRef.current = msg.current_state;
+                setTelemetry((prev) => (prev ? { ...prev, state: msg.current_state } : prev));
               }
               if (msg.latest_safety_event) {
                 setActiveSafetyEvent(msg.latest_safety_event as SafetyEvent);

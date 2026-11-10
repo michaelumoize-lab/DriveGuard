@@ -21,9 +21,9 @@
     "recall_pct": 100.0,
     "f1_pct": 71.0,
     "early_warning_lead_time_sec": 40.0,
-    "cnn_trigger_rate_pct": 40.7,
-    "mean_latency_ms": 2.817,
-    "p95_latency_ms": 6.887
+    "cnn_trigger_rate_pct": 40.9,
+    "mean_latency_ms": 2.429,
+    "p95_latency_ms": 5.965
   },
   "PDBP_4ZONE": {
     "false_alarm_frames": 537.0,
@@ -34,9 +34,9 @@
     "recall_pct": 100.0,
     "f1_pct": 80.4,
     "early_warning_lead_time_sec": 40.0,
-    "cnn_trigger_rate_pct": 39.1,
-    "mean_latency_ms": 3.704,
-    "p95_latency_ms": 10.628
+    "cnn_trigger_rate_pct": 38.9,
+    "mean_latency_ms": 2.228,
+    "p95_latency_ms": 5.76
   },
   "EXP_A_GEOM_ONLY": {
     "false_alarm_frames": 536.0,
@@ -48,8 +48,8 @@
     "f1_pct": 80.4,
     "early_warning_lead_time_sec": 40.0,
     "cnn_trigger_rate_pct": 0.0,
-    "mean_latency_ms": 0.816,
-    "p95_latency_ms": 1.503
+    "mean_latency_ms": 1.129,
+    "p95_latency_ms": 2.055
   },
   "EXP_B_CNN_ALWAYS": {
     "false_alarm_frames": 537.0,
@@ -61,8 +61,8 @@
     "f1_pct": 80.4,
     "early_warning_lead_time_sec": 40.0,
     "cnn_trigger_rate_pct": 100.0,
-    "mean_latency_ms": 5.277,
-    "p95_latency_ms": 6.734
+    "mean_latency_ms": 5.364,
+    "p95_latency_ms": 8.126
   },
   "EXP_C_NAIVE_BLIND_CNN": {
     "false_alarm_frames": 537.0,
@@ -73,9 +73,9 @@
     "recall_pct": 100.0,
     "f1_pct": 80.4,
     "early_warning_lead_time_sec": 40.0,
-    "cnn_trigger_rate_pct": 39.1,
-    "mean_latency_ms": 2.508,
-    "p95_latency_ms": 6.319
+    "cnn_trigger_rate_pct": 38.9,
+    "mean_latency_ms": 2.803,
+    "p95_latency_ms": 8.365
   },
   "EXP_C_DRIVEGUARD_CASCADE": {
     "false_alarm_frames": 537.0,
@@ -86,8 +86,8 @@
     "recall_pct": 100.0,
     "f1_pct": 80.4,
     "early_warning_lead_time_sec": 40.0,
-    "cnn_trigger_rate_pct": 39.1,
-    "mean_latency_ms": 3.704,
-    "p95_latency_ms": 10.628
+    "cnn_trigger_rate_pct": 38.9,
+    "mean_latency_ms": 2.228,
+    "p95_latency_ms": 5.76
   }
 }

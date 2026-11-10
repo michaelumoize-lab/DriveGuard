@@ -12,10 +12,10 @@
 
 | Cascade Mode | Glare & Blur False Alarms | Total False Alarms | Precision (%) | Recall (%) | F1-Score (%) | CNN Trigger Rate (%) | Mean Latency (ms) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Experiment A: MediaPipe EAR + Blendshapes Only** | 369 | 536 | 67.2% | 100.0% | **80.4%** | 0.0% | 0.816 ms |
-| **Experiment B: Stage-2 Verifier Always On (100%)** | 370 | 537 | 67.2% | 100.0% | **80.4%** | 100.0% | 5.277 ms |
-| **Experiment C (Naive): Blindly Trust CNN on Disagreement** | 370 | 537 | 67.2% | 100.0% | **80.4%** | 39.1% | 2.508 ms |
-| **Experiment C (DriveGuard): Reliability-Weighted Cascade** | 370 | 537 | 67.2% | 100.0% | **80.4%** | 39.1% | 3.704 ms |
+| **Experiment A: MediaPipe EAR + Blendshapes Only** | 369 | 536 | 67.2% | 100.0% | **80.4%** | 0.0% | 1.129 ms |
+| **Experiment B: Stage-2 Verifier Always On (100%)** | 370 | 537 | 67.2% | 100.0% | **80.4%** | 100.0% | 5.364 ms |
+| **Experiment C (Naive): Blindly Trust CNN on Disagreement** | 370 | 537 | 67.2% | 100.0% | **80.4%** | 38.9% | 2.803 ms |
+| **Experiment C (DriveGuard): Reliability-Weighted Cascade** | 370 | 537 | 67.2% | 100.0% | **80.4%** | 38.9% | 2.228 ms |
 
 ## 3. Generated Thesis Figures (300 DPI)
 

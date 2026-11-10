@@ -55,6 +55,8 @@ class BlinkEvent:
     closing_velocity_per_s: float
     reopening_velocity_per_s: float
     rcr: float  # Reopening-to-Closing Velocity Ratio
+    avr: float = 0.0  # Amplitude-to-Velocity Ratio (Optalert JDS)
+    aec: float = 0.0  # Amplitude-to-Closing-Velocity Ratio
     classification: BlinkClassification = BlinkClassification.NORMAL
     is_binocular: bool = True
     left_ear_min: Optional[float] = None
@@ -69,6 +71,8 @@ class YawnEvent:
     end_ts_ms: float
     duration_ms: float
     peak_mar: float
+    is_authentic: bool = True
+    peak_squint: float = 0.0
 
 
 @dataclass
@@ -86,6 +90,9 @@ class TemporalKinematicsSnapshot:
     completed_blink: Optional[BlinkEvent]
     yawn_count_5min: int
     is_yawning: bool
+    recent_blink_avr: Optional[float] = None
+    blink_cv_ibi: Optional[float] = None
+    yawn_confidence: float = 0.0
     blink_state: BlinkState = BlinkState.OPEN
     blink_classification: BlinkClassification = BlinkClassification.NORMAL
     perclos_coverage_pct: float = 100.0
@@ -144,6 +151,7 @@ class TemporalKinematicsTracker:
         self._in_yawn: bool = False
         self._yawn_enter_ts_ms: float = 0.0
         self._yawn_peak_mar: float = 0.0
+        self._yawn_squint_samples: List[float] = []
 
         # Rolling observation history for PERCLOS:
         # Tuple of: (timestamp_ms, dt_ms, is_valid: bool, is_closed: bool)
@@ -184,6 +192,7 @@ class TemporalKinematicsTracker:
         self._in_yawn = False
         self._yawn_enter_ts_ms = 0.0
         self._yawn_peak_mar = 0.0
+        self._yawn_squint_samples = []
         self._observation_samples.clear()
         self.blink_history.clear()
         self.yawn_history.clear()
@@ -258,6 +267,7 @@ class TemporalKinematicsTracker:
         landmark_confidence: Optional[float] = None,
         head_yaw_deg: float = 0.0,
         mar_yawn_threshold: float = 0.55,
+        eye_squint: Optional[float] = None,
     ) -> TemporalKinematicsSnapshot:
         """
         Process a new valid observation at `timestamp_ms` and return updated rolling kinematics.
@@ -377,6 +387,11 @@ class TemporalKinematicsTracker:
                 v_close = amp_close / t_close_s
                 v_open = amp_open / t_open_s
                 rcr = float(v_open / max(v_close, 1e-4))
+                mean_amp = 0.5 * (amp_close + amp_open)
+                # Amplitude-to-Velocity Ratio (AVR) from Optalert / JDS:
+                # Sluggish reopening drives v_open down, causing AVR to surge
+                avr = float(mean_amp / max(v_open, 1e-4))
+                aec = float(mean_amp / max(v_close, 1e-4))
 
                 # Personalized prolonged cutoff calculation
                 if (
@@ -418,6 +433,8 @@ class TemporalKinematicsTracker:
                         closing_velocity_per_s=v_close,
                         reopening_velocity_per_s=v_open,
                         rcr=rcr,
+                        avr=round(avr, 4),
+                        aec=round(aec, 4),
                         classification=cls_type,
                         is_binocular=is_binocular,
                         left_ear_min=self._left_min_ear,
@@ -482,16 +499,40 @@ class TemporalKinematicsTracker:
         if recent_valid_blinks:
             sorted_durs = sorted(b.duration_ms for b in recent_valid_blinks)
             sorted_rcrs = sorted(b.rcr for b in recent_valid_blinks)
+            sorted_avrs = sorted(b.avr for b in recent_valid_blinks)
             mid = len(recent_valid_blinks) // 2
             if len(recent_valid_blinks) % 2 == 1:
                 recent_blink_duration_ms = float(sorted_durs[mid])
                 recent_blink_rcr = float(sorted_rcrs[mid])
+                recent_blink_avr = float(sorted_avrs[mid])
             else:
                 recent_blink_duration_ms = float(0.5 * (sorted_durs[mid - 1] + sorted_durs[mid]))
                 recent_blink_rcr = float(0.5 * (sorted_rcrs[mid - 1] + sorted_rcrs[mid]))
+                recent_blink_avr = float(0.5 * (sorted_avrs[mid - 1] + sorted_avrs[mid]))
         else:
             recent_blink_duration_ms = None
             recent_blink_rcr = None
+            recent_blink_avr = None
+
+        # Inter-Blink Interval Variability (CV_IBI) across 60s rolling window
+        # Alert rhythmic blinking: CV_IBI in [0.20, 0.45].
+        # Drowsy/erratic staring followed by blink bursts: CV_IBI >= 0.75.
+        if len(blinks_in_window) >= 3:
+            sorted_window_blinks = sorted(blinks_in_window, key=lambda b: b.start_ts_ms)
+            ibis = [
+                sorted_window_blinks[i].start_ts_ms - sorted_window_blinks[i - 1].start_ts_ms
+                for i in range(1, len(sorted_window_blinks))
+            ]
+            valid_ibis = [x for x in ibis if 80.0 <= x <= 45000.0]
+            if len(valid_ibis) >= 2:
+                import numpy as _np
+                ibi_mean = float(_np.mean(valid_ibis))
+                ibi_std = float(_np.std(valid_ibis))
+                blink_cv_ibi = float(round(ibi_std / max(ibi_mean, 1e-4), 3))
+            else:
+                blink_cv_ibi = None
+        else:
+            blink_cv_ibi = None
 
         # Repeated abnormal blink cluster detection (e.g. 2 of last 4 blinks prolonged or RCR < 0.45)
         recent_last_4 = blinks_in_window[-4:] if len(blinks_in_window) >= 2 else []
@@ -503,31 +544,55 @@ class TemporalKinematicsTracker:
         sluggish_count = sum(1 for b in recent_last_4 if b.rcr < 0.45)
         abnormal_cluster = prolonged_count >= 2 or (len(recent_last_4) >= 3 and sluggish_count >= 2)
 
-        # --- 7. Yawning Temporal Analysis (sustained >= 1.8s) ---
+        # --- 7. Authentic Yawn Temporal Envelope & Involuntary Squint Coupling ---
+        # Speech discrimination: Talking produces brief spikes (0.3 - 1.2s) without eye squint.
+        # Authentic physiological yawn: Trapezoidal envelope (sustained >= 2.0s) coupled with eye squint.
+        if eye_squint is not None and self._in_yawn:
+            self._yawn_squint_samples.append(eye_squint)
+
         if not self._in_yawn:
             if mar_value >= mar_yawn_threshold:
                 self._in_yawn = True
                 self._yawn_enter_ts_ms = timestamp_ms
                 self._yawn_peak_mar = mar_value
+                self._yawn_squint_samples = [eye_squint] if eye_squint is not None else []
         else:
-            if mar_value >= mar_yawn_threshold * 0.90:
+            if mar_value >= mar_yawn_threshold * 0.88:
                 self._yawn_peak_mar = max(self._yawn_peak_mar, mar_value)
             else:
                 yawn_dur_ms = timestamp_ms - self._yawn_enter_ts_ms
-                if 1800.0 <= yawn_dur_ms <= 8500.0:
+                peak_sq = max(self._yawn_squint_samples) if self._yawn_squint_samples else 0.0
+                # An authentic physiological yawn lasts >= 2.0s, has peak MAR >= 0.55,
+                # and exhibits involuntary orbicularis oculi contraction (squint >= 0.20 when blendshapes active)
+                is_squint_coupled = (peak_sq >= 0.20) or (len(self._yawn_squint_samples) == 0)
+                is_authentic_yawn = (2000.0 <= yawn_dur_ms <= 9000.0) and is_squint_coupled and (self._yawn_peak_mar >= mar_yawn_threshold)
+
+                if is_authentic_yawn:
                     self.yawn_history.append(
                         YawnEvent(
                             start_ts_ms=self._yawn_enter_ts_ms,
                             end_ts_ms=timestamp_ms,
                             duration_ms=yawn_dur_ms,
                             peak_mar=self._yawn_peak_mar,
+                            is_authentic=True,
+                            peak_squint=round(peak_sq, 3),
                         )
                     )
                 self._in_yawn = False
+                self._yawn_squint_samples = []
 
         cutoff_5min = timestamp_ms - 300_000.0
-        yawn_count_5min = sum(1 for y in self.yawn_history if y.end_ts_ms >= cutoff_5min)
-        is_actively_yawning = self._in_yawn and (timestamp_ms - self._yawn_enter_ts_ms >= 1500.0)
+        yawn_count_5min = sum(1 for y in self.yawn_history if y.end_ts_ms >= cutoff_5min and y.is_authentic)
+        
+        # Yawn confidence score
+        current_yawn_dur_ms = (timestamp_ms - self._yawn_enter_ts_ms) if self._in_yawn else 0.0
+        current_sq = max(self._yawn_squint_samples) if self._yawn_squint_samples else 0.0
+        if self._in_yawn and current_yawn_dur_ms >= 1800.0:
+            is_actively_yawning = True
+            yawn_conf = min(1.0, (current_yawn_dur_ms / 3000.0) * (0.60 + 0.40 * current_sq))
+        else:
+            is_actively_yawning = False
+            yawn_conf = 0.0
 
         # Determine active blink classification for snapshot
         if self._state == BlinkState.UNCERTAIN_GAP:
@@ -558,6 +623,9 @@ class TemporalKinematicsTracker:
             blink_rate_per_min=blink_rate_per_min,
             recent_blink_duration_ms=recent_blink_duration_ms,
             recent_blink_rcr=recent_blink_rcr,
+            recent_blink_avr=recent_blink_avr,
+            blink_cv_ibi=blink_cv_ibi,
+            yawn_confidence=round(yawn_conf, 3),
             completed_blink=completed_blink,
             yawn_count_5min=yawn_count_5min,
             is_yawning=is_actively_yawning,

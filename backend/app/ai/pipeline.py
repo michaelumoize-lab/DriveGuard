@@ -32,6 +32,7 @@ from backend.app.ai.cascade_classifier import (
     ConfidenceGatedEyeCascade,
     ExperimentMode,
 )
+from backend.app.ai.gaze_attention import GazeAttentionTracker
 from backend.app.ai.geometry import (
     FrameGeometryFeatures,
     PoseZone,
@@ -96,6 +97,7 @@ class SessionAIEngine:
             personalized_blink_median_ms=self.profile.blink_duration_median_ms,
             personalized_blink_mad_ms=self.profile.blink_duration_mad_ms,
         )
+        self.gaze_tracker = GazeAttentionTracker()
         self.risk_engine = PersonalisedAdaptiveRiskEngine(profile=self.profile, fixed_ear_threshold=0.22)
 
         # Calibration State
@@ -368,6 +370,8 @@ class SessionAIEngine:
         self,
         frame_input: Union[np.ndarray, bytes],
         timestamp_ms: Optional[float] = None,
+        *,
+        is_rgb: bool = True,
     ) -> FrameTelemetryDTO:
         """
         Execute the complete DriveGuard pipeline on a single video frame.
@@ -386,12 +390,14 @@ class SessionAIEngine:
                     latency_ms=0.0,
                     reason="SESSION_CLOSED",
                 )
-            return self._process_frame_locked(frame_input, timestamp_ms)
+            return self._process_frame_locked(frame_input, timestamp_ms, is_rgb=is_rgb)
 
     def _process_frame_locked(
         self,
         frame_input: Union[np.ndarray, bytes],
         timestamp_ms: Optional[float] = None,
+        *,
+        is_rgb: bool = True,
     ) -> FrameTelemetryDTO:
         t_start = time.perf_counter()
         self.frame_index += 1
@@ -407,28 +413,44 @@ class SessionAIEngine:
             self.fps_ema = 0.90 * self.fps_ema + 0.10 * (1.0 / dt_sec)
         self.prev_timestamp_ms = ts_ms
 
-        # 2. Decode raw image bytes if necessary
-        frame_bgr: Optional[np.ndarray] = None
+        # 2. Decode raw image bytes if necessary (EXP-1A RGB Pass-Through)
+        frame_rgb: Optional[np.ndarray] = None
         if isinstance(frame_input, bytes):
             nparr = np.frombuffer(frame_input, np.uint8)
-            frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            decoded = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if decoded is not None:
+                frame_rgb = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
         elif isinstance(frame_input, np.ndarray):
-            frame_bgr = frame_input
+            if is_rgb:
+                frame_rgb = frame_input
+            else:
+                frame_rgb = cv2.cvtColor(frame_input, cv2.COLOR_BGR2RGB)
 
-        if frame_bgr is None or frame_bgr.size == 0:
+        if frame_rgb is None or frame_rgb.size == 0:
             return self._build_unavailable_frame(ts_ms, latency_ms=0.5, reason="IMAGE_DECODE_FAILED")
 
-        # 3. MediaPipe Face Landmark & 3D Pose Extraction
+        # 3. MediaPipe Face Landmark & 3D Pose Extraction (direct RGB pass-through)
         ref_ear = self.profile.center_ear_median
         try:
-            geom, _ = self.landmarker.process_frame(
-                frame_bgr=frame_bgr,
-                timestamp_ms=ts_ms,
-                neutral_pitch_deg=self.profile.neutral_pitch_deg,
-                neutral_yaw_deg=self.profile.neutral_yaw_deg,
-                reference_open_ear=ref_ear,
-                extract_crops=True,
-            )
+            try:
+                geom, _ = self.landmarker.process_frame(
+                    frame_bgr=frame_rgb,
+                    timestamp_ms=ts_ms,
+                    neutral_pitch_deg=self.profile.neutral_pitch_deg,
+                    neutral_yaw_deg=self.profile.neutral_yaw_deg,
+                    reference_open_ear=ref_ear,
+                    extract_crops=True,
+                    is_rgb=True,
+                )
+            except TypeError:
+                geom, _ = self.landmarker.process_frame(
+                    frame_bgr=frame_rgb,
+                    timestamp_ms=ts_ms,
+                    neutral_pitch_deg=self.profile.neutral_pitch_deg,
+                    neutral_yaw_deg=self.profile.neutral_yaw_deg,
+                    reference_open_ear=ref_ear,
+                    extract_crops=True,
+                )
         except Exception as exc:
             logger.error(f"[SessionAIEngine] Landmarker exception at {ts_ms}ms: {exc}", exc_info=True)
             self.kinematics.handle_face_lost(ts_ms)
@@ -474,7 +496,7 @@ class SessionAIEngine:
         if cascade_res.disagreement_ear_vs_blendshape > 0.40:
             self.total_disagreements += 1
 
-        # 6. Sub-Frame Blink Kinematics (Duration, RCR Velocity, Rolling 60s PERCLOS, Gap-Aware)
+        # 6. Sub-Frame Blink Kinematics (Duration, RCR Velocity, Rolling 60s PERCLOS, Gap-Aware, Authentic Squint)
         kinematics_res = self.kinematics.update(
             timestamp_ms=ts_ms,
             ear_value=geom.yaw_weighted_ear,
@@ -487,6 +509,14 @@ class SessionAIEngine:
             right_threshold=zone_baseline.dynamic_closure_threshold,
             landmark_confidence=geom.landmark_confidence,
             head_yaw_deg=geom.yaw_deg,
+            eye_squint=geom.blendshape_eye_squint,
+        )
+        # Euro NCAP 2026 Gaze Scanpath & Attention Tracking
+        gaze_res = self.gaze_tracker.update(
+            timestamp_ms=ts_ms,
+            zone=geom.pose_zone,
+            pitch_deg=geom.pitch_deg,
+            yaw_deg=geom.yaw_deg,
         )
 
         # 7. Calibration Step Ingestion (if session is actively calibrating)
@@ -548,6 +578,7 @@ class SessionAIEngine:
             geom=geom,
             cascade=cascade_res,
             kinematics=kinematics_res,
+            gaze=gaze_res,
         )
         is_mirror_suppressed = risk_res.deviations.is_mirror_check_context
         if is_mirror_suppressed:
@@ -604,6 +635,11 @@ class SessionAIEngine:
                 perclos_reliable=kinematics_res.perclos_reliable,
                 eye_closure_duration_ms=round(kinematics_res.current_closure_duration_ms, 1),
                 sampling_gap_detected=kinematics_res.sampling_gap_detected,
+                blink_avr=round(kinematics_res.recent_blink_avr, 3) if kinematics_res.recent_blink_avr is not None else None,
+                blink_cv_ibi=round(kinematics_res.blink_cv_ibi, 3) if kinematics_res.blink_cv_ibi is not None else None,
+                gaze_entropy=round(gaze_res.transition_entropy_ht, 3),
+                brow_furrow_au4=round(geom.blendshape_brow_down, 3) if geom.blendshape_brow_down is not None else None,
+                yawn_envelope_confidence=round(kinematics_res.yawn_confidence, 3),
             ),
             cascade=CascadeStatusDTO(
                 experiment_mode=self.experiment_mode.value,

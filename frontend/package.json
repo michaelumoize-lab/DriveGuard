@@ -7,9 +7,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx __tests__/audio-engine.test.ts && tsx scripts/run-all-tests.ts",
+    "test": "tsx __tests__/audio-engine.test.ts && tsx __tests__/camera-webcam.test.ts && tsx __tests__/security-and-telemetry.test.ts && tsx scripts/run-all-tests.ts",
     "test:audio": "tsx __tests__/audio-engine.test.ts",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "test:camera": "tsx __tests__/camera-webcam.test.ts",
+    "test:security": "tsx __tests__/security-and-telemetry.test.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

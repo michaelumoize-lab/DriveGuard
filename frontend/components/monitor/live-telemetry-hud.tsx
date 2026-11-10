@@ -630,11 +630,18 @@ export function LiveTelemetryHUD({
 
       {/* 4. Cockpit Kinematics & Spatial Tracking (4 Tile Instruments) */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">
-        {/* Instrument 1: 3D Gaze Zone */}
+        {/* Instrument 1: 3D Gaze Zone & Euro NCAP Entropy */}
         <div className="p-2.5 rounded-xl bg-card border border-border shadow-2xs space-y-1">
-          <div className="text-[10px] text-muted-foreground uppercase flex items-center gap-1">
-            <Compass className="size-3 text-primary shrink-0" />
-            <span className="truncate">3D Gaze Target</span>
+          <div className="text-[10px] text-muted-foreground uppercase flex items-center justify-between">
+            <span className="flex items-center gap-1 truncate">
+              <Compass className="size-3 text-primary shrink-0" />
+              <span>3D Gaze Target</span>
+            </span>
+            {eye_metrics?.gaze_entropy !== null && eye_metrics?.gaze_entropy !== undefined && (
+              <span className="text-[9px] text-primary font-bold">
+                Ht: {eye_metrics.gaze_entropy.toFixed(2)}
+              </span>
+            )}
           </div>
           <div className="font-bold text-foreground text-xs truncate">
             {pose_zone}
@@ -679,15 +686,22 @@ export function LiveTelemetryHUD({
           </div>
         </div>
 
-        {/* Instrument 4: Kinematic RCR */}
+        {/* Instrument 4: Kinematic Dynamics (RCR & AVR) */}
         <div className="p-2.5 rounded-xl bg-card border border-border shadow-2xs space-y-1">
-          <div className="text-[10px] text-muted-foreground uppercase flex items-center gap-1">
-            <Timer className="size-3 text-primary shrink-0" />
-            <span className="truncate">Kinematic RCR</span>
+          <div className="text-[10px] text-muted-foreground uppercase flex items-center justify-between">
+            <span className="flex items-center gap-1 truncate">
+              <Timer className="size-3 text-primary shrink-0" />
+              <span>Kinematics (RCR/AVR)</span>
+            </span>
+            {eye_metrics?.blink_avr !== null && eye_metrics?.blink_avr !== undefined && (
+              <span className="text-[9px] text-primary font-bold">
+                AVR: {eye_metrics.blink_avr.toFixed(2)}
+              </span>
+            )}
           </div>
           <div className="font-bold text-foreground text-xs truncate">
             {blinkRcr
-              ? blinkRcr.toFixed(2)
+              ? `RCR: ${blinkRcr.toFixed(2)}`
               : blinkDur
               ? `${Math.round(blinkDur)}ms`
               : "Calibrating"}

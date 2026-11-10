@@ -28,6 +28,7 @@ from backend.app.ai.blink_kinematics import (
     TemporalKinematicsSnapshot,
 )
 from backend.app.ai.cascade_classifier import CascadeStageResult
+from backend.app.ai.gaze_attention import GazeAttentionSnapshot
 from backend.app.ai.geometry import FrameGeometryFeatures, PoseZone
 from backend.app.ai.pdbp_calibration import DriverBehaviourProfile, compute_robust_z
 
@@ -53,6 +54,12 @@ class DeviationScores:
     zone_ear_baseline: float
     zone_closure_threshold: float
     is_mirror_check_context: bool
+    z_blink_avr: float = 0.0
+    cv_ibi: float = 0.0
+    gaze_entropy_ht: float = 1.20
+    au4_brow_strain: float = 0.0
+    is_visual_distraction: bool = False
+    is_cognitive_tunneling: bool = False
 
 
 @dataclass
@@ -155,6 +162,7 @@ class PersonalisedAdaptiveRiskEngine:
         geom: FrameGeometryFeatures,
         cascade: CascadeStageResult,
         kinematics: TemporalKinematicsSnapshot,
+        gaze: Optional[GazeAttentionSnapshot] = None,
     ) -> RiskAssessmentResult:
         """
         Compute personalised deviation scores, context-aware fatigue risk R_t,
@@ -186,6 +194,12 @@ class PersonalisedAdaptiveRiskEngine:
                         zone_ear_baseline=self.profile.center_ear_median,
                         zone_closure_threshold=0.20,
                         is_mirror_check_context=False,
+                        z_blink_avr=0.0,
+                        cv_ibi=0.0,
+                        gaze_entropy_ht=1.20,
+                        au4_brow_strain=0.0,
+                        is_visual_distraction=False,
+                        is_cognitive_tunneling=False,
                     ),
                     reasons=["FACE_NOT_VISIBLE_OR_OBSCURED"],
                     conventional_fixed_state=conv_state,
@@ -261,6 +275,25 @@ class PersonalisedAdaptiveRiskEngine:
         else:
             z_blink_rcr = 0.0
 
+        # Amplitude-to-Velocity Ratio (AVR) deviation (Optalert JDS metric)
+        if kinematics.recent_blink_avr is not None:
+            raw_z_avr = compute_robust_z(kinematics.recent_blink_avr, 0.08, 0.035)
+            z_blink_avr = max(0.0, raw_z_avr)
+        else:
+            z_blink_avr = 0.0
+
+        # Inter-Blink Interval Variability (CV_IBI)
+        cv_ibi = kinematics.blink_cv_ibi or 0.0
+
+        # Facial Action Unit AU4 Brow Lowerer (brow furrowing strain against sleepiness)
+        au4_brow_strain = geom.blendshape_brow_down or 0.0
+        is_brow_strained = (au4_brow_strain >= 0.40) and (z_ear >= 1.0)
+
+        # Euro NCAP 2026 Gaze Attention & Distraction
+        ht_val = gaze.transition_entropy_ht if gaze is not None else 1.20
+        is_visual_distraction = gaze.is_off_road_dwell_exceeded if gaze is not None else False
+        is_blank_stare = gaze.is_blank_stare_detected if gaze is not None else False
+
         # Personal blink rate deviation (elevated blink bursts relative to personal cadence baseline)
         freq_med = getattr(self.profile, "blink_freq_median_per_min", 16.0) or 16.0
         freq_mad = max(getattr(self.profile, "blink_freq_mad_per_min", 4.5) or 4.5, 3.5)
@@ -313,13 +346,18 @@ class PersonalisedAdaptiveRiskEngine:
         # --- 5. Combined Fatigue-Risk Score R_t in [0, 1] ---
         # Weighted combination of robust deviations
         linear_risk = (
-            0.30 * min(z_perclos, 4.5)
-            + 0.24 * min(z_blink_dur, 4.5)
-            + 0.18 * min(z_blink_rcr, 4.0)
-            + 0.15 * min(z_ear, 4.0)
-            + 0.06 * min(z_blink_freq, 3.0)
+            0.28 * min(z_perclos, 4.5)
+            + 0.22 * min(z_blink_dur, 4.5)
+            + 0.16 * min(z_blink_rcr, 4.0)
+            + 0.14 * min(z_ear, 4.0)
+            + 0.12 * min(z_blink_avr, 4.0)
+            + 0.05 * min(z_blink_freq, 3.0)
+            + 0.10 * min(max(0.0, (cv_ibi - 0.45) / 0.35), 3.0)
             + (0.35 if is_head_nodding else 0.0)
             + (0.24 if is_abnormal_cluster else 0.0)
+            + (0.20 if is_brow_strained else 0.0)
+            + (0.35 if is_visual_distraction else 0.0)
+            + (0.28 if is_blank_stare else 0.0)
             + (0.20 if (kinematics.is_yawning or kinematics.yawn_count_5min >= 2) else 0.0)
         )
         # Logistic mapping centered at linear_center (governed by sensitivity preset)
@@ -363,6 +401,18 @@ class PersonalisedAdaptiveRiskEngine:
             reasons.append("BLINK_DURATION_ABOVE_PERSONAL_BASELINE")
         if z_blink_rcr >= 2.0:
             reasons.append("EYELID_REOPENING_VELOCITY_SLOWED")
+        if z_blink_avr >= 2.0:
+            reasons.append("ELEVATED_BLINK_AMPLITUDE_VELOCITY_RATIO")
+        if cv_ibi >= 0.80:
+            reasons.append("ERRATIC_INTER_BLINK_INTERVAL_VARIABILITY")
+        if is_brow_strained:
+            reasons.append("INVOLUNTARY_BROW_STRAIN_AU4")
+        if is_visual_distraction:
+            reasons.append("VISUAL_DISTRACTION_OFF_ROAD_DWELL")
+        if is_blank_stare:
+            reasons.append("COGNITIVE_TUNNELING_BLANK_STARE")
+        if gaze is not None and gaze.transition_entropy_ht < 0.35 and gaze.recent_zone_transitions_count >= 1:
+            reasons.append("LOW_GAZE_TRANSITION_ENTROPY")
         if kinematics.perclos_reliable and (z_perclos >= 1.8 or kinematics.perclos_60s_pct >= dynamic_perclos_cutoff):
             reasons.append("INCREASED_PERCLOS")
         if not kinematics.perclos_reliable and kinematics.perclos_coverage_pct < 50.0:
@@ -448,6 +498,12 @@ class PersonalisedAdaptiveRiskEngine:
             zone_ear_baseline=round(zone_base.ear_median, 3),
             zone_closure_threshold=round(zone_base.dynamic_closure_threshold, 3),
             is_mirror_check_context=is_mirror_check,
+            z_blink_avr=round(z_blink_avr, 2),
+            cv_ibi=round(cv_ibi, 3),
+            gaze_entropy_ht=round(ht_val, 3),
+            au4_brow_strain=round(au4_brow_strain, 3),
+            is_visual_distraction=is_visual_distraction,
+            is_cognitive_tunneling=is_blank_stare,
         )
 
         return RiskAssessmentResult(

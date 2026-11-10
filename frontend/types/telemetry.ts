@@ -37,6 +37,11 @@ export interface EyeMetrics {
   perclos_reliable?: boolean;
   eye_closure_duration_ms?: number;
   sampling_gap_detected?: boolean;
+  blink_avr?: number | null;
+  blink_cv_ibi?: number | null;
+  gaze_entropy?: number | null;
+  brow_furrow_au4?: number | null;
+  yawn_envelope_confidence?: number | null;
 }
 
 export interface CascadeStatus {
@@ -292,6 +297,48 @@ export const REASON_CODE_CATALOG: Record<string, ReasonExplanation> = {
     title: "Sluggish Eyelid Reopening (RCR)",
     description: "Reopening-to-Closing velocity ratio (RCR) dropped significantly below the driver's alert baseline (z >= 1.8).",
     subsystem: "KINEMATICS",
+    severity: "WARNING",
+  },
+  ELEVATED_BLINK_AMPLITUDE_VELOCITY_RATIO: {
+    code: "ELEVATED_BLINK_AMPLITUDE_VELOCITY_RATIO",
+    title: "Sluggish Eyelid Dynamics (AVR)",
+    description: "Eyelid reopening velocity significantly slowed relative to blink amplitude (Optalert JDS metric).",
+    subsystem: "KINEMATICS",
+    severity: "WARNING",
+  },
+  ERRATIC_INTER_BLINK_INTERVAL_VARIABILITY: {
+    code: "ERRATIC_INTER_BLINK_INTERVAL_VARIABILITY",
+    title: "Erratic Blink Cadence (CV_IBI)",
+    description: "Inter-blink intervals show high variability (CV >= 0.75), indicating staring pauses followed by burst blinks.",
+    subsystem: "KINEMATICS",
+    severity: "WARNING",
+  },
+  INVOLUNTARY_BROW_STRAIN_AU4: {
+    code: "INVOLUNTARY_BROW_STRAIN_AU4",
+    title: "Involuntary Brow Strain (AU4)",
+    description: "Facial Action Unit AU4 brow furrowing detected while eyelids are drooping, indicating active struggle against sleep.",
+    subsystem: "GEOMETRY",
+    severity: "WARNING",
+  },
+  VISUAL_DISTRACTION_OFF_ROAD_DWELL: {
+    code: "VISUAL_DISTRACTION_OFF_ROAD_DWELL",
+    title: "Off-Road Gaze Distraction (Euro NCAP)",
+    description: "Continuous gaze averted from the forward roadway exceeded 3.0 seconds during transit.",
+    subsystem: "CONTEXT",
+    severity: "WARNING",
+  },
+  COGNITIVE_TUNNELING_BLANK_STARE: {
+    code: "COGNITIVE_TUNNELING_BLANK_STARE",
+    title: "Blank Stare / Cognitive Tunneling",
+    description: "Rigid forward gaze with near-zero saccadic eye or head movement detected for >= 5.0 seconds.",
+    subsystem: "CONTEXT",
+    severity: "CRITICAL",
+  },
+  LOW_GAZE_TRANSITION_ENTROPY: {
+    code: "LOW_GAZE_TRANSITION_ENTROPY",
+    title: "Low Gaze Scanpath Entropy",
+    description: "Visual transition entropy (H_t) dropped below 0.35, indicating environmental situational tunneling.",
+    subsystem: "CONTEXT",
     severity: "WARNING",
   },
   INCREASED_PERCLOS: {
