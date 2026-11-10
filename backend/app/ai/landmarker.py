@@ -31,6 +31,7 @@ from backend.app.ai.geometry import (
     compute_mar,
     compute_single_eye_ear,
     compute_yaw_weighted_ear,
+    compute_pose_compensated_ear,
     estimate_head_pose_from_matrix,
     estimate_head_pose_solvepnp,
     extract_eye_crop_with_quality,
@@ -297,7 +298,9 @@ class DriveGuardFaceLandmarker:
         else:
             pitch_deg, yaw_deg, roll_deg = estimate_head_pose_solvepnp(landmarks_pixel_xyz, w, h)
 
-        yaw_weighted_ear = compute_yaw_weighted_ear(left_ear, right_ear, yaw_deg)
+        yaw_weighted_ear = compute_pose_compensated_ear(
+            left_ear, right_ear, yaw_deg, pitch_deg, neutral_pitch_deg
+        )
 
         bs_mean: Optional[float] = None
         if blendshape_left is not None and blendshape_right is not None:

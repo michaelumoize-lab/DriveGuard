@@ -304,8 +304,13 @@ class TemporalKinematicsTracker:
         left_eye_closed = l_val < l_thresh
         right_eye_closed = r_val < r_thresh
 
-        # Overall closure: governed by cascade-arbitrated closure score and zone-adaptive EAR
-        is_closed = (s_closure >= 0.62) or (s_ear < ear_close_threshold and s_closure >= 0.45)
+        # Dual confirmation: requires BOTH geometric EAR closure AND cascade/CNN closure score >= 0.55
+        # Deep physical/neural closure overrides protect edge cases (e.g. eyes squeezed tightly shut)
+        is_closed = (
+            (s_ear < ear_close_threshold and s_closure >= 0.55)
+            or (s_ear < ear_close_threshold * 0.78)
+            or (s_closure >= 0.85 and s_ear < ear_close_threshold * 1.08)
+        )
 
         completed_blink: Optional[BlinkEvent] = None
 

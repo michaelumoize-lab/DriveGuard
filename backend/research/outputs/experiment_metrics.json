@@ -1,12 +1,12 @@
 {
   "FIXED_022": {
-    "false_alarm_frames": 1076.0,
+    "false_alarm_frames": 956.0,
     "mirror_check_fa_frames": 34.0,
-    "glare_blur_fa_frames": 1042.0,
-    "false_alarm_episodes_per_hour": 1938.5,
-    "precision_pct": 50.6,
+    "glare_blur_fa_frames": 922.0,
+    "false_alarm_episodes_per_hour": 1716.9,
+    "precision_pct": 53.5,
     "recall_pct": 100.0,
-    "f1_pct": 67.2,
+    "f1_pct": 69.7,
     "early_warning_lead_time_sec": 0.0,
     "cnn_trigger_rate_pct": 0.0,
     "mean_latency_ms": 0.085,
@@ -21,9 +21,9 @@
     "recall_pct": 100.0,
     "f1_pct": 71.0,
     "early_warning_lead_time_sec": 40.0,
-    "cnn_trigger_rate_pct": 41.3,
-    "mean_latency_ms": 2.442,
-    "p95_latency_ms": 5.924
+    "cnn_trigger_rate_pct": 40.7,
+    "mean_latency_ms": 2.817,
+    "p95_latency_ms": 6.887
   },
   "PDBP_4ZONE": {
     "false_alarm_frames": 537.0,
@@ -34,11 +34,24 @@
     "recall_pct": 100.0,
     "f1_pct": 80.4,
     "early_warning_lead_time_sec": 40.0,
-    "cnn_trigger_rate_pct": 39.7,
-    "mean_latency_ms": 2.409,
-    "p95_latency_ms": 6.047
+    "cnn_trigger_rate_pct": 39.1,
+    "mean_latency_ms": 3.704,
+    "p95_latency_ms": 10.628
   },
   "EXP_A_GEOM_ONLY": {
+    "false_alarm_frames": 536.0,
+    "mirror_check_fa_frames": 0.0,
+    "glare_blur_fa_frames": 369.0,
+    "false_alarm_episodes_per_hour": 55.4,
+    "precision_pct": 67.2,
+    "recall_pct": 100.0,
+    "f1_pct": 80.4,
+    "early_warning_lead_time_sec": 40.0,
+    "cnn_trigger_rate_pct": 0.0,
+    "mean_latency_ms": 0.816,
+    "p95_latency_ms": 1.503
+  },
+  "EXP_B_CNN_ALWAYS": {
     "false_alarm_frames": 537.0,
     "mirror_check_fa_frames": 0.0,
     "glare_blur_fa_frames": 370.0,
@@ -47,35 +60,22 @@
     "recall_pct": 100.0,
     "f1_pct": 80.4,
     "early_warning_lead_time_sec": 40.0,
-    "cnn_trigger_rate_pct": 0.0,
-    "mean_latency_ms": 0.327,
-    "p95_latency_ms": 0.471
-  },
-  "EXP_B_CNN_ALWAYS": {
-    "false_alarm_frames": 900.0,
-    "mirror_check_fa_frames": 2.0,
-    "glare_blur_fa_frames": 371.0,
-    "false_alarm_episodes_per_hour": 166.2,
-    "precision_pct": 55.0,
-    "recall_pct": 100.0,
-    "f1_pct": 71.0,
-    "early_warning_lead_time_sec": 40.0,
     "cnn_trigger_rate_pct": 100.0,
-    "mean_latency_ms": 5.356,
-    "p95_latency_ms": 6.932
+    "mean_latency_ms": 5.277,
+    "p95_latency_ms": 6.734
   },
   "EXP_C_NAIVE_BLIND_CNN": {
-    "false_alarm_frames": 899.0,
-    "mirror_check_fa_frames": 2.0,
+    "false_alarm_frames": 537.0,
+    "mirror_check_fa_frames": 0.0,
     "glare_blur_fa_frames": 370.0,
-    "false_alarm_episodes_per_hour": 166.2,
-    "precision_pct": 55.0,
+    "false_alarm_episodes_per_hour": 55.4,
+    "precision_pct": 67.2,
     "recall_pct": 100.0,
-    "f1_pct": 71.0,
+    "f1_pct": 80.4,
     "early_warning_lead_time_sec": 40.0,
-    "cnn_trigger_rate_pct": 39.7,
-    "mean_latency_ms": 2.58,
-    "p95_latency_ms": 6.522
+    "cnn_trigger_rate_pct": 39.1,
+    "mean_latency_ms": 2.508,
+    "p95_latency_ms": 6.319
   },
   "EXP_C_DRIVEGUARD_CASCADE": {
     "false_alarm_frames": 537.0,
@@ -86,8 +86,8 @@
     "recall_pct": 100.0,
     "f1_pct": 80.4,
     "early_warning_lead_time_sec": 40.0,
-    "cnn_trigger_rate_pct": 39.7,
-    "mean_latency_ms": 2.409,
-    "p95_latency_ms": 6.047
+    "cnn_trigger_rate_pct": 39.1,
+    "mean_latency_ms": 3.704,
+    "p95_latency_ms": 10.628
   }
 }

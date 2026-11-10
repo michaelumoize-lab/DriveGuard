@@ -305,6 +305,7 @@ class SessionAIEngine:
             blink_amplitude_median=round(getattr(self.profile, "blink_amplitude_median", 0.14), 4),
             temporal_blinks_sampled=int(getattr(self.profile, "temporal_blinks_sampled", 0)),
             temporal_window_sec=round(getattr(self.profile, "temporal_window_sec", 120.0), 1),
+            sensitivity_level=getattr(self.profile, "sensitivity_level", "STANDARD") or "STANDARD",
             neutral_pitch_deg=round(self.profile.neutral_pitch_deg, 2),
             neutral_yaw_deg=round(self.profile.neutral_yaw_deg, 2),
             calibration_reliability=round(self.profile.calibration_reliability, 3),
@@ -354,6 +355,7 @@ class SessionAIEngine:
             blink_amplitude_median=getattr(dto, "blink_amplitude_median", 0.14) or 0.14,
             temporal_blinks_sampled=int(getattr(dto, "temporal_blinks_sampled", 0) or 0),
             temporal_window_sec=float(getattr(dto, "temporal_window_sec", 120.0) or 120.0),
+            sensitivity_level=getattr(dto, "sensitivity_level", "STANDARD") or "STANDARD",
             version=dto.version,
         )
         self.set_profile(new_profile)

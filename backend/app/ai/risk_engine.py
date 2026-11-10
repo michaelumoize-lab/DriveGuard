@@ -277,6 +277,25 @@ class PersonalisedAdaptiveRiskEngine:
         else:
             z_perclos = 0.0
 
+        # Sensitivity Presets: HIGH, STANDARD (Default), or RELAXED/HIGHWAY
+        sensitivity = str(getattr(self.profile, "sensitivity_level", "STANDARD") or "STANDARD").upper()
+        if sensitivity == "HIGH":
+            dynamic_perclos_cutoff = max(12.0, base_perclos * 2.0)
+            microsleep_cutoff_ms = max(950.0, 3.0 * self.profile.blink_duration_median_ms)
+            linear_center = 1.30
+            warn_threshold = 0.50
+        elif sensitivity in ("RELAXED", "HIGHWAY"):
+            dynamic_perclos_cutoff = max(16.0, base_perclos * 3.0)
+            microsleep_cutoff_ms = max(1350.0, 4.0 * self.profile.blink_duration_median_ms)
+            linear_center = 1.65
+            warn_threshold = 0.65
+        else:
+            # STANDARD (Recommended)
+            dynamic_perclos_cutoff = max(14.0, base_perclos * 2.5)
+            microsleep_cutoff_ms = max(1100.0, 3.5 * self.profile.blink_duration_median_ms)
+            linear_center = 1.45
+            warn_threshold = 0.56
+
         # Repeated abnormal blink clusters (multiple prolonged blinks or sluggish RCR)
         is_abnormal_cluster = kinematics.abnormal_blink_cluster_detected
 
@@ -303,12 +322,11 @@ class PersonalisedAdaptiveRiskEngine:
             + (0.24 if is_abnormal_cluster else 0.0)
             + (0.20 if (kinematics.is_yawning or kinematics.yawn_count_5min >= 2) else 0.0)
         )
-        # Logistic mapping centered at linear_risk = 1.45
-        risk_score = float(1.0 / (1.0 + np.exp(-1.85 * (linear_risk - 1.45))))
+        # Logistic mapping centered at linear_center (governed by sensitivity preset)
+        risk_score = float(1.0 / (1.0 + np.exp(-1.85 * (linear_risk - linear_center))))
 
-        # Safety-critical microsleep override: continuous eye closure >= max(1.1s, 3.5x median blink)
+        # Safety-critical microsleep override: continuous eye closure >= microsleep_cutoff_ms
         # Observation gap periods must never fabricate or trigger a microsleep event
-        microsleep_cutoff_ms = max(1100.0, 3.5 * self.profile.blink_duration_median_ms)
         is_microsleep = (
             kinematics.is_eye_closed
             and kinematics.blink_state != BlinkState.UNCERTAIN_GAP
@@ -345,7 +363,7 @@ class PersonalisedAdaptiveRiskEngine:
             reasons.append("BLINK_DURATION_ABOVE_PERSONAL_BASELINE")
         if z_blink_rcr >= 2.0:
             reasons.append("EYELID_REOPENING_VELOCITY_SLOWED")
-        if kinematics.perclos_reliable and (z_perclos >= 1.6 or kinematics.perclos_60s_pct >= 12.0):
+        if kinematics.perclos_reliable and (z_perclos >= 1.8 or kinematics.perclos_60s_pct >= dynamic_perclos_cutoff):
             reasons.append("INCREASED_PERCLOS")
         if not kinematics.perclos_reliable and kinematics.perclos_coverage_pct < 50.0:
             reasons.append("INSUFFICIENT_PERCLOS_OBSERVATION_COVERAGE")
@@ -379,7 +397,7 @@ class PersonalisedAdaptiveRiskEngine:
                 self._high_critical_since_ms = None
 
             if self.current_state != AlertState.CRITICAL:
-                if risk_score >= 0.52:
+                if risk_score >= warn_threshold:
                     if self._high_warning_since_ms is None:
                         self._high_warning_since_ms = ts
                     if (ts - self._high_warning_since_ms) >= 1800.0:
