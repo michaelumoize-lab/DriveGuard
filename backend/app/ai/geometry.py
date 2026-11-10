@@ -119,6 +119,27 @@ def compute_yaw_weighted_ear(left_ear: float, right_ear: float, yaw_deg: float) 
     return w_left * left_ear + w_right * right_ear
 
 
+def compute_pose_compensated_ear(
+    left_ear: float,
+    right_ear: float,
+    yaw_deg: float,
+    pitch_deg: float = 0.0,
+    neutral_pitch_deg: float = 0.0,
+) -> float:
+    """
+    Combine left and right EAR with yaw perspective weighting and downward pitch compensation.
+    When the driver glances downward towards the dashboard/instruments (pitch < -4 deg),
+    eyelids naturally foreshorten from the camera's perspective. Compensating by up to 18%
+    prevents normal road/cockpit scanning from falsely triggering closure alarms.
+    """
+    base_ear = compute_yaw_weighted_ear(left_ear, right_ear, yaw_deg)
+    rel_pitch = pitch_deg - neutral_pitch_deg
+    if rel_pitch < -4.0:
+        pitch_boost = 1.0 + min(0.18, max(0.0, (-rel_pitch - 4.0) * 0.012))
+        return float(base_ear * pitch_boost)
+    return float(base_ear)
+
+
 def compute_mar(landmarks_xyz: np.ndarray, eps: float = 1e-6) -> float:
     """
     Calculate the Mouth Aspect Ratio (MAR) using 3 vertical inner-lip pairs and outer corners.

@@ -52,6 +52,7 @@ class DriverProfileDTO(BaseModel):
     blink_amplitude_median: float = Field(default=0.14, description="Personal median blink EAR excursion amplitude", ge=0.0, le=1.0)
     temporal_blinks_sampled: int = Field(default=0, description="Number of natural blinks sampled during 2-min cadence stream", ge=0)
     temporal_window_sec: float = Field(default=120.0, description="Duration of temporal blink baseline window in seconds", ge=0.0)
+    sensitivity_level: str = Field(default="STANDARD", description="Fatigue cascade sensitivity: STANDARD, HIGH, or RELAXED")
     
     # Neutral Head Pose
     neutral_pitch_deg: float = Field(default=0.0, description="Learned neutral head pitch in degrees")

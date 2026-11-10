@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
+import { Slider } from "@/components/ui/slider";
 import {
   Car,
   Shield,
@@ -167,11 +168,51 @@ export function DriverPreferencesForm({
         </CardHeader>
 
         <CardContent className="space-y-6 pt-5">
-          {/* Sensitivity Selector */}
-          <div className="space-y-2.5">
-            <Label id="sensitivity-group-label" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Fatigue Cascade Sensitivity Profile
-            </Label>
+          {/* Sensitivity Selector with Interactive Slider */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <Label id="sensitivity-group-label" className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Fatigue Detection Sensitivity
+                </Label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Adjust algorithmic closure gates, PERCLOS tolerance, and escalation speed.
+                </p>
+              </div>
+              <Badge variant="outline" className="text-xs font-mono font-medium">
+                {sensitivityLevel === "HIGH" ? "HIGH" : sensitivityLevel === "HIGHWAY" ? "RELAXED" : "STANDARD"}
+              </Badge>
+            </div>
+
+            {/* Continuous 3-point Sensitivity Slider */}
+            <div className="px-2 py-3 bg-muted/30 border border-border/50 rounded-lg space-y-2">
+              <Slider
+                min={0}
+                max={2}
+                step={1}
+                value={[sensitivityLevel === "HIGHWAY" ? 0 : sensitivityLevel === "HIGH" ? 2 : 1]}
+                onValueChange={(vals) => {
+                  const val = vals[0];
+                  if (val === 0) setSensitivityLevel("HIGHWAY");
+                  else if (val === 2) setSensitivityLevel("HIGH");
+                  else setSensitivityLevel("STANDARD");
+                }}
+                aria-label="Fatigue Sensitivity Slider"
+                className="w-full cursor-pointer py-1"
+              />
+              <div className="flex justify-between text-[11px] font-medium text-muted-foreground px-0.5">
+                <span className={sensitivityLevel === "HIGHWAY" ? "text-primary font-bold" : ""}>
+                  Relaxed
+                </span>
+                <span className={sensitivityLevel === "STANDARD" ? "text-primary font-bold" : ""}>
+                  Standard (Recommended)
+                </span>
+                <span className={sensitivityLevel === "HIGH" ? "text-primary font-bold" : ""}>
+                  High Sensitivity
+                </span>
+              </div>
+            </div>
+
             <div
               role="radiogroup"
               aria-labelledby="sensitivity-group-label"
@@ -179,19 +220,22 @@ export function DriverPreferencesForm({
             >
               {[
                 {
+                  level: "HIGHWAY" as const,
+                  title: "Relaxed",
+                  badge: "Daytime & Highway",
+                  desc: "For daytime highway driving with sunglasses or frequent mirror checks. Reduces false blink alerts.",
+                },
+                {
                   level: "STANDARD" as const,
-                  title: "Standard (Urban)",
-                  desc: "Balanced thresholds for daily commuting and city traffic.",
+                  title: "Standard",
+                  badge: "Recommended",
+                  desc: "Balanced thresholds for everyday commuting with dual-confirmation closure and dynamic PERCLOS.",
                 },
                 {
                   level: "HIGH" as const,
                   title: "High Sensitivity",
-                  desc: "Tighter eye-closure & PERCLOS thresholds for rapid response.",
-                },
-                {
-                  level: "HIGHWAY" as const,
-                  title: "Highway & Night",
-                  desc: "Aggressive micro-sleep detection for monotonous routes.",
+                  badge: "Night & Fleet",
+                  desc: "For night driving or high-risk commercial fleets. Alerts early on subtle eyelid narrowing.",
                 },
               ].map((s) => {
                 const selected = sensitivityLevel === s.level;
@@ -210,8 +254,10 @@ export function DriverPreferencesForm({
                   >
                     <div className="font-semibold text-xs text-foreground mb-1 flex items-center justify-between">
                       <span>{s.title}</span>
-                      {selected && (
+                      {selected ? (
                         <span className="size-2 rounded-full bg-primary" aria-hidden="true" />
+                      ) : (
+                        <span className="text-[10px] text-muted-foreground">{s.badge}</span>
                       )}
                     </div>
                     <div className="text-[11px] text-muted-foreground leading-relaxed">{s.desc}</div>

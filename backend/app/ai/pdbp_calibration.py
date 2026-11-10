@@ -103,6 +103,7 @@ class DriverBehaviourProfile:
     blink_amplitude_median: float = 0.14
     temporal_blinks_sampled: int = 0
     temporal_window_sec: float = 120.0
+    sensitivity_level: str = "STANDARD"
     version: int = 1
 
     def __post_init__(self) -> None:
@@ -873,7 +874,8 @@ class GuidedCalibrationSession:
                 )
                 return None
 
-        # Trim bottom 10% of EAR samples in each zone to eliminate partial blink transitions
+        # Natural Blink & Gaze Filter: Bilateral trimming
+        # Discard bottom 10% (transient blinks) AND top 10% (wide-eyed staring bias)
         zone_baselines: Dict[str, ZoneBaseline] = {}
         for step in self.steps:
             if step.step_type != "SPATIAL_ZONE":
@@ -881,8 +883,9 @@ class GuidedCalibrationSession:
             zk = step.zone.value
             ears = sorted(self._ear_samples_by_zone.get(zk, []))
             if len(ears) >= 3:
-                trim_idx = int(len(ears) * 0.10) if len(ears) >= 10 else 0
-                trimmed_ears = ears[trim_idx:]
+                low_idx = int(len(ears) * 0.10) if len(ears) >= 10 else 0
+                high_idx = len(ears) - (int(len(ears) * 0.10) if len(ears) >= 10 else 0)
+                trimmed_ears = ears[low_idx:high_idx] if high_idx > low_idx else ears
                 ear_med, ear_mad = compute_median_and_scaled_mad(trimmed_ears, min_floor=0.015)
 
                 left_ears = self._ear_left_by_zone.get(zk, [])
