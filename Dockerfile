@@ -23,9 +23,16 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # ------------------------------------------------------------------------------
 FROM python:3.11-slim AS runner
 
-# Install only minimal runtime shared libraries needed by MediaPipe & glib
+# Install runtime shared libraries required by OpenCV, MediaPipe, and GLib
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
     libglib2.0-0 \
+    libgomp1 \
+    libxcb1 \
+    libx11-6 \
+    libxext6 \
+    libxrender1 \
+    libsm6 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
