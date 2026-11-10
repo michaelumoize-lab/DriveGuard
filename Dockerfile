@@ -26,6 +26,8 @@ FROM python:3.11-slim AS runner
 # Install runtime shared libraries required by OpenCV, MediaPipe, and GLib
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
+    libegl1 \
+    libgles2 \
     libglib2.0-0 \
     libgomp1 \
     libxcb1 \

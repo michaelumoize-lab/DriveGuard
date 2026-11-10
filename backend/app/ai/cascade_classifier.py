@@ -106,6 +106,8 @@ class MobileNetV3EyeVerifier:
             return 0.5, 0.5, 0.0
 
         crop = crop_quality.crop_rgb
+        if crop.shape[0] != 64 or crop.shape[1] != 64:
+            crop = cv2.resize(crop, (64, 64), interpolation=cv2.INTER_AREA)
 
         if self.onnx_session is not None and self.input_name is not None:
             # Convert RGB webcam crop to 3-channel luminance to bridge the IR (MRL dataset) <-> RGB (webcam) domain gap
