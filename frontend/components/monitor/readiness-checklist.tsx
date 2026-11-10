@@ -87,7 +87,7 @@ export const ReadinessChecklist = React.memo(function ReadinessChecklist({
           : isStale
             ? "Telemetry Stale"
             : livekitStatus === "connecting" || livekitStatus === "reconnecting"
-              ? "Handshaking..."
+              ? "Handshaking…"
               : livekitStatus === "error"
                 ? "Connection Error"
                 : "Standby",

@@ -45,21 +45,20 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("LIVEKIT_API_SECRET", "livekit_api_secret"),
     )
 
-    # CORS
+    # CORS Allowed Origins (Wildcards removed; regex handles Vercel & localhost securely)
     CORS_ORIGINS: List[str] = [
         "https://drive-guard-mu.vercel.app",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
-        "*",
     ]
 
     # Paths
     BASE_DIR: Path = Path(__file__).resolve().parents[2]
     WEIGHTS_DIR: Path = BASE_DIR / "weights"
     DATASETS_DIR: Path = BASE_DIR / "datasets"
-    PROFILES_DIR: Path = BASE_DIR / "research" / "outputs" / "profiles"
+    PROFILES_DIR: Path = BASE_DIR / "data" / "profiles"
 
     # AI Defaults
     DEFAULT_EXPERIMENT_MODE: str = "EXPERIMENT_C_CONFIDENCE_GATED_CASCADE"

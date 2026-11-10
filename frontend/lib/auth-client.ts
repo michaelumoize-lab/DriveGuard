@@ -6,6 +6,7 @@ import {
   multiSessionClient,
 } from "better-auth/client/plugins";
 import { lastLoginMethodClient } from "better-auth/client/plugins"
+import { passkeyClient } from "@better-auth/passkey/client";
 
 export const authClient = createAuthClient({
   plugins: [
@@ -13,6 +14,7 @@ export const authClient = createAuthClient({
     adminClient(),
     multiSessionClient(),
     lastLoginMethodClient(),
+    passkeyClient(),
   ],
 });
 

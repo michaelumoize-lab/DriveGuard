@@ -18,6 +18,7 @@ import { CameraSelector } from "@/components/camera/camera-selector";
 import { CameraStatus } from "@/components/camera/camera-status";
 import { CameraErrorDisplay } from "@/components/camera/camera-error";
 import { CameraSnapshotPreview } from "@/components/camera/camera-snapshot-preview";
+import { DriverCockpitHUD } from "./driver-cockpit-hud";
 import { LiveTelemetryHUD } from "./live-telemetry-hud";
 import { ExperimentSelector } from "./experiment-selector";
 import { ReadinessChecklist } from "./readiness-checklist";
@@ -37,6 +38,7 @@ import { useSidebar } from "@/components/ui/sidebar";
 import {
   AlertTriangle,
   Camera,
+  Car,
   Compass,
   Cpu,
   EyeOff,
@@ -97,6 +99,7 @@ export function UnifiedLiveMonitor({
 
   // Layout & UI States
   const [viewOrientation, setViewOrientation] = useState<"portrait" | "landscape">("landscape");
+  const [consoleMode, setConsoleMode] = useState<"cockpit" | "diagnostics">("diagnostics");
   const [framingMode, setFramingMode] = useState<"cover" | "fit">("cover");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isMobileDevice, setIsMobileDevice] = useState(false);
@@ -107,6 +110,27 @@ export function UnifiedLiveMonitor({
   const [centerEarBaseline, setCenterEarBaseline] = useState<number>(
     initialDriverProfile?.centerEarMedian ?? 0.285
   );
+
+  // Restore saved view mode preference (defaults to diagnostics in development)
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("driveguard_console_mode");
+      if (saved === "cockpit" || saved === "diagnostics") {
+        setConsoleMode(saved);
+      }
+    } catch {
+      // Safe fallback if localStorage is disabled
+    }
+  }, []);
+
+  const handleConsoleModeChange = useCallback((mode: "cockpit" | "diagnostics") => {
+    setConsoleMode(mode);
+    try {
+      localStorage.setItem("driveguard_console_mode", mode);
+    } catch {
+      // Ignore
+    }
+  }, []);
 
   // Rolling 60s chart history & screen-reader live announcement
   const [chartHistory, setChartHistory] = useState<TelemetryHistoryPoint[]>([]);
@@ -864,7 +888,7 @@ export function UnifiedLiveMonitor({
                       : isStale
                         ? "TELEMETRY STALE"
                         : wsStatus === "connecting" || wsStatus === "reconnecting"
-                          ? "CONNECTING TO SFU..."
+                          ? "CONNECTING TO SFU…"
                           : "PIPELINE STANDBY"}
                   </span>
                 </Badge>
@@ -874,8 +898,39 @@ export function UnifiedLiveMonitor({
               </p>
             </div>
 
-            {/* Quick Actions: Inline Calibration Toggle + Orientation Selector */}
+            {/* Quick Actions: View Mode Switcher + Inline Calibration + Orientation */}
             <div className="flex items-center gap-2 shrink-0 self-end sm:self-center flex-wrap">
+              {/* Console Mode Switcher (Driver vs Diagnostics) */}
+              <div
+                className="flex items-center p-1 rounded-xl bg-muted/50 border border-border/60"
+                role="group"
+                aria-label="Monitoring view mode"
+              >
+                <Button
+                  size="sm"
+                  variant={consoleMode === "cockpit" ? "default" : "ghost"}
+                  onClick={() => handleConsoleModeChange("cockpit")}
+                  className="text-xs h-7 px-2.5 rounded-lg gap-1.5 cursor-pointer"
+                  title="Driver Safety View (Clean road-safety interface)"
+                  aria-label="Switch to Driver Safety View"
+                >
+                  <Car className="size-3.5" />
+                  <span>Driver View</span>
+                </Button>
+
+                <Button
+                  size="sm"
+                  variant={consoleMode === "diagnostics" ? "default" : "ghost"}
+                  onClick={() => handleConsoleModeChange("diagnostics")}
+                  className="text-xs h-7 px-2.5 rounded-lg gap-1.5 cursor-pointer"
+                  title="Engineering Diagnostics View (Full telemetry and latencies)"
+                  aria-label="Switch to Engineering Diagnostics View"
+                >
+                  <SlidersHorizontal className="size-3.5" />
+                  <span>Diagnostics [Dev]</span>
+                </Button>
+              </div>
+
               <Button
                 size="sm"
                 variant={showInlineCalibration ? "default" : "outline"}
@@ -1228,134 +1283,155 @@ export function UnifiedLiveMonitor({
                 durationSec={streamDurationSec}
               />
 
-              {/* Rolling 60-Second Live Telemetry Chart */}
-              <LiveTelemetryChart data={chartHistory} />
+              {/* Rolling 60-Second Live Telemetry Chart (Visible in Engineering Diagnostics mode) */}
+              {consoleMode === "diagnostics" && (
+                <LiveTelemetryChart data={chartHistory} />
+              )}
             </>
           )}
         </div>
 
-        {/* Companion Sidebar Panel: Real-Time Telemetry, Explainable Risk & Experiment Controls */}
+        {/* Companion Sidebar Panel: Real-Time Telemetry or Clean Driver Cockpit HUD */}
         {!isFullscreen && (
           <div
             className={`space-y-4 ${
               isPortrait ? "md:col-span-5 lg:col-span-6" : "lg:col-span-5"
             }`}
           >
-            {/* Live AI Telemetry HUD Gauges */}
-            <LiveTelemetryHUD
-              telemetry={telemetry}
-              cameraState={cameraState}
-              backendType={backendType}
-              latencyDiagnostics={latencyDiagnostics}
-              isStale={isStale}
-              isAudioUnlocked={isAudioUnlocked}
-              isMuted={audioMuted}
-              volume={audioVolume}
-              audioStatus={audioStatus}
-              onToggleMute={toggleMute}
-              onSetVolume={setAudioVolume}
-              onUnlockAudio={unlockAudio}
-              onTestAudioTier={testAlert}
-            />
+            {consoleMode === "cockpit" ? (
+              <DriverCockpitHUD
+                telemetry={telemetry}
+                cameraState={cameraState}
+                isStale={isStale}
+                isAudioUnlocked={isAudioUnlocked}
+                isMuted={audioMuted}
+                volume={audioVolume}
+                audioStatus={audioStatus}
+                onToggleMute={toggleMute}
+                onSetVolume={setAudioVolume}
+                onUnlockAudio={unlockAudio}
+                onSwitchToDiagnostics={() => handleConsoleModeChange("diagnostics")}
+              />
+            ) : (
+              <>
+                {/* Live AI Telemetry HUD Gauges */}
+                <LiveTelemetryHUD
+                  telemetry={telemetry}
+                  cameraState={cameraState}
+                  backendType={backendType}
+                  latencyDiagnostics={latencyDiagnostics}
+                  isStale={isStale}
+                  isAudioUnlocked={isAudioUnlocked}
+                  isMuted={audioMuted}
+                  volume={audioVolume}
+                  audioStatus={audioStatus}
+                  onToggleMute={toggleMute}
+                  onSetVolume={setAudioVolume}
+                  onUnlockAudio={unlockAudio}
+                  onTestAudioTier={testAlert}
+                  onSwitchToCockpit={() => handleConsoleModeChange("cockpit")}
+                />
 
-            {/* Structured Explainable Risk & Stage Latency Breakdown Panel */}
-            <ExplainableRiskPanel
-              telemetry={telemetry}
-              latencyDiagnostics={latencyDiagnostics}
-            />
+                {/* Structured Explainable Risk & Stage Latency Breakdown Panel */}
+                <ExplainableRiskPanel
+                  telemetry={telemetry}
+                  latencyDiagnostics={latencyDiagnostics}
+                />
 
-            {/* Hardware & Cascade Configuration Card */}
-            <Card className="border-border/80 shadow-xs overflow-hidden">
-              <CardHeader className="p-3.5 pb-2 border-b border-border/50 bg-muted/20">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <SlidersHorizontal className="size-4 text-primary" />
-                    <CardTitle className="text-xs font-bold uppercase tracking-wider text-foreground">
-                      Configuration &amp; Sensors
-                    </CardTitle>
-                  </div>
-                  <Badge variant="outline" className="text-[10px] font-mono text-muted-foreground border-border/60">
-                    {backendType === "cloud" ? "Cloud AI" : "Local:8000"}
-                  </Badge>
-                </div>
-              </CardHeader>
-              <CardContent className="p-3">
-                <Tabs defaultValue="cascade" className="w-full space-y-3">
-                  <TabsList className="grid grid-cols-3 w-full h-9 bg-muted/50 p-1 rounded-xl">
-                    <TabsTrigger
-                      value="cascade"
-                      className="text-xs font-medium rounded-lg data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-2xs"
-                    >
-                      <Sparkles className="size-3 mr-1 text-primary shrink-0" />
-                      <span>Cascade</span>
-                    </TabsTrigger>
-                    <TabsTrigger
-                      value="camera"
-                      className="text-xs font-medium rounded-lg data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-2xs"
-                    >
-                      <Camera className="size-3 mr-1 text-primary shrink-0" />
-                      <span>Camera</span>
-                    </TabsTrigger>
-                    <TabsTrigger
-                      value="engine"
-                      className="text-xs font-medium rounded-lg data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-2xs"
-                    >
-                      <Cpu className="size-3 mr-1 text-primary shrink-0" />
-                      <span>Engine</span>
-                    </TabsTrigger>
-                  </TabsList>
-
-                  {/* Tab 1: Experiment Selector */}
-                  <TabsContent value="cascade" className="mt-0 focus-visible:outline-none">
-                    <ExperimentSelector
-                      currentMode={experimentMode}
-                      onSelectMode={switchExperiment}
-                    />
-                  </TabsContent>
-
-                  {/* Tab 2: Camera Selector */}
-                  <TabsContent value="camera" className="mt-0 focus-visible:outline-none space-y-2">
-                    <div className="text-[11px] text-muted-foreground">
-                      Select active hardware optical sensor for driver eye and face tracking:
+                {/* Hardware & Cascade Configuration Card */}
+                <Card className="border-border/80 shadow-xs overflow-hidden">
+                  <CardHeader className="p-3.5 pb-2 border-b border-border/50 bg-muted/20">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <SlidersHorizontal className="size-4 text-primary" />
+                        <CardTitle className="text-xs font-bold uppercase tracking-wider text-foreground">
+                          Configuration &amp; Sensors
+                        </CardTitle>
+                      </div>
+                      <Badge variant="outline" className="text-[10px] font-mono text-muted-foreground border-border/60">
+                        {backendType === "cloud" ? "Cloud AI" : "Local:8000"}
+                      </Badge>
                     </div>
-                    <CameraSelector
-                      devices={devices}
-                      selectedDeviceId={selectedDeviceId}
-                      onSelectDevice={selectDevice}
-                      onRefreshDevices={refreshDevices}
-                    />
-                  </TabsContent>
+                  </CardHeader>
+                  <CardContent className="p-3">
+                    <Tabs defaultValue="cascade" className="w-full space-y-3">
+                      <TabsList className="grid grid-cols-3 w-full h-9 bg-muted/50 p-1 rounded-xl">
+                        <TabsTrigger
+                          value="cascade"
+                          className="text-xs font-medium rounded-lg data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-2xs"
+                        >
+                          <Sparkles className="size-3 mr-1 text-primary shrink-0" />
+                          <span>Cascade</span>
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="camera"
+                          className="text-xs font-medium rounded-lg data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-2xs"
+                        >
+                          <Camera className="size-3 mr-1 text-primary shrink-0" />
+                          <span>Camera</span>
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="engine"
+                          className="text-xs font-medium rounded-lg data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-2xs"
+                        >
+                          <Cpu className="size-3 mr-1 text-primary shrink-0" />
+                          <span>Engine</span>
+                        </TabsTrigger>
+                      </TabsList>
 
-                  {/* Tab 3: AI Inference Target */}
-                  <TabsContent value="engine" className="mt-0 focus-visible:outline-none space-y-2.5">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-muted-foreground">Active Server Endpoint:</span>
-                      <span className="font-mono text-foreground font-semibold" suppressHydrationWarning>
-                        {backendType === "cloud" ? "LiveKit Cloud (Render)" : "127.0.0.1:8000"}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2" suppressHydrationWarning>
-                      <Button
-                        size="sm"
-                        variant={backendType === "cloud" ? "default" : "outline"}
-                        onClick={() => handleSwitchBackend("cloud")}
-                        className="text-xs h-9 flex-1 rounded-xl"
-                      >
-                        LiveKit Cloud
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant={backendType === "local" ? "default" : "outline"}
-                        onClick={() => handleSwitchBackend("local")}
-                        className="text-xs h-9 flex-1 rounded-xl"
-                      >
-                        Localhost (8000)
-                      </Button>
-                    </div>
-                  </TabsContent>
-                </Tabs>
-              </CardContent>
-            </Card>
+                      {/* Tab 1: Experiment Selector */}
+                      <TabsContent value="cascade" className="mt-0 focus-visible:outline-none">
+                        <ExperimentSelector
+                          currentMode={experimentMode}
+                          onSelectMode={switchExperiment}
+                        />
+                      </TabsContent>
+
+                      {/* Tab 2: Camera Selector */}
+                      <TabsContent value="camera" className="mt-0 focus-visible:outline-none space-y-2">
+                        <div className="text-[11px] text-muted-foreground">
+                          Select active hardware optical sensor for driver eye and face tracking:
+                        </div>
+                        <CameraSelector
+                          devices={devices}
+                          selectedDeviceId={selectedDeviceId}
+                          onSelectDevice={selectDevice}
+                          onRefreshDevices={refreshDevices}
+                        />
+                      </TabsContent>
+
+                      {/* Tab 3: AI Inference Target */}
+                      <TabsContent value="engine" className="mt-0 focus-visible:outline-none space-y-2.5">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-muted-foreground">Active Server Endpoint:</span>
+                          <span className="font-mono text-foreground font-semibold" suppressHydrationWarning>
+                            {backendType === "cloud" ? "LiveKit Cloud (Render)" : "127.0.0.1:8000"}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2" suppressHydrationWarning>
+                          <Button
+                            size="sm"
+                            variant={backendType === "cloud" ? "default" : "outline"}
+                            onClick={() => handleSwitchBackend("cloud")}
+                            className="text-xs h-9 flex-1 rounded-xl"
+                          >
+                            LiveKit Cloud
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant={backendType === "local" ? "default" : "outline"}
+                            onClick={() => handleSwitchBackend("local")}
+                            className="text-xs h-9 flex-1 rounded-xl"
+                          >
+                            Localhost (8000)
+                          </Button>
+                        </div>
+                      </TabsContent>
+                    </Tabs>
+                  </CardContent>
+                </Card>
+              </>
+            )}
           </div>
         )}
       </div>

@@ -28,6 +28,7 @@ import {
   Sliders,
   CheckCircle2,
   AlertTriangle,
+  Fingerprint,
 } from "lucide-react";
 
 export interface DriverPreferencesData {
@@ -162,6 +163,12 @@ export function DriverPreferencesForm({
                   Calibration Studio
                 </Link>
               </Button>
+              <Button asChild variant="outline" size="sm" className="h-7 text-xs">
+                <Link href="/settings/security">
+                  <Fingerprint className="size-3 mr-1.5 text-primary" />
+                  Biometric Passkeys
+                </Link>
+              </Button>
             </div>
           </div>
         </CardHeader>
@@ -286,7 +293,9 @@ export function DriverPreferencesForm({
                 <Label htmlFor="pref-phone" className="text-xs">Driver Phone Number</Label>
                 <Input
                   id="pref-phone"
+                  name="phoneNumber"
                   type="tel"
+                  inputMode="tel"
                   autoComplete="tel"
                   value={phoneNumber}
                   onChange={(e) => setPhoneNumber(e.target.value)}
@@ -298,6 +307,10 @@ export function DriverPreferencesForm({
                 <Label htmlFor="pref-license" className="text-xs">Driving License / Fleet ID</Label>
                 <Input
                   id="pref-license"
+                  name="licenseNumber"
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  spellCheck={false}
                   value={licenseNumber}
                   onChange={(e) => setLicenseNumber(e.target.value)}
                   placeholder="Optional (e.g. DL-98214)"
@@ -308,6 +321,8 @@ export function DriverPreferencesForm({
                 <Label htmlFor="pref-em-name" className="text-xs">Emergency Contact Name</Label>
                 <Input
                   id="pref-em-name"
+                  name="emergencyContactName"
+                  autoComplete="name"
                   value={emergencyContactName}
                   onChange={(e) => setEmergencyContactName(e.target.value)}
                   placeholder="e.g. Jane Doe (Dispatch)"
@@ -318,7 +333,10 @@ export function DriverPreferencesForm({
                 <Label htmlFor="pref-em-phone" className="text-xs">Emergency Contact Phone</Label>
                 <Input
                   id="pref-em-phone"
+                  name="emergencyContactPhone"
                   type="tel"
+                  inputMode="tel"
+                  autoComplete="tel"
                   value={emergencyContactPhone}
                   onChange={(e) => setEmergencyContactPhone(e.target.value)}
                   placeholder="+1 (555) 999-9999"
@@ -339,6 +357,9 @@ export function DriverPreferencesForm({
                 <Label htmlFor="pref-make" className="text-xs">Make</Label>
                 <Input
                   id="pref-make"
+                  name="vehicleMake"
+                  autoComplete="off"
+                  autoCapitalize="words"
                   value={vehicleMake}
                   onChange={(e) => setVehicleMake(e.target.value)}
                   placeholder="e.g. Volvo"
@@ -349,6 +370,9 @@ export function DriverPreferencesForm({
                 <Label htmlFor="pref-model" className="text-xs">Model</Label>
                 <Input
                   id="pref-model"
+                  name="vehicleModel"
+                  autoComplete="off"
+                  autoCapitalize="words"
                   value={vehicleModel}
                   onChange={(e) => setVehicleModel(e.target.value)}
                   placeholder="e.g. XC90"
@@ -359,7 +383,9 @@ export function DriverPreferencesForm({
                 <Label htmlFor="pref-year" className="text-xs">Model Year</Label>
                 <Input
                   id="pref-year"
+                  name="vehicleYear"
                   type="number"
+                  inputMode="numeric"
                   min={1970}
                   max={2030}
                   value={vehicleYear}
@@ -372,6 +398,10 @@ export function DriverPreferencesForm({
                 <Label htmlFor="pref-plate" className="text-xs">License Plate</Label>
                 <Input
                   id="pref-plate"
+                  name="licensePlate"
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  spellCheck={false}
                   value={licensePlate}
                   onChange={(e) => setLicensePlate(e.target.value)}
                   placeholder="ABC-1234"
@@ -390,7 +420,7 @@ export function DriverPreferencesForm({
             {isSaving ? (
               <>
                 <Loader2 className="size-3.5 mr-1.5 animate-spin" />
-                Saving...
+                Saving…
               </>
             ) : (
               <>

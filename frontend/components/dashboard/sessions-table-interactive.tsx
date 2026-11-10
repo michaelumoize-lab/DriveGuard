@@ -21,6 +21,7 @@ import {
   Gauge,
 } from "lucide-react";
 import { explainReasonCode } from "@/types/telemetry";
+import { FormattedTimestamp } from "@/components/ui/formatted-timestamp";
 
 export interface SerializedAlertItem {
   id: string;
@@ -86,7 +87,7 @@ export function SessionsTableInteractive({ sessions }: SessionsTableInteractiveP
             type="search"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Filter by session code..."
+            placeholder="Filter by session code…"
             aria-label="Filter sessions by session code"
             className="pl-8 h-8 text-xs font-mono"
           />
@@ -123,12 +124,17 @@ export function SessionsTableInteractive({ sessions }: SessionsTableInteractiveP
           No driving sessions match the active filter criteria.
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-border/60">
+        <div
+          className="overflow-x-auto rounded-lg border border-border/60 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+          tabIndex={0}
+          role="region"
+          aria-label="Driving sessions history log"
+        >
           <table className="w-full text-xs text-left">
             <caption className="sr-only">
               Historical log of DriveGuard driving sessions and fatigue telemetry summaries
             </caption>
-            <thead className="border-b border-border bg-muted/30 text-muted-foreground">
+            <thead className="sticky top-0 bg-background/95 backdrop-blur-xs border-b border-border z-10 text-muted-foreground">
               <tr>
                 <th scope="col" className="py-2.5 px-3 font-medium">Session Code</th>
                 <th scope="col" className="py-2.5 px-3 font-medium">Date &amp; Time</th>
@@ -148,10 +154,7 @@ export function SessionsTableInteractive({ sessions }: SessionsTableInteractiveP
                     {s.sessionCode}
                   </td>
                   <td className="py-2.5 px-3 text-muted-foreground whitespace-nowrap">
-                    {new Date(s.startedAt).toLocaleDateString()}{" "}
-                    <span className="font-mono text-[11px]">
-                      {new Date(s.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                    </span>
+                    <FormattedTimestamp date={s.startedAt} mode="datetime" />
                   </td>
                   <td className="py-2.5 px-3 font-mono whitespace-nowrap">
                     {Math.floor(s.durationSeconds / 60)}m {s.durationSeconds % 60}s
@@ -225,10 +228,15 @@ export function SessionsTableInteractive({ sessions }: SessionsTableInteractiveP
                   Session Report: {selectedSession.sessionCode}
                 </DialogTitle>
                 <DialogDescription className="text-xs">
-                  Started {new Date(selectedSession.startedAt).toLocaleString()}
-                  {selectedSession.endedAt
-                    ? ` • Ended ${new Date(selectedSession.endedAt).toLocaleTimeString()}`
-                    : " • Ended unexpectedly / active"}
+                  Started <FormattedTimestamp date={selectedSession.startedAt} mode="datetime" />
+                  {selectedSession.endedAt ? (
+                    <>
+                      {" • Ended "}
+                      <FormattedTimestamp date={selectedSession.endedAt} mode="time" showSeconds={true} />
+                    </>
+                  ) : (
+                    " • Ended unexpectedly / active"
+                  )}
                 </DialogDescription>
               </DialogHeader>
 
@@ -338,8 +346,8 @@ export function SessionsTableInteractive({ sessions }: SessionsTableInteractiveP
                               >
                                 {alert.severity}
                               </Badge>
-                              <span className="font-mono text-[11px] text-muted-foreground">
-                                {new Date(alert.createdAt).toLocaleTimeString()}
+                              <span className="font-mono text-[11px] text-muted-foreground whitespace-nowrap">
+                                <FormattedTimestamp date={alert.createdAt} mode="time" showSeconds={true} />
                               </span>
                               <Badge variant="outline" className="text-[10px] font-mono">
                                 {alert.poseZone}

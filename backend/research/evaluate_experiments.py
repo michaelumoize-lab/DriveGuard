@@ -1016,6 +1016,7 @@ def run_all_experiments(video_path: Optional[Path] = None) -> None:
     for fp in fig_paths:
         print(f"  - {fp.name}")
     print(f"Saved Markdown & CSV thesis tables to: {md_path}")
+    return cal_comparison, cascade_comparison, fig_paths, md_path
 
 
 def main() -> None:

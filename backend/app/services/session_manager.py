@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 from backend.app.ai.cascade_classifier import ExperimentMode
 from backend.app.ai.landmarker import ensure_face_landmarker_model
 from backend.app.ai.pipeline import SessionAIEngine
+from backend.app.schemas.profile import DriverProfileDTO
 from backend.app.services.profile_store import profile_store
 
 
@@ -29,6 +30,7 @@ class SessionManager:
         session_id: str,
         driver_id: str = "driver_default",
         experiment_mode: Optional[str] = None,
+        profile_dto: Optional[DriverProfileDTO] = None,
     ) -> SessionAIEngine:
         """Retrieve an existing session or instantiate a new SessionAIEngine with its own isolated landmarker."""
         async with self._lock:
@@ -43,8 +45,8 @@ class SessionManager:
                         exp_mode = em
                         break
 
-            # Check if this driver has a pre-calibrated profile on disk
-            stored_profile_dto = profile_store.get_profile(driver_id)
+            # Resolve profile: prioritize explicitly provided profile payload, fallback to local store
+            target_profile_dto = profile_dto or profile_store.get_profile(driver_id)
             engine: Optional[SessionAIEngine] = None
             registered = False
             try:
@@ -66,8 +68,13 @@ class SessionManager:
                             engine = None
                     raise
 
-                if stored_profile_dto is not None:
-                    engine.load_profile_dto(stored_profile_dto)
+                if target_profile_dto is not None:
+                    engine.load_profile_dto(target_profile_dto)
+                    # Cache in local store for resilience across reconnects
+                    try:
+                        profile_store.save_profile(target_profile_dto)
+                    except Exception:
+                        pass
 
                 self._sessions[session_id] = engine
                 registered = True
