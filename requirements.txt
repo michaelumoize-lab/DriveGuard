@@ -1,11 +1,10 @@
 # DriveGuard — Production AI Inference & WebRTC Runtime
-# Uses opencv-python-headless and opencv-contrib-python-headless to avoid GUI/X11 system library dependencies on Linux.
+# Uses opencv-python-headless to avoid GUI/X11 system library dependencies on Linux.
 # Excludes heavy GPU PyTorch (~2.5GB) since production runtime uses ONNX Runtime.
 
 numpy>=1.26.0
 scipy>=1.12.0
 opencv-python-headless>=4.9.0
-opencv-contrib-python-headless>=4.9.0
 mediapipe>=0.10.14
 onnx>=1.16.0
 onnxruntime>=1.18.0
@@ -16,5 +15,6 @@ pydantic-settings>=2.2.0
 psutil>=5.9.0
 httpx>=0.27.0
 websockets>=12.0
+pyjwt>=2.8.0
 livekit>=1.0.0
 livekit-api>=1.0.0
