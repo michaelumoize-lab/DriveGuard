@@ -5,6 +5,7 @@ Integration test connecting directly to LiveKit Cloud SFU.
 import asyncio
 import sys
 from pathlib import Path
+import pytest
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
@@ -14,7 +15,11 @@ from backend.app.core.config import settings
 from livekit import api, rtc
 
 
+@pytest.mark.asyncio
 async def test_livekit_cloud_connection():
+    if not settings.LIVEKIT_URL or not settings.LIVEKIT_API_KEY or not settings.LIVEKIT_API_SECRET:
+        pytest.skip("LiveKit Cloud credentials not configured in environment.")
+
     print(f"[TEST] Connecting to LiveKit Cloud: {settings.LIVEKIT_URL}...")
     
     room_name = "dg_healthcheck_room"

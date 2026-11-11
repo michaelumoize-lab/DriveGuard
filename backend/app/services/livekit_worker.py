@@ -18,6 +18,7 @@ import json
 import logging
 import time
 import uuid
+from enum import Enum
 from typing import Any, Dict, Optional, Tuple
 
 import cv2
@@ -34,6 +35,17 @@ logger = logging.getLogger("driveguard.livekit_worker")
 logger.setLevel(logging.INFO)
 
 WORKER_BOOT_ID = uuid.uuid4().hex
+
+
+class WorkerState(str, Enum):
+    """Explicit lifecycle states for LiveKit AI Worker Sessions."""
+
+    CREATED = "CREATED"
+    STARTING = "STARTING"
+    RUNNING = "RUNNING"
+    STOPPING = "STOPPING"
+    STOPPED = "STOPPED"
+    FAILED = "FAILED"
 
 
 def generate_session_epoch() -> str:
@@ -94,6 +106,24 @@ def normalize_frame_width(img_bgr: np.ndarray) -> np.ndarray:
         return img_bgr
 
 
+def _timed_process_frame(
+    engine: SessionAIEngine,
+    norm_img: np.ndarray,
+    recv_mono_ms: float,
+    t_submit: float,
+) -> Tuple[Any, float, float]:
+    """Execute engine.process_frame measuring executor wait and actual inference duration."""
+    t_start = time.perf_counter()
+    executor_wait_ms = max(0.0, (t_start - t_submit) * 1000.0)
+    try:
+        telemetry_dto = engine.process_frame(norm_img, recv_mono_ms, is_rgb=True)
+    except TypeError:
+        telemetry_dto = engine.process_frame(norm_img, recv_mono_ms)
+    t_end = time.perf_counter()
+    process_frame_ms = max(0.0, (t_end - t_start) * 1000.0)
+    return telemetry_dto, executor_wait_ms, process_frame_ms
+
+
 class LiveKitAIWorkerSession:
     """Manages an autonomous Python AI participant in a single LiveKit room."""
 
@@ -110,6 +140,7 @@ class LiveKitAIWorkerSession:
         self.room = rtc.Room()
         self.engine: Optional[SessionAIEngine] = None
         self.is_running = False
+        self.state: WorkerState = WorkerState.CREATED
         self._calibration_completion_sent = False
         self._shutdown_task: Optional[asyncio.Task] = None
         self._last_logged_dims: Optional[Tuple[int, int, int, int]] = None
@@ -124,8 +155,12 @@ class LiveKitAIWorkerSession:
         self._frame_seq: int = 0
         self._event_seq: int = 0
         self._unacknowledged_events: Dict[str, dict] = {}
+        self._retry_tasks: Dict[str, asyncio.Task] = {}
+        self._max_unacked_events: int = 100
+        self._unacked_ttl_sec: float = 15.0
         self._latest_safety_event: Optional[dict] = None
         self._last_client_ping_ts: Optional[float] = None
+        self._last_publish_duration_ms: Optional[float] = None
 
         # Thread-Safe Frame Accounting Counters (owned strictly on asyncio event loop)
         self._frames_received: int = 0
@@ -207,50 +242,58 @@ class LiveKitAIWorkerSession:
 
     async def start(self) -> None:
         """Connect to LiveKit room and listen for video tracks and client control messages."""
-        if self.is_running:
+        if self.state in (WorkerState.STARTING, WorkerState.RUNNING):
             return
 
-        # 1. Initialize or acquire existing DriveGuard AI Engine
-        self.engine = await session_manager.get_or_create_session(
-            session_id=self.room_name,
-            driver_id=self.driver_id,
-            experiment_mode=self.experiment_mode,
-        )
-
-        # Auto-activate calibration mode if room is designated for calibration
-        if self.room_name.startswith("cal_"):
-            cal_dto = self.engine.start_calibration(four_zone_mode=False, zone_duration_sec=5.0)
-            print(f"[LiveKit Worker] Auto-activated calibration for room '{self.room_name}' (Zone 1: {cal_dto.current_zone})")
-
-        # 2. Mint LiveKit JWT for the AI Worker
-        worker_identity = f"ai_worker_{self.room_name}"
-        token = (
-            api.AccessToken(settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET)
-            .with_identity(worker_identity)
-            .with_name("DriveGuard AI Engine")
-            .with_grants(
-                api.VideoGrants(
-                    room_join=True,
-                    room=self.room_name,
-                    can_subscribe=True,
-                    can_publish_data=True,
-                    can_publish=False,
-                )
+        self.state = WorkerState.STARTING
+        try:
+            # 1. Initialize or acquire existing DriveGuard AI Engine
+            self.engine = await session_manager.get_or_create_session(
+                session_id=self.room_name,
+                driver_id=self.driver_id,
+                experiment_mode=self.experiment_mode,
             )
-            .to_jwt()
-        )
 
-        # 3. Setup event listeners
-        self._register_event_handlers()
+            # Auto-activate calibration mode if room is designated for calibration
+            if self.room_name.startswith("cal_"):
+                cal_dto = self.engine.start_calibration(four_zone_mode=False, zone_duration_sec=5.0)
+                print(f"[LiveKit Worker] Auto-activated calibration for room '{self.room_name}' (Zone 1: {cal_dto.current_zone})")
 
-        # 4. Connect to LiveKit Cloud SFU
-        logger.info(f"[LiveKit Worker] Connecting to room '{self.room_name}' at {settings.LIVEKIT_URL}...")
-        await self.room.connect(settings.LIVEKIT_URL, token)
-        self.is_running = True
-        logger.info(f"[LiveKit Worker] Successfully joined room '{self.room_name}'.")
+            # 2. Mint LiveKit JWT for the AI Worker
+            worker_identity = f"ai_worker_{self.room_name}"
+            token = (
+                api.AccessToken(settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET)
+                .with_identity(worker_identity)
+                .with_name("DriveGuard AI Engine")
+                .with_grants(
+                    api.VideoGrants(
+                        room_join=True,
+                        room=self.room_name,
+                        can_subscribe=True,
+                        can_publish_data=True,
+                        can_publish=False,
+                    )
+                )
+                .to_jwt()
+            )
 
-        # 5. Start background inference task
-        self._inference_task = asyncio.create_task(self._inference_loop())
+            # 3. Setup event listeners
+            self._register_event_handlers()
+
+            # 4. Connect to LiveKit Cloud SFU
+            logger.info(f"[LiveKit Worker] Connecting to room '{self.room_name}' at {settings.LIVEKIT_URL}...")
+            await self.room.connect(settings.LIVEKIT_URL, token)
+            self.is_running = True
+            self.state = WorkerState.RUNNING
+            logger.info(f"[LiveKit Worker] Successfully joined room '{self.room_name}'.")
+
+            # 5. Start background inference task
+            self._inference_task = asyncio.create_task(self._inference_loop())
+        except Exception as exc:
+            self.is_running = False
+            self.state = WorkerState.FAILED
+            logger.error(f"[LiveKit Worker] Failed to start worker for room '{self.room_name}': {exc}", exc_info=True)
+            raise
 
     async def _safe_close_video_stream(self, stream_to_close: Optional[rtc.VideoStream] = None) -> None:
         """
@@ -498,10 +541,17 @@ class LiveKitAIWorkerSession:
                 self._frames_in_flight = 1
 
                 try:
+                    t_dequeue_mono_ms = time.perf_counter() * 1000.0
+                    frame_queue_wait_ms = max(0.0, t_dequeue_mono_ms - recv_mono_ms)
+
                     # 1. Convert WebRTC VideoFrame to packed RGB24 bytes
+                    t_conv_start = time.perf_counter()
                     rgb_frame = frame.convert(rtc.VideoBufferType.RGB24)
+                    t_conv_end = time.perf_counter()
+                    frame_convert_ms = (t_conv_end - t_conv_start) * 1000.0
 
                     # 2. Map directly to NumPy array without disk/JPEG encoding overhead
+                    t_prep_start = time.perf_counter()
                     img_rgb = np.frombuffer(rgb_frame.data, dtype=np.uint8).reshape(
                         (rgb_frame.height, rgb_frame.width, 3)
                     )
@@ -513,6 +563,8 @@ class LiveKitAIWorkerSession:
                     # np.ascontiguousarray enforces C-contiguity for memory safety and thread dispatch.
                     norm_img = np.ascontiguousarray(normalize_frame_width(img_rgb))
                     norm_h, norm_w = norm_img.shape[:2]
+                    t_prep_end = time.perf_counter()
+                    frame_preprocess_ms = (t_prep_end - t_prep_start) * 1000.0
 
                     # Log dimension changes or first frame
                     current_dims = (raw_w, raw_h, norm_w, norm_h)
@@ -531,7 +583,9 @@ class LiveKitAIWorkerSession:
                     loop = asyncio.get_running_loop()
                     self._threads_executing = 1
                     self._coro_cancelled_for_active_frame = False
-                    self._active_cfut = self._executor.submit(self.engine.process_frame, norm_img, recv_mono_ms)
+                    self._active_cfut = self._executor.submit(
+                        _timed_process_frame, self.engine, norm_img, recv_mono_ms, t_infer_start
+                    )
 
                     def _safe_dispatch_done(f: concurrent.futures.Future) -> None:
                         if not loop.is_closed():
@@ -542,7 +596,7 @@ class LiveKitAIWorkerSession:
 
                     self._active_cfut.add_done_callback(_safe_dispatch_done)
                     afut = asyncio.wrap_future(self._active_cfut)
-                    telemetry_dto = await afut
+                    telemetry_dto, executor_wait_ms, process_frame_ms = await afut
                     t_infer_end = time.perf_counter()
                     t_infer_end_ms = t_infer_end * 1000.0
                     infer_duration_ms = max(0.0, t_infer_end_ms - t_infer_start_ms)
@@ -558,6 +612,14 @@ class LiveKitAIWorkerSession:
                         server_ingest_mono_ms=round(recv_mono_ms, 2),
                         server_publish_mono_ms=round(server_publish_mono_ms, 2),
                         server_wall_epoch_ms=round(server_wall_epoch_ms, 1),
+                        frame_received_mono_ms=round(recv_mono_ms, 2),
+                        frame_queue_wait_ms=round(frame_queue_wait_ms, 2),
+                        frame_convert_ms=round(frame_convert_ms, 2),
+                        frame_preprocess_ms=round(frame_preprocess_ms, 2),
+                        executor_wait_ms=round(executor_wait_ms, 2),
+                        process_frame_ms=round(process_frame_ms, 2),
+                        publish_ms=round(self._last_publish_duration_ms, 2) if self._last_publish_duration_ms is not None else None,
+                        frame_age_ms=None,
                     )
                     telemetry_dto.frame_seq = str(frame_seq_num)
                     telemetry_dto.worker_boot_id = self.worker_boot_id
@@ -655,8 +717,10 @@ class LiveKitAIWorkerSession:
 
                     # Publish lossy/unreliable for telemetry (fastest WebRTC UDP delivery)
                     try:
+                        t_pub_start = time.perf_counter()
                         payload_bytes = json.dumps(response_payload).encode("utf-8")
                         await self.room.local_participant.publish_data(payload_bytes, reliable=False)
+                        self._last_publish_duration_ms = (time.perf_counter() - t_pub_start) * 1000.0
                     except Exception as pub_exc:
                         logger.warning(f"[LiveKit Worker] Non-fatal telemetry publication failure: {pub_exc}")
 
@@ -735,11 +799,21 @@ class LiveKitAIWorkerSession:
             "network_roundtrip_ms": round(server_total_ms, 1),
         }
 
-    async def _handle_client_control_message(self, data_packet: rtc.DataPacket) -> None:
+    async def _handle_client_control_message(self, data_packet: Any) -> None:
         """Handle control actions from frontend client over WebRTC Data Channel."""
         try:
-            raw_text = data_packet.data.decode("utf-8")
-            msg = json.loads(raw_text)
+            if isinstance(data_packet, dict):
+                msg = data_packet
+            elif isinstance(data_packet, (bytes, bytearray)):
+                raw_text = data_packet.decode("utf-8")
+                msg = json.loads(raw_text)
+            elif hasattr(data_packet, "data"):
+                raw_text = data_packet.data.decode("utf-8")
+                msg = json.loads(raw_text)
+            else:
+                raw_text = str(data_packet)
+                msg = json.loads(raw_text)
+
             action = msg.get("action")
 
             if not action:
@@ -752,9 +826,15 @@ class LiveKitAIWorkerSession:
                 event_id = msg.get("event_id")
                 if event_id:
                     acked = self._unacknowledged_events.pop(event_id, None)
+                    task = self._retry_tasks.pop(event_id, None)
+                    if task and not task.done():
+                        task.cancel()
                     if acked:
                         ack_rtt_ms = (time.perf_counter() - acked["sent_at"]) * 1000.0
-                        logger.info(f"[LiveKit Worker] Safety event '{event_id}' ACK confirmed in {ack_rtt_ms:.1f}ms.")
+                        logger.info(
+                            f"[LiveKit Worker Event] ACK_RECEIVED event_id='{event_id}' "
+                            f"ack_seq={msg.get('event_seq', '')} rtt_ms={ack_rtt_ms:.1f}ms."
+                        )
 
             elif action == "SYNC_STATE":
                 unacked = [entry["payload"] for entry in self._unacknowledged_events.values()]
@@ -793,7 +873,8 @@ class LiveKitAIWorkerSession:
                 duration = float(msg.get("zone_duration_sec", 5.0))
                 include_blink = bool(msg.get("include_blink_baseline", False))
                 blink_duration = float(msg.get("blink_baseline_duration_sec", 120.0))
-                cal_dto = self.engine.start_calibration(
+                cal_dto = await self.engine.submit_command(
+                    "START_CALIBRATION",
                     four_zone_mode=four_zone,
                     three_zone_mode=three_zone,
                     zone_duration_sec=duration,
@@ -811,7 +892,8 @@ class LiveKitAIWorkerSession:
                 target_zone = msg.get("zone", "CENTER")
                 duration = float(msg.get("zone_duration_sec", 5.0))
                 blink_duration = float(msg.get("blink_baseline_duration_sec", 120.0))
-                cal_dto = self.engine.start_calibration(
+                cal_dto = await self.engine.submit_command(
+                    "START_CALIBRATION",
                     target_zone=target_zone,
                     zone_duration_sec=duration,
                     blink_baseline_duration_sec=blink_duration,
@@ -820,11 +902,11 @@ class LiveKitAIWorkerSession:
                 await self._send_control_ack({"type": "CALIBRATION_STARTED", "calibration": cal_dto.model_dump()})
 
             elif action == "CANCEL_CALIBRATION":
-                self.engine.cancel_calibration()
+                await self.engine.submit_command("CANCEL_CALIBRATION")
                 await self._send_control_ack({"type": "CALIBRATION_CANCELLED"})
 
             elif action == "SKIP_CALIBRATION_STEP":
-                cal_dto = self.engine.skip_calibration_step()
+                cal_dto = await self.engine.submit_command("SKIP_CALIBRATION_STEP")
                 await self._send_control_ack({
                     "type": "CALIBRATION_STEP_SKIPPED",
                     "calibration": cal_dto.model_dump() if cal_dto else None,
@@ -833,8 +915,7 @@ class LiveKitAIWorkerSession:
             elif action == "SWITCH_EXPERIMENT":
                 mode_str = msg.get("mode")
                 if mode_str:
-                    new_mode = ExperimentMode(mode_str)
-                    self.engine.set_experiment_mode(new_mode)
+                    new_mode = await self.engine.submit_command("SWITCH_EXPERIMENT", mode=mode_str)
                     await self._send_control_ack({"type": "EXPERIMENT_SWITCHED", "mode": new_mode.value})
 
             elif action == "SAVE_PROFILE":
@@ -843,55 +924,94 @@ class LiveKitAIWorkerSession:
                 await self._send_control_ack({"type": "PROFILE_SAVED", "driver_id": profile_dto.driver_id})
 
         except Exception as exc:
-            logger.error(f"[LiveKit Worker] Control message parsing error: {exc}", exc_info=True)
+            logger.error(f"[LiveKit Worker] Control message error: {exc}", exc_info=True)
+            action_name = locals().get("action", "UNKNOWN")
+            try:
+                await self._send_control_ack({"type": "ERROR", "action": action_name, "error": str(exc)})
+            except Exception:
+                pass
 
     async def _publish_reliable_safety_event(self, event_payload: dict) -> None:
-        """Publish important safety event with reliable DataChannel delivery and track ACK."""
+        """Publish important safety event with reliable DataChannel delivery, bounded retention, and tracked retry."""
         event_id = event_payload["event_id"]
+        now_mono = time.perf_counter()
+
+        logger.info(
+            f"[LiveKit Worker Event] CREATED event_id='{event_id}' "
+            f"seq={event_payload.get('event_seq', '0')} "
+            f"({event_payload.get('previous_state')} -> {event_payload.get('new_state')})."
+        )
+
+        # 1. Bound retention: evict entries older than TTL (15s) and cancel their retry tasks
+        expired_ids = [
+            eid
+            for eid, entry in self._unacknowledged_events.items()
+            if (now_mono - entry.get("sent_at", 0)) > self._unacked_ttl_sec
+        ]
+        for eid in expired_ids:
+            self._unacknowledged_events.pop(eid, None)
+            task = self._retry_tasks.pop(eid, None)
+            if task and not task.done():
+                task.cancel()
+
+        # 2. Bound retention: enforce maximum capacity (100 events)
+        if len(self._unacknowledged_events) >= self._max_unacked_events:
+            oldest_id = next(iter(self._unacknowledged_events))
+            self._unacknowledged_events.pop(oldest_id, None)
+            task = self._retry_tasks.pop(oldest_id, None)
+            if task and not task.done():
+                task.cancel()
+
         self._unacknowledged_events[event_id] = {
             "payload": event_payload,
             "retries": 0,
-            "sent_at": time.perf_counter(),
+            "sent_at": now_mono,
         }
-        logger.info(
-            f"[LiveKit Worker] Emitting reliable safety event '{event_id}' "
-            f"({event_payload['previous_state']} -> {event_payload['new_state']})."
-        )
+
+        # 3. Transmit attempt 0
+        logger.info(f"[LiveKit Worker Event] TRANSMIT attempt=0 event_id='{event_id}'")
         try:
             payload_bytes = json.dumps(event_payload).encode("utf-8")
             await self.room.local_participant.publish_data(payload_bytes, reliable=True)
         except Exception as exc:
-            logger.error(f"[LiveKit Worker] Failed to publish initial safety event '{event_id}': {exc}")
+            logger.error(f"[LiveKit Worker Event] Failed to publish initial safety event '{event_id}': {exc}")
 
-        # Non-blocking retry task
-        asyncio.create_task(self._retry_unacknowledged_event(event_id))
+        # 4. Centralized tracked retry task
+        task = asyncio.create_task(self._retry_unacknowledged_event(event_id))
+        self._retry_tasks[event_id] = task
 
     async def _retry_unacknowledged_event(self, event_id: str) -> None:
         """Retry unacknowledged safety events with bounded backoff without blocking inference."""
-        for attempt in range(1, 4):
-            await asyncio.sleep(0.4 * attempt)
-            if not self.is_running:
-                break
-            entry = self._unacknowledged_events.get(event_id)
-            if not entry:
-                # Confirmed ACK
-                return
-            entry["retries"] += 1
-            logger.warning(
-                f"[LiveKit Worker] Retrying unacknowledged event '{event_id}' (attempt {entry['retries']}/3)..."
-            )
-            try:
-                payload_bytes = json.dumps(entry["payload"]).encode("utf-8")
-                await self.room.local_participant.publish_data(payload_bytes, reliable=True)
-            except Exception as exc:
-                logger.warning(f"[LiveKit Worker] Retry {attempt} failed: {exc}")
+        try:
+            for attempt in range(1, 4):
+                await asyncio.sleep(0.4 * attempt)
+                if not self.is_running:
+                    break
+                entry = self._unacknowledged_events.get(event_id)
+                if not entry:
+                    # Confirmed ACK arrived
+                    return
+                entry["retries"] += 1
+                logger.warning(
+                    f"[LiveKit Worker Event] TRANSMIT attempt={attempt} event_id='{event_id}' "
+                    f"(attempt {entry['retries']}/3)..."
+                )
+                try:
+                    payload_bytes = json.dumps(entry["payload"]).encode("utf-8")
+                    await self.room.local_participant.publish_data(payload_bytes, reliable=True)
+                except Exception as exc:
+                    logger.warning(f"[LiveKit Worker Event] Retry {attempt} failed for '{event_id}': {exc}")
 
-        entry = self._unacknowledged_events.get(event_id)
-        if entry and self.is_running:
-            entry["exhausted"] = True
-            logger.warning(
-                f"[LiveKit Worker] Event '{event_id}' unacknowledged after 3 retries (client may be disconnected)."
-            )
+            entry = self._unacknowledged_events.get(event_id)
+            if entry and self.is_running:
+                entry["exhausted"] = True
+                logger.warning(
+                    f"[LiveKit Worker Event] RETRY_EXHAUSTED event_id='{event_id}' attempts=3 (client may be disconnected)."
+                )
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._retry_tasks.pop(event_id, None)
 
     async def _send_control_ack(self, payload: dict) -> None:
         """Send reliable ACK or state change confirmation back to client."""
@@ -904,11 +1024,10 @@ class LiveKitAIWorkerSession:
     async def stop(self) -> None:
         """Cleanly disconnect the worker from the LiveKit room, terminate tasks, and flush session summaries."""
         async with self._stop_lock:
-            if self._is_stopped:
+            if self._is_stopped or self.state in (WorkerState.STOPPING, WorkerState.STOPPED):
                 return
             self._is_stopped = True
-            if not self.is_running and not self.room:
-                return
+            self.state = WorkerState.STOPPING
             self.is_running = False
 
         shutdown_task = self._shutdown_task
@@ -945,26 +1064,45 @@ class LiveKitAIWorkerSession:
             except asyncio.QueueEmpty:
                 break
 
+        # Bounded wait for in-flight inference execution before executor shutdown
         if self._active_cfut and not self._active_cfut.done():
             self._coro_cancelled_for_active_frame = True
             logger.info(
                 f"[LiveKit Worker] stop() called while inference thread active. "
-                f"Preserving in-flight frame ({self._frames_in_flight}) until background thread terminates."
+                f"Awaiting in-flight frame up to 2.5s bounded timeout for room '{self.room_name}'."
             )
+            try:
+                await asyncio.wait_for(asyncio.wrap_future(self._active_cfut), timeout=2.5)
+                logger.info(
+                    f"[LiveKit Worker] In-flight inference finished cleanly before worker stop for room '{self.room_name}'."
+                )
+            except (asyncio.TimeoutError, asyncio.CancelledError) as err:
+                logger.warning(
+                    f"[LiveKit Worker] In-flight inference timed out or cancelled after 2.5s timeout during stop() for room '{self.room_name}': {err}"
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"[LiveKit Worker] In-flight inference raised exception during stop() for room '{self.room_name}': {exc}"
+                )
         else:
             if self._frames_in_flight > 0:
                 self._frames_aborted += self._frames_in_flight
                 self._frames_in_flight = 0
 
+        # Now shut down executor with wait=True to guarantee thread has terminated before closing native engine resources
         if self._executor:
-            self._executor.shutdown(wait=False, cancel_futures=True)
+            try:
+                self._executor.shutdown(wait=True, cancel_futures=True)
+            except Exception as exc:
+                logger.warning(f"[LiveKit Worker] Error shutting down executor for '{self.room_name}': {exc}")
+            self._executor = None
 
         try:
             await self.room.disconnect()
         except Exception as exc:
             logger.warning(f"[LiveKit Worker] Disconnect warning for '{self.room_name}': {exc}")
 
-        # Terminate active session in session_manager to release in-memory state and auto-persist profile
+        # Terminate active session in session_manager only AFTER inference thread has completely terminated
         try:
             summary = await session_manager.terminate_session(self.room_name)
             if self.engine is not None and not getattr(self.engine, "_is_closed", False):
@@ -981,14 +1119,23 @@ class LiveKitAIWorkerSession:
         except Exception as exc:
             logger.error(f"[LiveKit Worker] Error terminating session in session_manager: {exc}")
 
+        # Cancel all active retry tasks and clear unacknowledged events
+        for r_task in self._retry_tasks.values():
+            if not r_task.done():
+                r_task.cancel()
+        self._retry_tasks.clear()
+        self._unacknowledged_events.clear()
+
+        self.state = WorkerState.STOPPED
         logger.info(f"[LiveKit Worker] Worker cleanly disconnected and released for room '{self.room_name}'.")
 
 
 class LiveKitWorkerManager:
-    """Singleton manager tracking and dispatching worker sessions per room."""
+    """Singleton manager tracking and dispatching worker sessions per room with atomic startup and shutdown."""
 
     def __init__(self) -> None:
         self._workers: Dict[str, LiveKitAIWorkerSession] = {}
+        self._startup_tasks: Dict[str, asyncio.Task[LiveKitAIWorkerSession]] = {}
         self._lock = asyncio.Lock()
 
     async def ensure_worker_running(
@@ -997,34 +1144,74 @@ class LiveKitWorkerManager:
         driver_id: str = "driver_default",
         experiment_mode: Optional[str] = None,
     ) -> LiveKitAIWorkerSession:
-        """Ensure an active AI worker participant exists for the given room."""
+        """Atomically ensure an active AI worker participant exists for the given room."""
+        task_to_await: Optional[asyncio.Task[LiveKitAIWorkerSession]] = None
+
         async with self._lock:
             existing = self._workers.get(room_name)
-            if existing and existing.is_running:
+            if existing and (existing.state == WorkerState.RUNNING or existing.is_running):
                 return existing
 
-            worker = LiveKitAIWorkerSession(
-                room_name=room_name,
-                driver_id=driver_id,
-                experiment_mode=experiment_mode,
-            )
-            # Start worker in background
-            asyncio.create_task(worker.start())
-            self._workers[room_name] = worker
-            return worker
+            existing_startup = self._startup_tasks.get(room_name)
+            if existing_startup and not existing_startup.done():
+                task_to_await = existing_startup
+            else:
+                worker = LiveKitAIWorkerSession(
+                    room_name=room_name,
+                    driver_id=driver_id,
+                    experiment_mode=experiment_mode,
+                )
+
+                async def _do_start() -> LiveKitAIWorkerSession:
+                    try:
+                        await worker.start()
+                        worker.is_running = True
+                        worker.state = WorkerState.RUNNING
+                        async with self._lock:
+                            self._workers[room_name] = worker
+                        return worker
+                    except Exception:
+                        async with self._lock:
+                            self._workers.pop(room_name, None)
+                        raise
+                    finally:
+                        async with self._lock:
+                            self._startup_tasks.pop(room_name, None)
+
+                task_to_await = asyncio.create_task(_do_start())
+                self._startup_tasks[room_name] = task_to_await
+
+        return await task_to_await
 
     async def stop_worker(self, room_name: str) -> bool:
-        """Stop and remove a worker session."""
+        """Stop and remove a worker session without holding manager lock during teardown."""
+        worker_to_stop: Optional[LiveKitAIWorkerSession] = None
+        startup_task_to_cancel: Optional[asyncio.Task] = None
+
         async with self._lock:
-            worker = self._workers.pop(room_name, None)
-            if worker:
-                await worker.stop()
-                return True
-            return False
+            startup_task_to_cancel = self._startup_tasks.pop(room_name, None)
+            worker_to_stop = self._workers.pop(room_name, None)
+
+        if startup_task_to_cancel and not startup_task_to_cancel.done():
+            startup_task_to_cancel.cancel()
+            try:
+                await startup_task_to_cancel
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        if worker_to_stop:
+            await worker_to_stop.stop()
+            return True
+
+        return False
+
+    def get_worker(self, room_name: str) -> Optional[LiveKitAIWorkerSession]:
+        """Return the active worker session for a room if running, else None."""
+        return self._workers.get(room_name)
 
     def list_active_workers(self) -> list[str]:
         """Return list of active room names with running workers."""
-        return [k for k, v in self._workers.items() if v.is_running]
+        return [k for k, v in self._workers.items() if v.state == WorkerState.RUNNING]
 
 
 livekit_worker_manager = LiveKitWorkerManager()

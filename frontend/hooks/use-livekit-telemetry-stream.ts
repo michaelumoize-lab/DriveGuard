@@ -77,6 +77,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
 
   // Telemetry deduplication, state guard, and latency tracking refs
   const lastTelemetrySeqRef = useRef<bigint>(BigInt(-1));
+  const lastSafetyEventSeqRef = useRef<bigint>(BigInt(-1));
   const activeStateRef = useRef<AlertState>("NORMAL");
   const lastRenderedStateRef = useRef<AlertState>("NORMAL");
   const processedEventIdsRef = useRef<Set<string>>(new Set());
@@ -421,11 +422,18 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
               }
             } else if (msg.type === "SAFETY_EVENT") {
               const safetyEvent = msg as SafetyEvent;
+              let currentEventSeq: bigint;
+              try {
+                currentEventSeq = BigInt(String(safetyEvent.event_seq ?? 0));
+              } catch {
+                currentEventSeq = BigInt(0);
+              }
               console.log(
-                `[DriveGuard LiveKit] Safety event received: ${safetyEvent.previous_state} -> ${safetyEvent.new_state} (ID: ${safetyEvent.event_id})`
+                `[DriveGuard LiveKit] Safety event received: seq=${currentEventSeq} ${safetyEvent.previous_state} -> ${safetyEvent.new_state} (ID: ${safetyEvent.event_id})`
               );
 
               // 1. Immediately acknowledge event back to Python worker over reliable DataChannel
+              // (always ACK, even for duplicates or out-of-order packets, so server clears retry task)
               if (roomRef.current && roomRef.current.state === ConnectionState.Connected) {
                 const ackPayload: EventAck = {
                   action: "EVENT_ACK",
@@ -445,9 +453,18 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
                 }
               }
 
-              // 2. Idempotent deduplication (prevent re-triggering alert audio on retransmitted packets)
+              // 2. Out-of-order guard: prevent delayed older safety events from overwriting newer states
+              if (currentEventSeq <= lastSafetyEventSeqRef.current) {
+                console.warn(
+                  `[DriveGuard LiveKit] Discarding delayed out-of-order safety event seq=${currentEventSeq} (latest applied seq=${lastSafetyEventSeqRef.current})`
+                );
+                return;
+              }
+
+              // 3. Idempotent deduplication (prevent re-triggering alert audio on retransmitted packets)
               if (!processedEventIdsRef.current.has(safetyEvent.event_id)) {
                 processedEventIdsRef.current.add(safetyEvent.event_id);
+                lastSafetyEventSeqRef.current = currentEventSeq;
                 if (processedEventIdsRef.current.size > 200) {
                   const oldest = processedEventIdsRef.current.values().next().value;
                   if (oldest) processedEventIdsRef.current.delete(oldest);
@@ -468,13 +485,22 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
               console.log(
                 `[DriveGuard LiveKit] State synchronization received from server. Current state: ${msg.current_state}`
               );
+              if (msg.latest_safety_event) {
+                const syncEvt = msg.latest_safety_event as SafetyEvent;
+                try {
+                  const syncSeq = BigInt(String(syncEvt.event_seq ?? 0));
+                  if (syncSeq > lastSafetyEventSeqRef.current) {
+                    lastSafetyEventSeqRef.current = syncSeq;
+                  }
+                } catch {
+                  // Ignore parse error
+                }
+                setActiveSafetyEvent(syncEvt);
+              }
               if (msg.current_state) {
                 activeStateRef.current = msg.current_state;
                 lastRenderedStateRef.current = msg.current_state;
                 setTelemetry((prev) => (prev ? { ...prev, state: msg.current_state } : prev));
-              }
-              if (msg.latest_safety_event) {
-                setActiveSafetyEvent(msg.latest_safety_event as SafetyEvent);
               }
             } else if (msg.type === "PONG") {
               if (msg.client_ts !== undefined && msg.client_ts !== null) {

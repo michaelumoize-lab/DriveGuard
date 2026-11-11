@@ -90,6 +90,20 @@ class GazeAttentionTracker:
         self._current_zone = PoseZone.CENTER
         self._zone_enter_ts_ms = 0.0
 
+    def handle_gap(self, timestamp_ms: float) -> None:
+        """
+        Handle an observation sampling gap or face tracking loss.
+        Resets the zone dwell baseline and center pose history so dwell time
+        does not accumulate across unobserved intervals.
+        """
+        self._prev_ts_ms = timestamp_ms
+        self._zone_enter_ts_ms = timestamp_ms
+        self._center_poses.clear()
+
+    def handle_face_lost(self, timestamp_ms: float) -> None:
+        """Explicitly handle face detection loss for gaze tracking."""
+        self.handle_gap(timestamp_ms)
+
     def update(
         self,
         timestamp_ms: float,

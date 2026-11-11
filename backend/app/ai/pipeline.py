@@ -15,12 +15,14 @@ Encapsulates the complete real-time computer vision and adaptive inference pipel
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
+import asyncio
 import logging
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Deque, Dict, List, Optional, Tuple, Union
+from typing import Any, Deque, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
@@ -60,6 +62,16 @@ from backend.app.schemas.telemetry import (
 )
 
 
+@dataclass
+class EngineCommand:
+    """Encapsulates a state mutation command queued for execution at a safe frame boundary."""
+
+    action: str
+    params: Dict[str, Any]
+    future: Optional[asyncio.Future] = None
+    event_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
 class SessionAIEngine:
     """
     Stateful AI pipeline orchestrator managing one driver's real-time monitoring session.
@@ -73,6 +85,7 @@ class SessionAIEngine:
         experiment_mode: ExperimentMode = ExperimentMode.C_CONFIDENCE_GATED_CASCADE,
         onnx_model_path: Optional[str | Path] = None,
         landmarker: Optional[DriveGuardFaceLandmarker] = None,
+        face_loss_grace_ms: float = 450.0,
     ) -> None:
         self.session_id = session_id
         self.driver_id = driver_id
@@ -121,8 +134,19 @@ class SessionAIEngine:
         self._lifetime_latency_sum_ms: float = 0.0
         self._recent_latencies_ms: Deque[float] = deque(maxlen=1500)
 
-        self._process_lock = threading.Lock()
+        self._process_lock = threading.RLock()
+        self._command_lock = threading.Lock()
+        self._pending_commands: Deque[EngineCommand] = deque()
         self._is_closed = False
+
+        # Face-Loss Grace Period & Monitoring Availability FSM
+        self.face_loss_grace_ms: float = float(face_loss_grace_ms)
+        self._face_lost_start_ms: Optional[float] = None
+        self._has_seen_face: bool = False
+        self._last_valid_risk_score: float = 0.0
+        self._last_valid_alert_state: AlertStateEnum = AlertStateEnum.MONITORING_UNAVAILABLE
+        self._monitoring_status: str = "MONITORING_UNAVAILABLE"
+        self._recovery_frame_count: int = 0
 
     @property
     def latencies_ms(self) -> List[float]:
@@ -134,7 +158,7 @@ class SessionAIEngine:
         return list(self._recent_latencies_ms)
 
     # --------------------------------------------------------------------------
-    # Calibration Lifecycle Management
+    # Calibration Lifecycle Management (Synchronized & Frame-Boundary Safe)
     # --------------------------------------------------------------------------
 
     def start_calibration(
@@ -147,7 +171,28 @@ class SessionAIEngine:
         include_blink_baseline: bool = False,
         blink_baseline_duration_sec: float = 120.0,
     ) -> CalibrationPhaseDTO:
-        """Begin a new guided calibration session (4-Zone default, 3-Zone, 1-Zone, or single-zone recalibration)."""
+        """Begin a new guided calibration session (synchronized under process lock)."""
+        with self._process_lock:
+            return self._start_calibration_locked(
+                four_zone_mode=four_zone_mode,
+                three_zone_mode=three_zone_mode,
+                zone_duration_sec=zone_duration_sec,
+                target_zone=target_zone,
+                timestamp_ms=timestamp_ms,
+                include_blink_baseline=include_blink_baseline,
+                blink_baseline_duration_sec=blink_baseline_duration_sec,
+            )
+
+    def _start_calibration_locked(
+        self,
+        four_zone_mode: Optional[bool] = None,
+        three_zone_mode: Optional[bool] = None,
+        zone_duration_sec: float = 5.0,
+        target_zone: Optional[str] = None,
+        timestamp_ms: Optional[float] = None,
+        include_blink_baseline: bool = False,
+        blink_baseline_duration_sec: float = 120.0,
+    ) -> CalibrationPhaseDTO:
         t_zone: Optional[PoseZone | str] = None
         if target_zone:
             is_4z, is_3z = False, False
@@ -178,14 +223,22 @@ class SessionAIEngine:
 
     def cancel_calibration(self) -> None:
         """Cancel an ongoing calibration session."""
+        with self._process_lock:
+            self._cancel_calibration_locked()
+
+    def _cancel_calibration_locked(self) -> None:
         self.calibration_session = None
 
     def skip_calibration_step(self, timestamp_ms: Optional[float] = None) -> Optional[CalibrationPhaseDTO]:
         """Manually advance past the current zone if tracking is difficult or user wishes to proceed."""
+        with self._process_lock:
+            return self._skip_calibration_step_locked(timestamp_ms=timestamp_ms)
+
+    def _skip_calibration_step_locked(self, timestamp_ms: Optional[float] = None) -> Optional[CalibrationPhaseDTO]:
         if self.calibration_session is not None and self.calibration_session.is_running:
             new_profile = self.calibration_session.skip_current_step(timestamp_ms=timestamp_ms)
             if new_profile is not None:
-                self.set_profile(new_profile)
+                self._set_profile_locked(new_profile)
                 self._last_completed_calibration_dto = self._build_calibration_dto(timestamp_ms=timestamp_ms)
             return self._build_calibration_dto(timestamp_ms=timestamp_ms)
         return None
@@ -256,11 +309,15 @@ class SessionAIEngine:
         )
 
     # --------------------------------------------------------------------------
-    # Profile Import / Export
+    # Profile Import / Export (Synchronized & Frame-Boundary Safe)
     # --------------------------------------------------------------------------
 
     def set_profile(self, profile: DriverBehaviourProfile) -> None:
         """Update active personal baseline profile."""
+        with self._process_lock:
+            self._set_profile_locked(profile)
+
+    def _set_profile_locked(self, profile: DriverBehaviourProfile) -> None:
         self.profile = profile
         self.risk_engine.set_profile(profile)
         self.kinematics.set_personalized_baseline(
@@ -314,7 +371,11 @@ class SessionAIEngine:
         )
 
     def load_profile_dto(self, dto: DriverProfileDTO) -> None:
-        """Load and activate a driver profile from a Pydantic DTO."""
+        """Load and activate a driver profile from a Pydantic DTO (synchronized under process lock)."""
+        with self._process_lock:
+            self._load_profile_dto_locked(dto)
+
+    def _load_profile_dto_locked(self, dto: DriverProfileDTO) -> None:
         baselines: Dict[str, ZoneBaseline] = {}
         for zk_str, zb_dto in dto.zone_baselines.items():
             if zk_str.startswith("_"):
@@ -360,7 +421,124 @@ class SessionAIEngine:
             sensitivity_level=getattr(dto, "sensitivity_level", "STANDARD") or "STANDARD",
             version=dto.version,
         )
-        self.set_profile(new_profile)
+        self._set_profile_locked(new_profile)
+
+    def set_experiment_mode(self, mode: Union[ExperimentMode, str]) -> ExperimentMode:
+        """Authoritative synchronous method to validate and transition experiment mode."""
+        validated = self._validate_experiment_mode(mode)
+        with self._process_lock:
+            return self._set_experiment_mode_locked(validated)
+
+    def _validate_experiment_mode(self, mode: Union[ExperimentMode, str, None]) -> ExperimentMode:
+        if mode is None:
+            raise ValueError("Experiment mode cannot be None")
+        if isinstance(mode, ExperimentMode):
+            return mode
+        if isinstance(mode, str):
+            for em in ExperimentMode:
+                if em.value == mode or em.name == mode:
+                    return em
+        valid_modes = [m.value for m in ExperimentMode]
+        raise ValueError(f"Invalid experiment mode: '{mode}'. Must be one of {valid_modes}")
+
+    def _set_experiment_mode_locked(self, mode: ExperimentMode) -> ExperimentMode:
+        self.experiment_mode = mode
+        if self.cascade is not None:
+            self.cascade.mode = mode
+        return mode
+
+    # --------------------------------------------------------------------------
+    # Thread-Safe Command Boundary Mechanism (Workstream B)
+    # --------------------------------------------------------------------------
+
+    async def submit_command(self, action: str, **params: Any) -> Any:
+        """
+        Thread-safe asynchronous entry point for engine state mutations.
+        Enqueues command for execution at next frame boundary under _process_lock,
+        or triggers immediate threadpool execution if idle, returning result without blocking loop.
+        """
+        if self._is_closed:
+            raise RuntimeError(f"SessionAIEngine '{self.session_id}' is closed; command '{action}' rejected.")
+
+        # Pre-validate synchronous commands before queueing
+        if action == "SWITCH_EXPERIMENT":
+            self._validate_experiment_mode(params.get("mode"))
+
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        cmd = EngineCommand(action=action, params=params, future=fut, event_loop=loop)
+
+        with self._command_lock:
+            if self._is_closed:
+                raise RuntimeError(f"SessionAIEngine '{self.session_id}' is closed; command '{action}' rejected.")
+            self._pending_commands.append(cmd)
+
+        drain_task = asyncio.create_task(asyncio.to_thread(self._drain_pending_commands))
+        try:
+            return await fut
+        finally:
+            if not drain_task.done():
+                try:
+                    await drain_task
+                except Exception:
+                    pass
+
+    def _drain_pending_commands(self) -> None:
+        """Synchronously acquire process lock and drain all queued commands."""
+        with self._process_lock:
+            self._drain_pending_commands_locked()
+
+    def _drain_pending_commands_locked(self) -> None:
+        """Drain and execute all pending commands while holding _process_lock."""
+        with self._command_lock:
+            if not self._pending_commands:
+                return
+            cmds_to_run = list(self._pending_commands)
+            self._pending_commands.clear()
+
+        for cmd in cmds_to_run:
+            if cmd.future is not None and cmd.future.done():
+                continue
+            try:
+                res = self._execute_command_internal_locked(cmd.action, cmd.params)
+                if cmd.future and cmd.event_loop and not cmd.future.done():
+                    cmd.event_loop.call_soon_threadsafe(cmd.future.set_result, res)
+            except Exception as exc:
+                if cmd.future and cmd.event_loop and not cmd.future.done():
+                    cmd.event_loop.call_soon_threadsafe(cmd.future.set_exception, exc)
+                elif not cmd.future:
+                    logger.error(f"[SessionAIEngine] Error executing command '{cmd.action}': {exc}", exc_info=True)
+
+    def _execute_command_internal_locked(self, action: str, params: Dict[str, Any]) -> Any:
+        if self._is_closed:
+            raise RuntimeError(f"Cannot execute '{action}' on closed engine.")
+
+        if action == "START_CALIBRATION":
+            return self._start_calibration_locked(
+                four_zone_mode=params.get("four_zone_mode"),
+                three_zone_mode=params.get("three_zone_mode"),
+                zone_duration_sec=params.get("zone_duration_sec", 5.0),
+                target_zone=params.get("target_zone"),
+                timestamp_ms=params.get("timestamp_ms"),
+                include_blink_baseline=params.get("include_blink_baseline", False),
+                blink_baseline_duration_sec=params.get("blink_baseline_duration_sec", 120.0),
+            )
+        elif action == "CANCEL_CALIBRATION":
+            self._cancel_calibration_locked()
+            return None
+        elif action == "SKIP_CALIBRATION_STEP":
+            return self._skip_calibration_step_locked(timestamp_ms=params.get("timestamp_ms"))
+        elif action == "SWITCH_EXPERIMENT":
+            mode = self._validate_experiment_mode(params["mode"])
+            return self._set_experiment_mode_locked(mode)
+        elif action == "SET_PROFILE":
+            self._set_profile_locked(params["profile"])
+            return None
+        elif action == "LOAD_PROFILE_DTO":
+            self._load_profile_dto_locked(params["dto"])
+            return None
+        else:
+            raise ValueError(f"Unknown engine command action: '{action}'")
 
     # --------------------------------------------------------------------------
     # Real-Time Frame Processing Orchestration
@@ -400,6 +578,8 @@ class SessionAIEngine:
         is_rgb: bool = True,
     ) -> FrameTelemetryDTO:
         t_start = time.perf_counter()
+        # Drain and apply any pending control mutations at this frame boundary
+        self._drain_pending_commands_locked()
         self.frame_index += 1
 
         # 1. Resolve timestamp & instantaneous FPS
@@ -408,6 +588,7 @@ class SessionAIEngine:
         else:
             ts_ms = float(timestamp_ms)
 
+        last_frame_ts = self.prev_timestamp_ms
         if self.prev_timestamp_ms is not None:
             dt_sec = max(1e-4, (ts_ms - self.prev_timestamp_ms) / 1000.0)
             self.fps_ema = 0.90 * self.fps_ema + 0.10 * (1.0 / dt_sec)
@@ -454,15 +635,116 @@ class SessionAIEngine:
         except Exception as exc:
             logger.error(f"[SessionAIEngine] Landmarker exception at {ts_ms}ms: {exc}", exc_info=True)
             self.kinematics.handle_face_lost(ts_ms)
+            self.gaze_tracker.handle_face_lost(ts_ms)
+            self._recovery_frame_count = 0
             latency_ms = (time.perf_counter() - t_start) * 1000.0
-            return self._build_unavailable_frame(
-                ts_ms, latency_ms=latency_ms, reason=f"LANDMARKER_EXCEPTION: {type(exc).__name__}"
-            )
+
+            if not self._has_seen_face:
+                self._monitoring_status = "MONITORING_UNAVAILABLE"
+                return self._build_unavailable_frame(
+                    ts_ms,
+                    latency_ms=latency_ms,
+                    reason=f"LANDMARKER_EXCEPTION: {type(exc).__name__}",
+                    state=AlertStateEnum.MONITORING_UNAVAILABLE,
+                    risk_score=0.0,
+                    monitoring_status="MONITORING_UNAVAILABLE",
+                )
+
+            if last_frame_ts is not None and (ts_ms - last_frame_ts) >= self.face_loss_grace_ms:
+                loss_duration_ms = ts_ms - last_frame_ts
+                self._face_lost_start_ms = last_frame_ts
+            else:
+                if self._face_lost_start_ms is None:
+                    self._face_lost_start_ms = ts_ms
+                loss_duration_ms = ts_ms - self._face_lost_start_ms
+
+            if loss_duration_ms < self.face_loss_grace_ms:
+                self._monitoring_status = "FACE_VISIBILITY_DEGRADED"
+                return self._build_unavailable_frame(
+                    ts_ms,
+                    latency_ms=latency_ms,
+                    reason=f"FACE_VISIBILITY_DEGRADED: {type(exc).__name__}",
+                    state=self._last_valid_alert_state,
+                    risk_score=self._last_valid_risk_score,
+                    monitoring_status="FACE_VISIBILITY_DEGRADED",
+                )
+            else:
+                self._monitoring_status = "MONITORING_UNAVAILABLE"
+                return self._build_unavailable_frame(
+                    ts_ms,
+                    latency_ms=latency_ms,
+                    reason=f"LANDMARKER_EXCEPTION: {type(exc).__name__}",
+                    state=AlertStateEnum.MONITORING_UNAVAILABLE,
+                    risk_score=0.0,
+                    monitoring_status="MONITORING_UNAVAILABLE",
+                )
 
         if not geom.face_detected:
             self.kinematics.handle_face_lost(ts_ms)
+            self.gaze_tracker.handle_face_lost(ts_ms)
+            self._recovery_frame_count = 0
             latency_ms = (time.perf_counter() - t_start) * 1000.0
-            return self._build_unavailable_frame(ts_ms, latency_ms=latency_ms, reason="NO_FACE_DETECTED")
+
+            if not self._has_seen_face:
+                self._monitoring_status = "MONITORING_UNAVAILABLE"
+                return self._build_unavailable_frame(
+                    ts_ms,
+                    latency_ms=latency_ms,
+                    reason="NO_FACE_DETECTED",
+                    state=AlertStateEnum.MONITORING_UNAVAILABLE,
+                    risk_score=0.0,
+                    monitoring_status="MONITORING_UNAVAILABLE",
+                )
+
+            if last_frame_ts is not None and (ts_ms - last_frame_ts) >= self.face_loss_grace_ms:
+                loss_duration_ms = ts_ms - last_frame_ts
+                self._face_lost_start_ms = last_frame_ts
+            else:
+                if self._face_lost_start_ms is None:
+                    self._face_lost_start_ms = ts_ms
+                loss_duration_ms = ts_ms - self._face_lost_start_ms
+
+            if loss_duration_ms < self.face_loss_grace_ms:
+                self._monitoring_status = "FACE_VISIBILITY_DEGRADED"
+                return self._build_unavailable_frame(
+                    ts_ms,
+                    latency_ms=latency_ms,
+                    reason="FACE_VISIBILITY_DEGRADED",
+                    state=self._last_valid_alert_state,
+                    risk_score=self._last_valid_risk_score,
+                    monitoring_status="FACE_VISIBILITY_DEGRADED",
+                )
+            else:
+                self._monitoring_status = "MONITORING_UNAVAILABLE"
+                return self._build_unavailable_frame(
+                    ts_ms,
+                    latency_ms=latency_ms,
+                    reason="NO_FACE_DETECTED",
+                    state=AlertStateEnum.MONITORING_UNAVAILABLE,
+                    risk_score=0.0,
+                    monitoring_status="MONITORING_UNAVAILABLE",
+                )
+
+        # 3b. Face detected: mark face seen, handle recovery transitions and temporal synchronization
+        was_lost = self._face_lost_start_ms is not None
+        was_sustained_outage = was_lost and (self._monitoring_status == "MONITORING_UNAVAILABLE")
+
+        if was_lost:
+            self.kinematics.handle_gap(ts_ms)
+            self.gaze_tracker.handle_gap(ts_ms)
+            self._face_lost_start_ms = None
+
+        if was_sustained_outage:
+            self._recovery_frame_count += 1
+            if self._recovery_frame_count < 2:
+                self._monitoring_status = "MONITORING_RECOVERING"
+            else:
+                self._monitoring_status = "MONITORING_ACTIVE"
+        else:
+            self._recovery_frame_count = 0
+            self._monitoring_status = "MONITORING_ACTIVE"
+
+        self._has_seen_face = True
 
         # 4. Zone-Adaptive Baseline Selection
         zone_baseline = self.profile.get_zone_baseline(geom.pose_zone)
@@ -537,7 +819,7 @@ class SessionAIEngine:
             )
             if new_profile is not None:
                 total_steps = len(self.calibration_session.steps)
-                self.set_profile(new_profile)
+                self._set_profile_locked(new_profile)
                 profile_dto = self.export_profile_dto()
                 self._last_completed_calibration_dto = CalibrationPhaseDTO(
                     current_zone="CENTER",
@@ -599,6 +881,9 @@ class SessionAIEngine:
         self._lifetime_latency_sum_ms += latency_ms
         self._recent_latencies_ms.append(latency_ms)
 
+        self._last_valid_risk_score = round(risk_res.risk_score, 3)
+        self._last_valid_alert_state = AlertStateEnum(risk_res.state.value)
+
         # 10. Assemble validated Pydantic DTO
         return FrameTelemetryDTO(
             session_id=self.session_id,
@@ -608,6 +893,7 @@ class SessionAIEngine:
             fps=round(self.fps_ema, 1),
             face_detected=True,
             state=AlertStateEnum(risk_res.state.value),
+            monitoring_status=self._monitoring_status,
             risk_score=round(risk_res.risk_score, 3),
             pose_zone=PoseZoneEnum(geom.pose_zone.value),
             reason_codes=risk_res.reasons,
@@ -655,6 +941,11 @@ class SessionAIEngine:
                     and abs(cascade_res.geom_closure_score - cascade_res.cnn_closed_prob) >= 0.30
                 ),
                 cnn_latency_ms=round(cascade_res.stage_latency_ms, 2),
+                cnn_execution_mode=cascade_res.cnn_execution_mode,
+                verifier_invoked=cascade_res.cnn_invoked,
+                gate_trigger_reason=cascade_res.gate_trigger_reason,
+                onnx_inference_executed=cascade_res.onnx_inference_executed,
+                cnn_inference_duration_ms=round(cascade_res.cnn_inference_duration_ms, 2) if cascade_res.cnn_inference_duration_ms is not None else None,
             ),
             comparison=ConventionalFixedComparisonDTO(
                 fixed_cutoff_ear=0.22,
@@ -669,7 +960,13 @@ class SessionAIEngine:
         )
 
     def _build_unavailable_frame(
-        self, timestamp_ms: float, latency_ms: float, reason: str
+        self,
+        timestamp_ms: float,
+        latency_ms: float,
+        reason: str,
+        state: AlertStateEnum = AlertStateEnum.MONITORING_UNAVAILABLE,
+        risk_score: float = 0.0,
+        monitoring_status: str = "MONITORING_UNAVAILABLE",
     ) -> FrameTelemetryDTO:
         """Construct fallback telemetry when face tracking or video decoding drops."""
         return FrameTelemetryDTO(
@@ -679,8 +976,9 @@ class SessionAIEngine:
             timestamp_ms=round(timestamp_ms, 1),
             fps=round(self.fps_ema, 1),
             face_detected=False,
-            state=AlertStateEnum.MONITORING_UNAVAILABLE,
-            risk_score=0.0,
+            state=state,
+            monitoring_status=monitoring_status,
+            risk_score=risk_score,
             pose_zone=PoseZoneEnum.OUT_OF_BOUNDS,
             reason_codes=[reason],
             head_pose=HeadPoseDTO(pitch_deg=0.0, yaw_deg=0.0, roll_deg=0.0),
@@ -714,6 +1012,11 @@ class SessionAIEngine:
                 arbitration_winner="NONE",
                 disagreement_flag=False,
                 cnn_latency_ms=0.0,
+                cnn_execution_mode="UNAVAILABLE",
+                verifier_invoked=False,
+                gate_trigger_reason=reason,
+                onnx_inference_executed=False,
+                cnn_inference_duration_ms=None,
             ),
             comparison=ConventionalFixedComparisonDTO(
                 fixed_cutoff_ear=0.22,
@@ -731,6 +1034,14 @@ class SessionAIEngine:
         """Cleanly release AI resources (MediaPipe FaceLandmarker, Cascade ONNX sessions)."""
         with self._process_lock:
             self._is_closed = True
+            with self._command_lock:
+                while self._pending_commands:
+                    cmd = self._pending_commands.popleft()
+                    if cmd.future and cmd.event_loop and not cmd.future.done():
+                        cmd.event_loop.call_soon_threadsafe(
+                            cmd.future.set_exception,
+                            RuntimeError(f"Engine is closing; command '{cmd.action}' aborted."),
+                        )
             if self.landmarker is not None and hasattr(self.landmarker, "close"):
                 try:
                     self.landmarker.close()
