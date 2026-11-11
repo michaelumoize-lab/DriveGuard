@@ -23,44 +23,47 @@ export async function POST(req: NextRequest) {
       timestampMs = Date.now(),
     } = body;
 
-    if (!sessionCode) {
-      return NextResponse.json({ error: "sessionCode is required" }, { status: 400 });
+    if (!sessionCode || typeof sessionCode !== "string") {
+      return NextResponse.json({ error: "sessionCode is required and must be a string" }, { status: 400 });
     }
 
     const drivingSession = await prisma.drivingSession.findUnique({
-      where: { sessionCode },
+      where: { sessionCode: sessionCode.trim() },
     });
 
     if (!drivingSession || drivingSession.userId !== userId) {
       return NextResponse.json({ error: "Session not found or forbidden" }, { status: 404 });
     }
 
-    const alert = await prisma.drowsinessAlert.create({
-      data: {
-        sessionId: drivingSession.id,
-        timestampMs,
-        severity: severity.toUpperCase() === "CRITICAL" ? "CRITICAL" : "WARNING",
-        riskScore: Number(riskScore),
-        earValue: Number(earValue),
-        perclosPct: Number(perclosPct),
-        poseZone: String(poseZone),
-        reasons: Array.isArray(reasons) ? reasons : [String(reasons)],
-        cascadeDecision: String(cascadeDecision),
-      },
-    });
+    // Input validation & clamping
+    const parsedRisk = Math.max(0.0, Math.min(1.0, Number.isFinite(Number(riskScore)) ? Number(riskScore) : 0.5));
+    const parsedEar = Math.max(0.0, Number.isFinite(Number(earValue)) ? Number(earValue) : 0.2);
+    const parsedPerclos = Math.max(0.0, Math.min(100.0, Number.isFinite(Number(perclosPct)) ? Number(perclosPct) : 15.0));
+    const parsedTimestamp = Number.isFinite(Number(timestampMs)) && Number(timestampMs) > 0 ? Number(timestampMs) : Date.now();
+    const normalizedSeverity = String(severity).toUpperCase() === "CRITICAL" ? "CRITICAL" : "WARNING";
 
-    // Increment corresponding alert counter on the session
-    if (severity.toUpperCase() === "CRITICAL") {
-      await prisma.drivingSession.update({
+    // DG-17: Atomic Transaction: Alert creation and session counter increment must commit together
+    const [alert] = await prisma.$transaction([
+      prisma.drowsinessAlert.create({
+        data: {
+          sessionId: drivingSession.id,
+          timestampMs: parsedTimestamp,
+          severity: normalizedSeverity,
+          riskScore: parsedRisk,
+          earValue: parsedEar,
+          perclosPct: parsedPerclos,
+          poseZone: String(poseZone || "CENTER"),
+          reasons: Array.isArray(reasons) ? reasons.map(String) : [String(reasons)],
+          cascadeDecision: String(cascadeDecision || "GEOMETRIC"),
+        },
+      }),
+      prisma.drivingSession.update({
         where: { id: drivingSession.id },
-        data: { criticalAlertsCount: { increment: 1 } },
-      });
-    } else {
-      await prisma.drivingSession.update({
-        where: { id: drivingSession.id },
-        data: { warningAlertsCount: { increment: 1 } },
-      });
-    }
+        data: normalizedSeverity === "CRITICAL"
+          ? { criticalAlertsCount: { increment: 1 } }
+          : { warningAlertsCount: { increment: 1 } },
+      }),
+    ]);
 
     return NextResponse.json({ success: true, alertId: alert.id });
   } catch (error) {
