@@ -14,12 +14,14 @@ export function __setGetServerSessionMock(
   getServerSessionMock = mockFn;
 }
 
-export async function getServerSession(): Promise<ServerSessionResult | null> {
+export async function getServerSession(
+  customHeaders?: Headers
+): Promise<ServerSessionResult | null> {
   if (getServerSessionMock && process.env.NODE_ENV !== "production") {
     return await getServerSessionMock();
   }
   try {
-    const reqHeaders = await headers();
+    const reqHeaders = customHeaders ?? (await headers());
     return await auth.api.getSession({ headers: reqHeaders });
   } catch (error) {
     if (
