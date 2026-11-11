@@ -462,6 +462,8 @@ class LiveKitAIWorkerSession:
                 "session_id": self.room_name,
                 "current_state": self._last_state,
                 "latest_safety_event": self._latest_safety_event,
+                "session_epoch": self.session_epoch,
+                "worker_boot_id": self.worker_boot_id,
                 "server_time": time.time(),
             }))
 
