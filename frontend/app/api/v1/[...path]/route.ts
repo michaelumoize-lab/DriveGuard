@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { PRODUCTION_FASTAPI_URL, resolveCloudFastApiUrl } from "@/lib/fastapi-url";
 import { getServerSession } from "@/lib/get-session";
 import { createBackendAccessToken } from "@/lib/backend-auth";
+import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,8 @@ async function proxyToFastApi(
   const isPublicHealth = subPath === "health" || subPath === "" || subPath === "health/liveness";
 
   let backendToken: string | null = null;
+  const primaryBase = resolveCloudFastApiUrl();
+
   if (!isPublicHealth) {
     const session = await getServerSession();
     const userId = session?.user?.id;
@@ -28,9 +31,81 @@ async function proxyToFastApi(
     }
     const role = (session?.user as any)?.role || "USER";
     backendToken = createBackendAccessToken({ userId, role });
+
+    // DG-04: Prioritize PostgreSQL calibration records across backend restarts.
+    // When initializing a session or requesting a LiveKit token, synchronize the authoritative
+    // profile from PostgreSQL to FastAPI so cold-started workers immediately have calibrated baselines.
+    if (subPath === "livekit/token" || subPath === "sessions") {
+      try {
+        const dbProfile = await prisma.driverProfile.findUnique({ where: { userId } });
+        if (dbProfile && dbProfile.isCalibrated) {
+          const syncUrl = `${primaryBase}/api/v1/profiles`;
+          const baseZones =
+            dbProfile.zoneBaselines &&
+            typeof dbProfile.zoneBaselines === "object" &&
+            !Array.isArray(dbProfile.zoneBaselines)
+              ? (dbProfile.zoneBaselines as Record<string, any>)
+              : {};
+          const spatialZones: Record<string, any> = {};
+          for (const [k, v] of Object.entries(baseZones)) {
+            if (!k.startsWith("_") && v && typeof v === "object") {
+              const zv = v as Record<string, any>;
+              const earMed = Number(zv.ear_median ?? dbProfile.centerEarMedian);
+              const earMad = Number(zv.ear_mad_scaled ?? dbProfile.centerEarMadScaled);
+              spatialZones[k] = {
+                zone: k,
+                ear_median: earMed,
+                ear_mad_scaled: earMad,
+                dynamic_closure_threshold: Number(
+                  zv.dynamic_closure_threshold ?? Math.max(0.12, Math.min(0.22, earMed - 2.3 * earMad))
+                ),
+                pitch_median_deg: Number(zv.pitch_median_deg ?? zv.pitch_deg_median ?? 0.0),
+                yaw_median_deg: Number(zv.yaw_median_deg ?? zv.yaw_deg_median ?? 0.0),
+                sample_count: Number(zv.sample_count ?? 35),
+              };
+            }
+          }
+
+          fetch(syncUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${backendToken}`,
+            },
+            body: JSON.stringify({
+              version: 1,
+              driver_id: userId,
+              calibrated_at: dbProfile.calibratedAt?.toISOString() || new Date().toISOString(),
+              is_calibrated: true,
+              calibration_mode: dbProfile.calibrationMode,
+              center_ear_median: dbProfile.centerEarMedian,
+              blink_duration_median_ms: dbProfile.blinkDurationMedianMs,
+              blink_duration_mad_ms: dbProfile.blinkDurationMadMs,
+              blink_rcr_median: dbProfile.blinkRcrMedian,
+              blink_rcr_mad: dbProfile.blinkRcrMad,
+              blink_freq_median_per_min: dbProfile.blinkFreqMedianPerMin,
+              blink_freq_mad_per_min: dbProfile.blinkFreqMadPerMin,
+              baseline_perclos_pct: dbProfile.baselinePerclosPct,
+              blink_amplitude_median: dbProfile.blinkAmplitudeMedian,
+              temporal_blinks_sampled: dbProfile.temporalBlinksSampled,
+              temporal_window_sec: dbProfile.temporalWindowSec,
+              sensitivity_level: dbProfile.sensitivityLevel,
+              neutral_pitch_deg: dbProfile.neutralPitchDeg,
+              neutral_yaw_deg: dbProfile.neutralYawDeg,
+              calibration_reliability: dbProfile.calibrationReliability,
+              zone_baselines: spatialZones,
+            }),
+            signal: AbortSignal.timeout(3000),
+          }).catch((syncErr) => {
+            console.warn("[API Proxy] Background profile sync warning:", syncErr);
+          });
+        }
+      } catch (dbErr) {
+        console.warn("[API Proxy] Postgres profile lookup warning:", dbErr);
+      }
+    }
   }
 
-  const primaryBase = resolveCloudFastApiUrl();
   const targetUrl = `${primaryBase}/api/v1/${subPath}${search}`;
 
   const headers = new Headers();
@@ -116,6 +191,13 @@ export async function PUT(
 }
 
 export async function DELETE(
+  req: NextRequest,
+  context: { params: Promise<{ path: string[] }> }
+) {
+  return proxyToFastApi(req, context);
+}
+
+export async function PATCH(
   req: NextRequest,
   context: { params: Promise<{ path: string[] }> }
 ) {
