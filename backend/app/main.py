@@ -6,14 +6,17 @@ Provides:
   - High-throughput Binary WebSocket (`/ws/v1/session/{session_id}`) for 30 FPS client video streams.
   - RESTful APIs (`/api/v1`) for driver profiles, session analytics, and calibration wizard.
   - OpenAPI Swagger documentation at `/docs`.
+  - Cryptographically authenticated endpoints and hardened CORS policy.
 """
 
 from __future__ import annotations
 
+import logging
 import time
+import traceback
+import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Dict, Any
-import traceback
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +30,7 @@ from backend.app.api.ws_telemetry import ws_router
 from backend.app.core.config import settings
 from backend.app.services.session_manager import session_manager
 
+logger = logging.getLogger("driveguard.app")
 START_TIME = time.time()
 
 
@@ -54,31 +58,36 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS Middleware for Next.js frontend
+# CORS Middleware with strict allowed origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_origin_regex=r"https://.*\.vercel\.app|https://.*\.onrender\.com|http://localhost:\d+|http://127\.0\.0\.1:\d+",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["*"],
 )
 
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Capture any uncaught runtime exception and return structured JSON with traceback."""
+    """Capture uncaught runtime exceptions, log stack traces with correlation ID, and return sanitized JSON."""
+    correlation_id = uuid.uuid4().hex[:12]
     tb = traceback.format_exc()
-    print(f"[ERROR] Uncaught exception on {request.method} {request.url.path}: {exc}\n{tb}")
+    logger.error(
+        f"[{correlation_id}] Uncaught exception on {request.method} {request.url.path}: {exc}\n{tb}"
+    )
+
+    client_msg = str(exc) if settings.DEBUG else "An internal server error occurred."
     return JSONResponse(
         status_code=500,
         content={
             "status": "ERROR",
             "error_type": type(exc).__name__,
-            "message": str(exc),
-            "traceback": tb,
+            "message": client_msg,
+            "correlation_id": correlation_id,
         },
     )
+
 
 # Root & Health Check Endpoints
 @app.api_route("/", methods=["GET", "HEAD"], tags=["Status"])

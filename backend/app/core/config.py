@@ -31,6 +31,16 @@ class Settings(BaseSettings):
     PORT: int = 8000
     DEBUG: bool = False
 
+    # Security & Authentication
+    AUTH_SECRET: str = Field(
+        default="driveguard-dev-secret-key-32-bytes-minimum-length-strictly-enforced",
+        validation_alias=AliasChoices("AUTH_SECRET", "BETTER_AUTH_SECRET", "auth_secret"),
+    )
+    AUTH_TOKEN_ISSUER: str = "driveguard-frontend"
+    AUTH_TOKEN_AUDIENCE: str = "driveguard-backend"
+    MAX_WS_FRAME_SIZE_BYTES: int = 2 * 1024 * 1024  # 2 MB max per video frame
+    WS_IDLE_TIMEOUT_SEC: float = 60.0
+
     # LiveKit Cloud WebRTC
     LIVEKIT_URL: str = Field(
         default="",

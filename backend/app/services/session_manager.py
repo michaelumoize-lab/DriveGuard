@@ -31,11 +31,19 @@ class SessionManager:
         driver_id: str = "driver_default",
         experiment_mode: Optional[str] = None,
         profile_dto: Optional[DriverProfileDTO] = None,
+        owner_id: Optional[str] = None,
     ) -> SessionAIEngine:
         """Retrieve an existing session or instantiate a new SessionAIEngine with its own isolated landmarker."""
+        effective_owner = owner_id or driver_id
         async with self._lock:
             if session_id in self._sessions:
-                return self._sessions[session_id]
+                existing = self._sessions[session_id]
+                existing_owner = getattr(existing, "owner_id", existing.driver_id)
+                if owner_id and existing_owner != owner_id:
+                    raise PermissionError(
+                        f"Session '{session_id}' belongs to user '{existing_owner}', not '{owner_id}'."
+                    )
+                return existing
 
             # Parse experiment mode
             exp_mode = ExperimentMode.C_CONFIDENCE_GATED_CASCADE
@@ -56,6 +64,7 @@ class SessionManager:
                         session_id=session_id,
                         driver_id=driver_id,
                         experiment_mode=exp_mode,
+                        owner_id=effective_owner,
                     )
                 )
                 try:
@@ -113,6 +122,7 @@ class SessionManager:
                 {
                     "session_id": s_id,
                     "driver_id": engine.driver_id,
+                    "owner_id": getattr(engine, "owner_id", engine.driver_id),
                     "frame_count": engine.frame_index,
                     "is_calibrating": engine.is_calibrating,
                     "is_calibrated": engine.profile.calibration_mode != "UNCALIBRATED_DEFAULT",

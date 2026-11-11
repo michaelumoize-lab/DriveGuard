@@ -132,9 +132,11 @@ class LiveKitAIWorkerSession:
         room_name: str,
         driver_id: str = "driver_default",
         experiment_mode: Optional[str] = None,
+        owner_id: Optional[str] = None,
     ) -> None:
         self.room_name = room_name
         self.driver_id = driver_id
+        self.owner_id: str = owner_id or driver_id
         self.experiment_mode = experiment_mode
 
         self.room = rtc.Room()
@@ -1143,14 +1145,22 @@ class LiveKitWorkerManager:
         room_name: str,
         driver_id: str = "driver_default",
         experiment_mode: Optional[str] = None,
+        owner_id: Optional[str] = None,
     ) -> LiveKitAIWorkerSession:
         """Atomically ensure an active AI worker participant exists for the given room."""
+        effective_owner = owner_id or driver_id
         task_to_await: Optional[asyncio.Task[LiveKitAIWorkerSession]] = None
 
         async with self._lock:
             existing = self._workers.get(room_name)
-            if existing and (existing.state == WorkerState.RUNNING or existing.is_running):
-                return existing
+            if existing:
+                existing_owner = getattr(existing, "owner_id", existing.driver_id)
+                if owner_id and existing_owner != owner_id:
+                    raise PermissionError(
+                        f"Room '{room_name}' is running a worker owned by '{existing_owner}'."
+                    )
+                if existing.state == WorkerState.RUNNING or existing.is_running:
+                    return existing
 
             existing_startup = self._startup_tasks.get(room_name)
             if existing_startup and not existing_startup.done():
@@ -1160,6 +1170,7 @@ class LiveKitWorkerManager:
                     room_name=room_name,
                     driver_id=driver_id,
                     experiment_mode=experiment_mode,
+                    owner_id=effective_owner,
                 )
 
                 async def _do_start() -> LiveKitAIWorkerSession:
@@ -1183,12 +1194,24 @@ class LiveKitWorkerManager:
 
         return await task_to_await
 
-    async def stop_worker(self, room_name: str) -> bool:
+    async def stop_worker(
+        self,
+        room_name: str,
+        requested_by: Optional[str] = None,
+        is_admin: bool = False,
+    ) -> bool:
         """Stop and remove a worker session without holding manager lock during teardown."""
         worker_to_stop: Optional[LiveKitAIWorkerSession] = None
         startup_task_to_cancel: Optional[asyncio.Task] = None
 
         async with self._lock:
+            existing = self._workers.get(room_name)
+            if existing:
+                existing_owner = getattr(existing, "owner_id", existing.driver_id)
+                if not is_admin and requested_by and existing_owner != requested_by and existing.driver_id != requested_by:
+                    raise PermissionError(
+                        f"Cannot terminate worker for room '{room_name}' owned by '{existing_owner}'."
+                    )
             startup_task_to_cancel = self._startup_tasks.pop(room_name, None)
             worker_to_stop = self._workers.pop(room_name, None)
 

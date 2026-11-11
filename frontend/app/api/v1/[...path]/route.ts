@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PRODUCTION_FASTAPI_URL, resolveCloudFastApiUrl } from "@/lib/fastapi-url";
+import { getServerSession } from "@/lib/get-session";
+import { createBackendAccessToken } from "@/lib/backend-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +13,23 @@ async function proxyToFastApi(
   const subPath = Array.isArray(path) ? path.join("/") : "";
   const search = req.nextUrl.search || "";
 
+  // Public operational paths that do not require driver session
+  const isPublicHealth = subPath === "health" || subPath === "" || subPath === "health/liveness";
+
+  let backendToken: string | null = null;
+  if (!isPublicHealth) {
+    const session = await getServerSession();
+    const userId = session?.user?.id;
+    if (!userId) {
+      return NextResponse.json(
+        { error: "Unauthorized: Active driver session required" },
+        { status: 401 }
+      );
+    }
+    const role = (session?.user as any)?.role || "USER";
+    backendToken = createBackendAccessToken({ userId, role });
+  }
+
   const primaryBase = resolveCloudFastApiUrl();
   const targetUrl = `${primaryBase}/api/v1/${subPath}${search}`;
 
@@ -20,6 +39,9 @@ async function proxyToFastApi(
     headers.set("Content-Type", contentType);
   }
   headers.set("Accept", req.headers.get("accept") || "application/json");
+  if (backendToken) {
+    headers.set("Authorization", `Bearer ${backendToken}`);
+  }
 
   const hasBody = !["GET", "HEAD", "OPTIONS"].includes(req.method.toUpperCase());
   const bodyBuffer = hasBody ? await req.arrayBuffer() : undefined;
@@ -98,15 +120,4 @@ export async function DELETE(
   context: { params: Promise<{ path: string[] }> }
 ) {
   return proxyToFastApi(req, context);
-}
-
-export async function OPTIONS() {
-  return new NextResponse(null, {
-    status: 204,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    },
-  });
 }

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "@/lib/get-session";
 import { prisma } from "@/lib/prisma";
 import { resolveCloudFastApiUrl } from "@/lib/fastapi-url";
+import { createBackendAccessToken } from "@/lib/backend-auth";
 
 export async function POST(req: NextRequest) {
   try {
@@ -110,12 +111,17 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Best-effort sync to FastAPI worker so the live session uses the latest profile immediately
+    // Authenticated best-effort sync to FastAPI worker so the live session uses the latest profile immediately
     const apiBaseUrl = resolveCloudFastApiUrl();
+    const role = (session.user as any)?.role || "USER";
+    const backendToken = createBackendAccessToken({ userId, role });
 
     fetch(`${apiBaseUrl}/api/v1/profiles`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${backendToken}`,
+      },
       body: JSON.stringify({
         version: 1,
         driver_id: userId,
