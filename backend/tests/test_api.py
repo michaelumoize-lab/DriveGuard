@@ -48,6 +48,29 @@ class TestDriveGuardAPI(unittest.TestCase):
         self.assertEqual(data["status"], "HEALTHY")
         self.assertIn("weights", data)
         self.assertTrue(data["weights"]["mobilenetv3_eye_onnx"])
+        self.assertEqual(data["liveness"], "/health/liveness")
+        self.assertEqual(data["readiness"], "/health/readiness")
+
+    def test_liveness_probe(self) -> None:
+        """Verify liveness probe returns HTTP 200 with status ALIVE."""
+        resp = self.client.get("/health/liveness")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["status"], "ALIVE")
+        self.assertIn("uptime_sec", data)
+        self.assertIn("service", data)
+
+    def test_readiness_probe(self) -> None:
+        """Verify readiness probe returns HTTP 200/503 with component status."""
+        resp = self.client.get("/health/readiness")
+        self.assertIn(resp.status_code, [200, 503])
+        data = resp.json()
+        self.assertIn("status", data)
+        self.assertIn("ready", data)
+        self.assertIn("components", data)
+        self.assertIn("face_landmarker_task", data["components"])
+        self.assertIn("eye_verifier", data["components"])
+        self.assertIn("livekit", data["components"])
 
     def test_session_lifecycle_rest_api(self) -> None:
         """Create, query, and terminate a driver monitoring session."""

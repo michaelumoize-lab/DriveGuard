@@ -11,6 +11,7 @@ Provides:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import traceback
@@ -36,10 +37,10 @@ START_TIME = time.time()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Preload AI models into GPU/CPU memory on server startup."""
+    """Preload AI models into GPU/CPU memory on server startup asynchronously."""
     print("[Lifespan] Preloading MediaPipe Face Landmarker & ONNX Runtime models...")
     try:
-        session_manager.preload_shared_models()
+        await asyncio.to_thread(session_manager.preload_shared_models)
         print("[Lifespan] Shared AI models successfully loaded and ready for inference.")
     except Exception as exc:
         print(f"[Lifespan WARNING] Lazy model initialization will be used: {exc}")
@@ -102,9 +103,54 @@ def root_info() -> Dict[str, str]:
     }
 
 
+@app.api_route("/health/liveness", methods=["GET", "HEAD"], tags=["Status"])
+def liveness_check() -> Dict[str, Any]:
+    """Liveness probe verifying that the FastAPI process is responsive."""
+    return {
+        "status": "ALIVE",
+        "service": settings.PROJECT_NAME,
+        "uptime_sec": round(time.time() - START_TIME, 1),
+    }
+
+
+@app.api_route("/health/readiness", methods=["GET", "HEAD"], tags=["Status"])
+def readiness_check() -> JSONResponse:
+    """Readiness probe verifying model assets and subsystem operational state."""
+    uptime_sec = round(time.time() - START_TIME, 1)
+    task_model_path = settings.WEIGHTS_DIR / "face_landmarker.task"
+    onnx_model_path = settings.WEIGHTS_DIR / "mobilenetv3_eye.onnx"
+
+    has_task_model = task_model_path.is_file() and task_model_path.stat().st_size >= 100_000
+    has_onnx_model = onnx_model_path.is_file()
+
+    # System is ready if face landmarker asset is present (verifier can use ONNX or analytical fallback)
+    is_ready = has_task_model
+    status_code = 200 if is_ready else 503
+
+    payload = {
+        "status": "READY" if is_ready else "NOT_READY",
+        "ready": is_ready,
+        "uptime_sec": uptime_sec,
+        "components": {
+            "face_landmarker_task": {
+                "present": has_task_model,
+                "path": str(task_model_path),
+            },
+            "eye_verifier": {
+                "mode": "MOBILENET_ONNX" if has_onnx_model else "ANALYTICAL_FALLBACK",
+                "onnx_present": has_onnx_model,
+            },
+            "livekit": {
+                "configured": bool(settings.LIVEKIT_URL and settings.LIVEKIT_API_KEY and settings.LIVEKIT_API_SECRET),
+            },
+        },
+    }
+    return JSONResponse(status_code=status_code, content=payload)
+
+
 @app.api_route("/health", methods=["GET", "HEAD"], tags=["Status"])
 def health_check() -> Dict[str, object]:
-    """Diagnostic health check endpoint."""
+    """Diagnostic health check endpoint providing combined status."""
     uptime_sec = round(time.time() - START_TIME, 1)
     active_sessions = len(session_manager.list_active_sessions())
     weights_onnx_present = (settings.WEIGHTS_DIR / "mobilenetv3_eye.onnx").is_file()
@@ -114,6 +160,8 @@ def health_check() -> Dict[str, object]:
         "status": "HEALTHY",
         "uptime_sec": uptime_sec,
         "active_sessions": active_sessions,
+        "liveness": "/health/liveness",
+        "readiness": "/health/readiness",
         "weights": {
             "mobilenetv3_eye_onnx": weights_onnx_present,
             "face_landmarker_task": weights_task_present,
