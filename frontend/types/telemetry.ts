@@ -85,6 +85,10 @@ export interface FrameTelemetry {
   timestamp_ms: number;
   fps: number;
   face_detected: boolean;
+  face_visible?: boolean;
+  grace_period_active?: boolean;
+  last_seen_ms?: number | null;
+  tracking_mode?: string;
   state: AlertState;
   monitoring_status?: "MONITORING_ACTIVE" | "FACE_VISIBILITY_DEGRADED" | "MONITORING_UNAVAILABLE" | "MONITORING_RECOVERING";
   risk_score: number;

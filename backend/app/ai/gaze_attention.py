@@ -1,10 +1,17 @@
 """
-Euro NCAP 2026 Gaze Attention, Visual Scanpath Entropy, and Dwell Time Watchdog.
+Head-Pose Oriented Gaze Proxy, Visual Scanpath Entropy, and Dwell Time Watchdog.
+
+NOTE ON METHODOLOGY (DG-07):
+This subsystem measures head pose orientation (pitch, yaw Euler angles) as a proxy
+for driver visual attention and zone allocation (CENTER, LEFT_MIRROR, RIGHT_MIRROR,
+DASHBOARD, OUT_OF_BOUNDS). It does NOT perform true foveal / corneal-reflection eye gaze tracking.
+Field descriptions and logs explicitly identify these metrics as head-oriented gaze proxy measurements.
 
 Implements:
 1. First-Order Transition Gaze Entropy (H_t):
    - Computes Markovian transition probabilities across driver attention zones
      (CENTER, LEFT_MIRROR, RIGHT_MIRROR, DASHBOARD, OUT_OF_BOUNDS).
+   - Only evaluated when sufficient transitions (>= 3) exist; returns INSUFFICIENT_OBSERVATIONS otherwise.
    - Quantifies visual scanning breadth vs. cognitive tunneling / highway hypnosis.
      Healthy attentive driving: H_t in [0.9, 1.8].
      Fatigued / cognitive tunnel vision: H_t < 0.35 (rigid staring).
@@ -12,6 +19,8 @@ Implements:
 2. Euro NCAP 2026 Dwell Time Watchdog:
    - Long Off-Road Gaze Dwell: continuous non-center gaze >= 3.0s (or >= 2.0s high sensitivity).
    - Cognitive Tunneling / Blank Stare: continuous forward gaze >= 5.0s with low saccadic variance.
+   - Face-loss grace freeze: freezes dwell accumulation during camera interruptions to prevent
+     spurious off-road distraction alarms upon face recovery.
 
 3. Percentage Road Center Fixation (PRCF):
    - Rolling percentage of observation time spent looking at forward roadway.
@@ -30,23 +39,25 @@ from backend.app.ai.geometry import PoseZone
 
 @dataclass
 class GazeAttentionSnapshot:
-    """Current rolling visual attention metrics for frame t."""
+    """Current rolling visual attention metrics for frame t based on head-pose proxy."""
 
     timestamp_ms: float
     current_zone: PoseZone
     current_zone_dwell_ms: float
-    transition_entropy_ht: float
+    transition_entropy_ht: Optional[float]  # None if insufficient observations (< 3 transitions)
+    entropy_status: str  # "VALID" or "INSUFFICIENT_OBSERVATIONS"
     prcf_pct: float  # Percentage Road Center Fixation (%)
     is_off_road_dwell_exceeded: bool
     is_blank_stare_detected: bool
     off_road_dwell_threshold_ms: float = 3000.0
     recent_zone_transitions_count: int = 0
+    is_head_pose_proxy: bool = True  # Explicit provenance flag confirming head-pose proxy measurement
 
 
 class GazeAttentionTracker:
     """
     Per-session stateful tracker for Euro NCAP 2026 visual attention,
-    dwell time limits, and Markov transition entropy.
+    dwell time limits, and Markov transition entropy using head-pose orientation proxy.
     """
 
     ZONES = (
@@ -81,6 +92,10 @@ class GazeAttentionTracker:
         # Head/Gaze pose micro-movement tracking for blank stare detection
         self._center_poses: Deque[Tuple[float, float, float]] = deque()  # (ts, pitch, yaw)
 
+        # DG-06: Grace period freeze state
+        self._is_frozen: bool = False
+        self._frozen_at_ms: Optional[float] = None
+
     def reset(self) -> None:
         """Clear state history."""
         self._zone_samples.clear()
@@ -89,16 +104,36 @@ class GazeAttentionTracker:
         self._prev_ts_ms = None
         self._current_zone = PoseZone.CENTER
         self._zone_enter_ts_ms = 0.0
+        self._is_frozen = False
+        self._frozen_at_ms = None
+
+    def freeze(self, timestamp_ms: float) -> None:
+        """Freeze dwell accumulation during face-loss grace period (DG-06)."""
+        if not self._is_frozen:
+            self._is_frozen = True
+            self._frozen_at_ms = timestamp_ms
+
+    def unfreeze(self, timestamp_ms: float) -> None:
+        """Unfreeze dwell accumulation after grace period ends with face recovery (DG-06)."""
+        if self._is_frozen:
+            if self._frozen_at_ms is not None:
+                frozen_duration = max(0.0, timestamp_ms - self._frozen_at_ms)
+                # Shift zone enter timestamp forward so frozen period is excluded from dwell
+                self._zone_enter_ts_ms += frozen_duration
+            self._is_frozen = False
+            self._frozen_at_ms = None
 
     def handle_gap(self, timestamp_ms: float) -> None:
         """
-        Handle an observation sampling gap or face tracking loss.
+        Handle an observation sampling gap or sustained face tracking loss.
         Resets the zone dwell baseline and center pose history so dwell time
-        does not accumulate across unobserved intervals.
+        does not accumulate across unobserved intervals, preventing false off-road alarms.
         """
         self._prev_ts_ms = timestamp_ms
         self._zone_enter_ts_ms = timestamp_ms
         self._center_poses.clear()
+        self._is_frozen = False
+        self._frozen_at_ms = None
 
     def handle_face_lost(self, timestamp_ms: float) -> None:
         """Explicitly handle face detection loss for gaze tracking."""
@@ -113,8 +148,12 @@ class GazeAttentionTracker:
         dt_ms: Optional[float] = None,
     ) -> GazeAttentionSnapshot:
         """
-        Ingest current frame's gaze zone and return updated attention snapshot.
+        Ingest current frame's head-pose gaze zone and return updated attention snapshot.
         """
+        # If unfreezing from grace period:
+        if self._is_frozen:
+            self.unfreeze(timestamp_ms)
+
         if dt_ms is None:
             if self._prev_ts_ms is not None:
                 step_dt = max(1.0, min(250.0, timestamp_ms - self._prev_ts_ms))
@@ -172,8 +211,8 @@ class GazeAttentionTracker:
         else:
             self._center_poses.clear()
 
-        # 6. First-Order Transition Gaze Entropy (H_t)
-        ht = self._compute_transition_entropy()
+        # 6. First-Order Transition Gaze Entropy (H_t) (DG-07: >= 3 transitions required)
+        ht, entropy_status = self._compute_transition_entropy()
 
         self._prev_ts_ms = timestamp_ms
 
@@ -181,23 +220,25 @@ class GazeAttentionTracker:
             timestamp_ms=timestamp_ms,
             current_zone=zone,
             current_zone_dwell_ms=dwell_ms,
-            transition_entropy_ht=round(ht, 3),
+            transition_entropy_ht=round(ht, 3) if ht is not None else None,
+            entropy_status=entropy_status,
             prcf_pct=round(prcf_pct, 1),
             is_off_road_dwell_exceeded=is_off_road_dwell_exceeded,
             is_blank_stare_detected=is_blank_stare,
             off_road_dwell_threshold_ms=self.off_road_dwell_threshold_ms,
             recent_zone_transitions_count=len(self._transitions),
+            is_head_pose_proxy=True,
         )
 
-    def _compute_transition_entropy(self) -> float:
+    def _compute_transition_entropy(self) -> Tuple[Optional[float], str]:
         """
         Calculate Shannon entropy of the first-order Markov transition matrix:
           H_t = - sum_i p(i) sum_j P(j | i) log2 P(j | i)
-        Returns a value in [0.0, log2(N_zones)].
+        DG-07: Returns (None, "INSUFFICIENT_OBSERVATIONS") when fewer than 3 transitions have been observed.
+        Returns (ht, "VALID") in [0.0, log2(N_zones)] when sufficient transitions exist.
         """
-        if len(self._transitions) < 2:
-            # Baseline resting entropy for forward attentive driving
-            return 1.20
+        if len(self._transitions) < 3:
+            return None, "INSUFFICIENT_OBSERVATIONS"
 
         zone_indices = {z: i for i, z in enumerate(self.ZONES)}
         n_zones = len(self.ZONES)
@@ -212,7 +253,7 @@ class GazeAttentionTracker:
         # Avoid division by zero: only compute for active departure zones
         active_rows = (row_sums.squeeze() > 0)
         if not np.any(active_rows):
-            return 1.20
+            return None, "INSUFFICIENT_OBSERVATIONS"
 
         # Marginal distribution p(i) over transitions
         total_transitions = counts.sum()
@@ -233,4 +274,4 @@ class GazeAttentionTracker:
                     if prob > 1e-6:
                         h_t -= p_i[i] * prob * np.log2(prob)
 
-        return float(max(0.0, min(np.log2(n_zones), h_t)))
+        return float(max(0.0, min(np.log2(n_zones), h_t))), "VALID"
