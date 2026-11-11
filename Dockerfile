@@ -63,9 +63,9 @@ ENV PORT=10000 \
 
 EXPOSE 10000
 
-# Container Healthcheck
+# Container Healthcheck (using process liveness probe)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-10000}/health || exit 1
+    CMD curl -f http://localhost:${PORT:-10000}/health/liveness || exit 1
 
 # Start DriveGuard FastAPI via Uvicorn
 CMD ["sh", "-c", "uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-10000}"]

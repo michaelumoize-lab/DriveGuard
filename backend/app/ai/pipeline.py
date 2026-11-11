@@ -86,9 +86,11 @@ class SessionAIEngine:
         onnx_model_path: Optional[str | Path] = None,
         landmarker: Optional[DriveGuardFaceLandmarker] = None,
         face_loss_grace_ms: float = 450.0,
+        owner_id: Optional[str] = None,
     ) -> None:
         self.session_id = session_id
         self.driver_id = driver_id
+        self.owner_id: str = owner_id or driver_id
         if isinstance(experiment_mode, str):
             try:
                 self.experiment_mode = ExperimentMode(experiment_mode)
@@ -139,14 +141,16 @@ class SessionAIEngine:
         self._pending_commands: Deque[EngineCommand] = deque()
         self._is_closed = False
 
-        # Face-Loss Grace Period & Monitoring Availability FSM
+        # Face-Loss Grace Period & Monitoring Availability FSM (DG-06)
         self.face_loss_grace_ms: float = float(face_loss_grace_ms)
         self._face_lost_start_ms: Optional[float] = None
+        self._last_seen_ms: Optional[float] = None
         self._has_seen_face: bool = False
         self._last_valid_risk_score: float = 0.0
         self._last_valid_alert_state: AlertStateEnum = AlertStateEnum.MONITORING_UNAVAILABLE
         self._monitoring_status: str = "MONITORING_UNAVAILABLE"
         self._recovery_frame_count: int = 0
+        self.REQUIRED_RECOVERY_FRAMES: int = 3
 
     @property
     def latencies_ms(self) -> List[float]:
@@ -635,12 +639,12 @@ class SessionAIEngine:
         except Exception as exc:
             logger.error(f"[SessionAIEngine] Landmarker exception at {ts_ms}ms: {exc}", exc_info=True)
             self.kinematics.handle_face_lost(ts_ms)
-            self.gaze_tracker.handle_face_lost(ts_ms)
             self._recovery_frame_count = 0
             latency_ms = (time.perf_counter() - t_start) * 1000.0
 
             if not self._has_seen_face:
                 self._monitoring_status = "MONITORING_UNAVAILABLE"
+                self.gaze_tracker.handle_face_lost(ts_ms)
                 return self._build_unavailable_frame(
                     ts_ms,
                     latency_ms=latency_ms,
@@ -648,18 +652,18 @@ class SessionAIEngine:
                     state=AlertStateEnum.MONITORING_UNAVAILABLE,
                     risk_score=0.0,
                     monitoring_status="MONITORING_UNAVAILABLE",
+                    face_visible=False,
+                    grace_period_active=False,
+                    last_seen_ms=self._last_seen_ms,
                 )
 
-            if last_frame_ts is not None and (ts_ms - last_frame_ts) >= self.face_loss_grace_ms:
-                loss_duration_ms = ts_ms - last_frame_ts
-                self._face_lost_start_ms = last_frame_ts
-            else:
-                if self._face_lost_start_ms is None:
-                    self._face_lost_start_ms = ts_ms
-                loss_duration_ms = ts_ms - self._face_lost_start_ms
+            if self._face_lost_start_ms is None:
+                self._face_lost_start_ms = self._last_seen_ms if self._last_seen_ms is not None else ts_ms
+            loss_duration_ms = ts_ms - self._face_lost_start_ms
 
             if loss_duration_ms < self.face_loss_grace_ms:
                 self._monitoring_status = "FACE_VISIBILITY_DEGRADED"
+                self.gaze_tracker.freeze(ts_ms)
                 return self._build_unavailable_frame(
                     ts_ms,
                     latency_ms=latency_ms,
@@ -667,9 +671,13 @@ class SessionAIEngine:
                     state=self._last_valid_alert_state,
                     risk_score=self._last_valid_risk_score,
                     monitoring_status="FACE_VISIBILITY_DEGRADED",
+                    face_visible=False,
+                    grace_period_active=True,
+                    last_seen_ms=self._last_seen_ms,
                 )
             else:
                 self._monitoring_status = "MONITORING_UNAVAILABLE"
+                self.gaze_tracker.handle_face_lost(ts_ms)
                 return self._build_unavailable_frame(
                     ts_ms,
                     latency_ms=latency_ms,
@@ -677,16 +685,19 @@ class SessionAIEngine:
                     state=AlertStateEnum.MONITORING_UNAVAILABLE,
                     risk_score=0.0,
                     monitoring_status="MONITORING_UNAVAILABLE",
+                    face_visible=False,
+                    grace_period_active=False,
+                    last_seen_ms=self._last_seen_ms,
                 )
 
         if not geom.face_detected:
             self.kinematics.handle_face_lost(ts_ms)
-            self.gaze_tracker.handle_face_lost(ts_ms)
             self._recovery_frame_count = 0
             latency_ms = (time.perf_counter() - t_start) * 1000.0
 
             if not self._has_seen_face:
                 self._monitoring_status = "MONITORING_UNAVAILABLE"
+                self.gaze_tracker.handle_face_lost(ts_ms)
                 return self._build_unavailable_frame(
                     ts_ms,
                     latency_ms=latency_ms,
@@ -694,18 +705,18 @@ class SessionAIEngine:
                     state=AlertStateEnum.MONITORING_UNAVAILABLE,
                     risk_score=0.0,
                     monitoring_status="MONITORING_UNAVAILABLE",
+                    face_visible=False,
+                    grace_period_active=False,
+                    last_seen_ms=self._last_seen_ms,
                 )
 
-            if last_frame_ts is not None and (ts_ms - last_frame_ts) >= self.face_loss_grace_ms:
-                loss_duration_ms = ts_ms - last_frame_ts
-                self._face_lost_start_ms = last_frame_ts
-            else:
-                if self._face_lost_start_ms is None:
-                    self._face_lost_start_ms = ts_ms
-                loss_duration_ms = ts_ms - self._face_lost_start_ms
+            if self._face_lost_start_ms is None:
+                self._face_lost_start_ms = self._last_seen_ms if self._last_seen_ms is not None else ts_ms
+            loss_duration_ms = ts_ms - self._face_lost_start_ms
 
             if loss_duration_ms < self.face_loss_grace_ms:
                 self._monitoring_status = "FACE_VISIBILITY_DEGRADED"
+                self.gaze_tracker.freeze(ts_ms)
                 return self._build_unavailable_frame(
                     ts_ms,
                     latency_ms=latency_ms,
@@ -713,9 +724,13 @@ class SessionAIEngine:
                     state=self._last_valid_alert_state,
                     risk_score=self._last_valid_risk_score,
                     monitoring_status="FACE_VISIBILITY_DEGRADED",
+                    face_visible=False,
+                    grace_period_active=True,
+                    last_seen_ms=self._last_seen_ms,
                 )
             else:
                 self._monitoring_status = "MONITORING_UNAVAILABLE"
+                self.gaze_tracker.handle_face_lost(ts_ms)
                 return self._build_unavailable_frame(
                     ts_ms,
                     latency_ms=latency_ms,
@@ -723,23 +738,34 @@ class SessionAIEngine:
                     state=AlertStateEnum.MONITORING_UNAVAILABLE,
                     risk_score=0.0,
                     monitoring_status="MONITORING_UNAVAILABLE",
+                    face_visible=False,
+                    grace_period_active=False,
+                    last_seen_ms=self._last_seen_ms,
                 )
 
         # 3b. Face detected: mark face seen, handle recovery transitions and temporal synchronization
         was_lost = self._face_lost_start_ms is not None
-        was_sustained_outage = was_lost and (self._monitoring_status == "MONITORING_UNAVAILABLE")
+        was_sustained_outage = was_lost and (
+            (ts_ms - (self._face_lost_start_ms or ts_ms)) >= self.face_loss_grace_ms
+            or self._monitoring_status in ("MONITORING_UNAVAILABLE", "FACE_LOST")
+        )
 
         if was_lost:
             self.kinematics.handle_gap(ts_ms)
             self.gaze_tracker.handle_gap(ts_ms)
             self._face_lost_start_ms = None
+        else:
+            self.gaze_tracker.unfreeze(ts_ms)
 
-        if was_sustained_outage:
+        self._last_seen_ms = ts_ms
+
+        if was_sustained_outage or (self._recovery_frame_count > 0 and self._recovery_frame_count < self.REQUIRED_RECOVERY_FRAMES):
             self._recovery_frame_count += 1
-            if self._recovery_frame_count < 2:
+            if self._recovery_frame_count < self.REQUIRED_RECOVERY_FRAMES:
                 self._monitoring_status = "MONITORING_RECOVERING"
             else:
                 self._monitoring_status = "MONITORING_ACTIVE"
+                self._recovery_frame_count = 0
         else:
             self._recovery_frame_count = 0
             self._monitoring_status = "MONITORING_ACTIVE"
@@ -892,6 +918,10 @@ class SessionAIEngine:
             timestamp_ms=round(ts_ms, 1),
             fps=round(self.fps_ema, 1),
             face_detected=True,
+            face_visible=True,
+            grace_period_active=False,
+            last_seen_ms=self._last_seen_ms,
+            tracking_mode=getattr(geom, "tracking_mode", "MEDIAPIPE_TASKS"),
             state=AlertStateEnum(risk_res.state.value),
             monitoring_status=self._monitoring_status,
             risk_score=round(risk_res.risk_score, 3),
@@ -923,7 +953,7 @@ class SessionAIEngine:
                 sampling_gap_detected=kinematics_res.sampling_gap_detected,
                 blink_avr=round(kinematics_res.recent_blink_avr, 3) if kinematics_res.recent_blink_avr is not None else None,
                 blink_cv_ibi=round(kinematics_res.blink_cv_ibi, 3) if kinematics_res.blink_cv_ibi is not None else None,
-                gaze_entropy=round(gaze_res.transition_entropy_ht, 3),
+                gaze_entropy=round(gaze_res.transition_entropy_ht, 3) if gaze_res.transition_entropy_ht is not None else None,
                 brow_furrow_au4=round(geom.blendshape_brow_down, 3) if geom.blendshape_brow_down is not None else None,
                 yawn_envelope_confidence=round(kinematics_res.yawn_confidence, 3),
             ),
@@ -967,6 +997,10 @@ class SessionAIEngine:
         state: AlertStateEnum = AlertStateEnum.MONITORING_UNAVAILABLE,
         risk_score: float = 0.0,
         monitoring_status: str = "MONITORING_UNAVAILABLE",
+        face_visible: bool = False,
+        grace_period_active: bool = False,
+        last_seen_ms: Optional[float] = None,
+        tracking_mode: Optional[str] = None,
     ) -> FrameTelemetryDTO:
         """Construct fallback telemetry when face tracking or video decoding drops."""
         return FrameTelemetryDTO(
@@ -975,7 +1009,11 @@ class SessionAIEngine:
             frame_index=self.frame_index,
             timestamp_ms=round(timestamp_ms, 1),
             fps=round(self.fps_ema, 1),
-            face_detected=False,
+            face_detected=face_visible,
+            face_visible=face_visible,
+            grace_period_active=grace_period_active,
+            last_seen_ms=last_seen_ms if last_seen_ms is not None else self._last_seen_ms,
+            tracking_mode=tracking_mode or getattr(self.landmarker, "active_implementation", "DEGRADED_UNAVAILABLE"),
             state=state,
             monitoring_status=monitoring_status,
             risk_score=risk_score,
@@ -1064,6 +1102,7 @@ class SessionAIEngine:
         summary: Dict[str, object] = {
             "session_id": self.session_id,
             "driver_id": self.driver_id,
+            "owner_id": self.owner_id,
             "total_frames_processed": self.frame_index,
             "mean_inference_latency_ms": round(mean_lat, 2),
             "cnn_trigger_rate_pct": round(cnn_rate, 2),
@@ -1075,4 +1114,6 @@ class SessionAIEngine:
         }
         if hasattr(self.landmarker, "get_diagnostics"):
             summary["landmarker_diagnostics"] = self.landmarker.get_diagnostics()
+        if hasattr(self.cascade, "get_diagnostics"):
+            summary["cascade_diagnostics"] = self.cascade.get_diagnostics()
         return summary

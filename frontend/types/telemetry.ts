@@ -54,6 +54,11 @@ export interface CascadeStatus {
   arbitration_winner: string;
   disagreement_flag: boolean;
   cnn_latency_ms: number;
+  cnn_execution_mode?: string;
+  verifier_invoked?: boolean;
+  gate_trigger_reason?: string;
+  onnx_inference_executed?: boolean;
+  cnn_inference_duration_ms?: number | null;
 }
 
 export interface ConventionalComparison {
@@ -85,6 +90,10 @@ export interface FrameTelemetry {
   timestamp_ms: number;
   fps: number;
   face_detected: boolean;
+  face_visible?: boolean;
+  grace_period_active?: boolean;
+  last_seen_ms?: number | null;
+  tracking_mode?: string;
   state: AlertState;
   monitoring_status?: "MONITORING_ACTIVE" | "FACE_VISIBILITY_DEGRADED" | "MONITORING_UNAVAILABLE" | "MONITORING_RECOVERING";
   risk_score: number;

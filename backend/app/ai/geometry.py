@@ -86,6 +86,7 @@ class FrameGeometryFeatures:
     blendshape_eye_squint: Optional[float] = None
     left_eye_crop: Optional[EyeCropQuality] = None
     right_eye_crop: Optional[EyeCropQuality] = None
+    tracking_mode: str = "MEDIAPIPE_TASKS"
 
 
 def compute_single_eye_ear(landmarks_xyz: np.ndarray, indices: Tuple[int, ...], eps: float = 1e-6) -> float:

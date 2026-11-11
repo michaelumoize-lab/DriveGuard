@@ -6,14 +6,18 @@ Provides:
   - High-throughput Binary WebSocket (`/ws/v1/session/{session_id}`) for 30 FPS client video streams.
   - RESTful APIs (`/api/v1`) for driver profiles, session analytics, and calibration wizard.
   - OpenAPI Swagger documentation at `/docs`.
+  - Cryptographically authenticated endpoints and hardened CORS policy.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
+import traceback
+import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Dict, Any
-import traceback
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,15 +31,16 @@ from backend.app.api.ws_telemetry import ws_router
 from backend.app.core.config import settings
 from backend.app.services.session_manager import session_manager
 
+logger = logging.getLogger("driveguard.app")
 START_TIME = time.time()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Preload AI models into GPU/CPU memory on server startup."""
+    """Preload AI models into GPU/CPU memory on server startup asynchronously."""
     print("[Lifespan] Preloading MediaPipe Face Landmarker & ONNX Runtime models...")
     try:
-        session_manager.preload_shared_models()
+        await asyncio.to_thread(session_manager.preload_shared_models)
         print("[Lifespan] Shared AI models successfully loaded and ready for inference.")
     except Exception as exc:
         print(f"[Lifespan WARNING] Lazy model initialization will be used: {exc}")
@@ -54,31 +59,36 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS Middleware for Next.js frontend
+# CORS Middleware with strict allowed origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_origin_regex=r"https://.*\.vercel\.app|https://.*\.onrender\.com|http://localhost:\d+|http://127\.0\.0\.1:\d+",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"],
     allow_headers=["*"],
 )
 
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Capture any uncaught runtime exception and return structured JSON with traceback."""
+    """Capture uncaught runtime exceptions, log stack traces with correlation ID, and return sanitized JSON."""
+    correlation_id = uuid.uuid4().hex[:12]
     tb = traceback.format_exc()
-    print(f"[ERROR] Uncaught exception on {request.method} {request.url.path}: {exc}\n{tb}")
+    logger.error(
+        f"[{correlation_id}] Uncaught exception on {request.method} {request.url.path}: {exc}\n{tb}"
+    )
+
+    client_msg = str(exc) if settings.DEBUG else "An internal server error occurred."
     return JSONResponse(
         status_code=500,
         content={
             "status": "ERROR",
             "error_type": type(exc).__name__,
-            "message": str(exc),
-            "traceback": tb,
+            "message": client_msg,
+            "correlation_id": correlation_id,
         },
     )
+
 
 # Root & Health Check Endpoints
 @app.api_route("/", methods=["GET", "HEAD"], tags=["Status"])
@@ -93,9 +103,54 @@ def root_info() -> Dict[str, str]:
     }
 
 
+@app.api_route("/health/liveness", methods=["GET", "HEAD"], tags=["Status"])
+def liveness_check() -> Dict[str, Any]:
+    """Liveness probe verifying that the FastAPI process is responsive."""
+    return {
+        "status": "ALIVE",
+        "service": settings.PROJECT_NAME,
+        "uptime_sec": round(time.time() - START_TIME, 1),
+    }
+
+
+@app.api_route("/health/readiness", methods=["GET", "HEAD"], tags=["Status"])
+def readiness_check() -> JSONResponse:
+    """Readiness probe verifying model assets and subsystem operational state."""
+    uptime_sec = round(time.time() - START_TIME, 1)
+    task_model_path = settings.WEIGHTS_DIR / "face_landmarker.task"
+    onnx_model_path = settings.WEIGHTS_DIR / "mobilenetv3_eye.onnx"
+
+    has_task_model = task_model_path.is_file() and task_model_path.stat().st_size >= 100_000
+    has_onnx_model = onnx_model_path.is_file()
+
+    # System is ready if face landmarker asset is present (verifier can use ONNX or analytical fallback)
+    is_ready = has_task_model
+    status_code = 200 if is_ready else 503
+
+    payload = {
+        "status": "READY" if is_ready else "NOT_READY",
+        "ready": is_ready,
+        "uptime_sec": uptime_sec,
+        "components": {
+            "face_landmarker_task": {
+                "present": has_task_model,
+                "path": str(task_model_path),
+            },
+            "eye_verifier": {
+                "mode": "MOBILENET_ONNX" if has_onnx_model else "ANALYTICAL_FALLBACK",
+                "onnx_present": has_onnx_model,
+            },
+            "livekit": {
+                "configured": bool(settings.LIVEKIT_URL and settings.LIVEKIT_API_KEY and settings.LIVEKIT_API_SECRET),
+            },
+        },
+    }
+    return JSONResponse(status_code=status_code, content=payload)
+
+
 @app.api_route("/health", methods=["GET", "HEAD"], tags=["Status"])
 def health_check() -> Dict[str, object]:
-    """Diagnostic health check endpoint."""
+    """Diagnostic health check endpoint providing combined status."""
     uptime_sec = round(time.time() - START_TIME, 1)
     active_sessions = len(session_manager.list_active_sessions())
     weights_onnx_present = (settings.WEIGHTS_DIR / "mobilenetv3_eye.onnx").is_file()
@@ -105,6 +160,8 @@ def health_check() -> Dict[str, object]:
         "status": "HEALTHY",
         "uptime_sec": uptime_sec,
         "active_sessions": active_sessions,
+        "liveness": "/health/liveness",
+        "readiness": "/health/readiness",
         "weights": {
             "mobilenetv3_eye_onnx": weights_onnx_present,
             "face_landmarker_task": weights_task_present,

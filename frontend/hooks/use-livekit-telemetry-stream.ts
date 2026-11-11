@@ -78,6 +78,7 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
   // Telemetry deduplication, state guard, and latency tracking refs
   const lastTelemetrySeqRef = useRef<bigint>(BigInt(-1));
   const lastSafetyEventSeqRef = useRef<bigint>(BigInt(-1));
+  const lastSessionEpochRef = useRef<string | null>(null);
   const activeStateRef = useRef<AlertState>("NORMAL");
   const lastRenderedStateRef = useRef<AlertState>("NORMAL");
   const processedEventIdsRef = useRef<Set<string>>(new Set());
@@ -136,6 +137,9 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
     isLoopActiveRef.current = false;
     lastTelemetrySeqRef.current = BigInt(-1);
     lastTelemetryReceivedAtRef.current = 0;
+    lastSafetyEventSeqRef.current = BigInt(-1);
+    lastSessionEpochRef.current = null;
+    processedEventIdsRef.current.clear();
     calibrationCompletionEmittedRef.current = false;
     activeStateRef.current = "NORMAL";
     lastRenderedStateRef.current = "NORMAL";
@@ -453,6 +457,16 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
                 }
               }
 
+              // Reset sequence tracking counters when worker restarts with a new session epoch
+              if (safetyEvent.session_epoch && safetyEvent.session_epoch !== lastSessionEpochRef.current) {
+                console.log(
+                  `[DriveGuard LiveKit] Session epoch changed: ${lastSessionEpochRef.current} -> ${safetyEvent.session_epoch}. Resetting sequence counters.`
+                );
+                lastSessionEpochRef.current = safetyEvent.session_epoch;
+                lastSafetyEventSeqRef.current = BigInt(-1);
+                processedEventIdsRef.current.clear();
+              }
+
               // 2. Out-of-order guard: prevent delayed older safety events from overwriting newer states
               if (currentEventSeq <= lastSafetyEventSeqRef.current) {
                 console.warn(
@@ -485,6 +499,11 @@ export function useLivekitTelemetryStream(options: UseLivekitTelemetryStreamOpti
               console.log(
                 `[DriveGuard LiveKit] State synchronization received from server. Current state: ${msg.current_state}`
               );
+              if (msg.session_epoch && msg.session_epoch !== lastSessionEpochRef.current) {
+                lastSessionEpochRef.current = msg.session_epoch;
+                lastSafetyEventSeqRef.current = BigInt(-1);
+                processedEventIdsRef.current.clear();
+              }
               if (msg.latest_safety_event) {
                 const syncEvt = msg.latest_safety_event as SafetyEvent;
                 try {

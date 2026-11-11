@@ -67,6 +67,7 @@ class FrameAccountingSnapshot:
     frames_queued: int
     frames_in_flight: int
     threads_executing: int = 0
+    track_generation: int = 0
 
     @property
     def total_accounted(self) -> int:
@@ -132,12 +133,26 @@ class LiveKitAIWorkerSession:
         room_name: str,
         driver_id: str = "driver_default",
         experiment_mode: Optional[str] = None,
+        owner_id: Optional[str] = None,
+        room: Optional[rtc.Room] = None,
     ) -> None:
         self.room_name = room_name
         self.driver_id = driver_id
+        self.owner_id: str = owner_id or driver_id
         self.experiment_mode = experiment_mode
 
-        self.room = rtc.Room()
+        if room is not None:
+            self.room = room
+        else:
+            try:
+                self.room = rtc.Room()
+            except RuntimeError:
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                self.room = rtc.Room(loop=loop)
         self.engine: Optional[SessionAIEngine] = None
         self.is_running = False
         self.state: WorkerState = WorkerState.CREATED
@@ -197,6 +212,12 @@ class LiveKitAIWorkerSession:
         self._last_stream_cleanup_error: Optional[str] = None
         self._is_stopped: bool = False
         self._stop_lock: asyncio.Lock = asyncio.Lock()
+        self._track_generation: int = 0
+
+    @property
+    def track_generation(self) -> int:
+        """Monotonic generation counter incremented whenever a new video track is subscribed."""
+        return self._track_generation
 
     @property
     def stream_cleanup_error_count(self) -> int:
@@ -221,6 +242,7 @@ class LiveKitAIWorkerSession:
             frames_queued=self.frame_queue.qsize(),
             frames_in_flight=self._frames_in_flight,
             threads_executing=self._threads_executing,
+            track_generation=self._track_generation,
         )
 
     def _on_inference_thread_done(self, fut: concurrent.futures.Future) -> None:
@@ -367,8 +389,17 @@ class LiveKitAIWorkerSession:
         participant: rtc.RemoteParticipant,
     ) -> None:
         """Handle video track subscription with clean teardown of any previous stream."""
+        self._track_generation += 1
+        # Discard any stale queued frames from old track generation
+        while not self.frame_queue.empty():
+            try:
+                self.frame_queue.get_nowait()
+                self._frames_stale_discarded += 1
+            except asyncio.QueueEmpty:
+                break
+
         logger.info(
-            f"[LiveKit Worker] Video track subscribed from '{participant.identity}' (SID: {track.sid})."
+            f"[LiveKit Worker] Video track subscribed from '{participant.identity}' (SID: {track.sid}, track_generation: {self._track_generation})."
         )
         if self._ingest_task and not self._ingest_task.done():
             self._ingest_task.cancel()
@@ -431,6 +462,8 @@ class LiveKitAIWorkerSession:
                 "session_id": self.room_name,
                 "current_state": self._last_state,
                 "latest_safety_event": self._latest_safety_event,
+                "session_epoch": self.session_epoch,
+                "worker_boot_id": self.worker_boot_id,
                 "server_time": time.time(),
             }))
 
@@ -475,7 +508,8 @@ class LiveKitAIWorkerSession:
                     except asyncio.QueueEmpty:
                         pass
 
-                await self.frame_queue.put((frame, ingest_mono_ms, current_frame_seq))
+                track_gen = self._track_generation
+                await self.frame_queue.put((frame, ingest_mono_ms, current_frame_seq, track_gen))
         except asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -522,9 +556,19 @@ class LiveKitAIWorkerSession:
         while self.is_running:
             try:
                 try:
-                    frame, recv_mono_ms, frame_seq_num = await asyncio.wait_for(
+                    queue_item = await asyncio.wait_for(
                         self.frame_queue.get(), timeout=2.0
                     )
+                    if len(queue_item) == 4:
+                        frame, recv_mono_ms, frame_seq_num, frame_track_gen = queue_item
+                    else:
+                        frame, recv_mono_ms, frame_seq_num = queue_item
+                        frame_track_gen = self._track_generation
+
+                    # Discard frame if belonging to an outdated track generation
+                    if frame_track_gen != self._track_generation:
+                        self._frames_stale_discarded += 1
+                        continue
                 except asyncio.TimeoutError:
                     if not self.is_running:
                         break
@@ -597,6 +641,14 @@ class LiveKitAIWorkerSession:
                     self._active_cfut.add_done_callback(_safe_dispatch_done)
                     afut = asyncio.wrap_future(self._active_cfut)
                     telemetry_dto, executor_wait_ms, process_frame_ms = await afut
+
+                    # Stale result check: If track was replaced during inference, discard result
+                    if frame_track_gen != self._track_generation or not self.is_running:
+                        self._frames_stale_discarded += 1
+                        self._frames_in_flight = 0
+                        self._active_cfut = None
+                        continue
+
                     t_infer_end = time.perf_counter()
                     t_infer_end_ms = t_infer_end * 1000.0
                     infer_duration_ms = max(0.0, t_infer_end_ms - t_infer_start_ms)
@@ -1143,14 +1195,22 @@ class LiveKitWorkerManager:
         room_name: str,
         driver_id: str = "driver_default",
         experiment_mode: Optional[str] = None,
+        owner_id: Optional[str] = None,
     ) -> LiveKitAIWorkerSession:
         """Atomically ensure an active AI worker participant exists for the given room."""
+        effective_owner = owner_id or driver_id
         task_to_await: Optional[asyncio.Task[LiveKitAIWorkerSession]] = None
 
         async with self._lock:
             existing = self._workers.get(room_name)
-            if existing and (existing.state == WorkerState.RUNNING or existing.is_running):
-                return existing
+            if existing:
+                existing_owner = getattr(existing, "owner_id", existing.driver_id)
+                if owner_id and existing_owner != owner_id:
+                    raise PermissionError(
+                        f"Room '{room_name}' is running a worker owned by '{existing_owner}'."
+                    )
+                if existing.state == WorkerState.RUNNING or existing.is_running:
+                    return existing
 
             existing_startup = self._startup_tasks.get(room_name)
             if existing_startup and not existing_startup.done():
@@ -1160,6 +1220,7 @@ class LiveKitWorkerManager:
                     room_name=room_name,
                     driver_id=driver_id,
                     experiment_mode=experiment_mode,
+                    owner_id=effective_owner,
                 )
 
                 async def _do_start() -> LiveKitAIWorkerSession:
@@ -1183,12 +1244,24 @@ class LiveKitWorkerManager:
 
         return await task_to_await
 
-    async def stop_worker(self, room_name: str) -> bool:
+    async def stop_worker(
+        self,
+        room_name: str,
+        requested_by: Optional[str] = None,
+        is_admin: bool = False,
+    ) -> bool:
         """Stop and remove a worker session without holding manager lock during teardown."""
         worker_to_stop: Optional[LiveKitAIWorkerSession] = None
         startup_task_to_cancel: Optional[asyncio.Task] = None
 
         async with self._lock:
+            existing = self._workers.get(room_name)
+            if existing:
+                existing_owner = getattr(existing, "owner_id", existing.driver_id)
+                if not is_admin and requested_by and existing_owner != requested_by and existing.driver_id != requested_by:
+                    raise PermissionError(
+                        f"Cannot terminate worker for room '{room_name}' owned by '{existing_owner}'."
+                    )
             startup_task_to_cancel = self._startup_tasks.pop(room_name, None)
             worker_to_stop = self._workers.pop(room_name, None)
 

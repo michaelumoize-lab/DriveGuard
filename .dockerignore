@@ -31,6 +31,12 @@ backend/research/
 backend/benchmarks/
 backend/tests/
 
+# Driver baseline profiles & local state
+backend/data/profiles/*.json
+!backend/data/profiles/.gitkeep
+*.tmp
+*.corrupt
+
 # Model training checkpoints (preserve inference weights .task and .onnx)
 backend/weights/*.pt
 backend/weights/*.pth

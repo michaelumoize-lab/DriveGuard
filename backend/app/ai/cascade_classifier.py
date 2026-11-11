@@ -121,10 +121,13 @@ class MobileNetV3EyeVerifier:
         self.onnx_session = None
         self.input_name: Optional[str] = None
         self.is_pretrained_onnx: bool = False
+        self.model_path: Optional[str] = None
+        self.model_sha256: Optional[str] = None
 
         resolved_path = Path(onnx_model_path) if onnx_model_path is not None else DEFAULT_EYE_ONNX_PATH
         if resolved_path.is_file():
             try:
+                import hashlib
                 import onnxruntime as ort
 
                 self.onnx_session = ort.InferenceSession(
@@ -132,8 +135,24 @@ class MobileNetV3EyeVerifier:
                 )
                 self.input_name = self.onnx_session.get_inputs()[0].name
                 self.is_pretrained_onnx = True
+                self.model_path = str(resolved_path)
+                with open(resolved_path, "rb") as f:
+                    self.model_sha256 = hashlib.sha256(f.read()).hexdigest()
             except Exception:
                 self.onnx_session = None
+                self.is_pretrained_onnx = False
+                self.model_path = None
+                self.model_sha256 = None
+
+    def get_diagnostics(self) -> Dict[str, Any]:
+        """Return provenance diagnostics for the Stage 2 eye verifier."""
+        return {
+            "is_pretrained_onnx": self.is_pretrained_onnx,
+            "execution_mode": "MOBILENET_ONNX" if self.is_pretrained_onnx else "ANALYTICAL_FALLBACK",
+            "model_path": self.model_path,
+            "model_sha256": self.model_sha256,
+            "session_active": self.onnx_session is not None,
+        }
 
     def predict_eye_crop(self, crop_quality: Optional[EyeCropQuality]) -> EyeCropPrediction:
         """
@@ -281,6 +300,17 @@ class ConfidenceGatedEyeCascade:
         if self.total_frames == 0:
             return 0.0
         return self.cnn_invocations / self.total_frames
+
+    def get_diagnostics(self) -> Dict[str, Any]:
+        """Return runtime cascade diagnostics including verifier provenance."""
+        return {
+            "mode": self.mode.value,
+            "total_frames": self.total_frames,
+            "cnn_invocations": self.cnn_invocations,
+            "cnn_trigger_rate": round(self.cnn_trigger_rate, 4),
+            "disagreement_events_count": len(self.disagreement_events),
+            "verifier": self.verifier.get_diagnostics(),
+        }
 
     def evaluate(
         self,

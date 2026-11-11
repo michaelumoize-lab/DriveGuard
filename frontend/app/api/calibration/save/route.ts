@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "@/lib/get-session";
 import { prisma } from "@/lib/prisma";
 import { resolveCloudFastApiUrl } from "@/lib/fastapi-url";
+import { createBackendAccessToken } from "@/lib/backend-auth";
 
 export async function POST(req: NextRequest) {
   try {
@@ -26,6 +27,7 @@ export async function POST(req: NextRequest) {
       blinkAmplitudeMedian = 0.14,
       temporalBlinksSampled = 0,
       temporalWindowSec = 120.0,
+      sensitivityLevel = "STANDARD",
       neutralPitchDeg = 0.0,
       neutralYawDeg = 0.0,
       calibrationReliability = 0.85,
@@ -48,44 +50,43 @@ export async function POST(req: NextRequest) {
         blinkRcrMad: Number(blinkRcrMad),
         baselinePerclosPct: Number(baselinePerclosPct),
         blinkAmplitudeMedian: Number(blinkAmplitudeMedian),
-        temporalBlinksSampled: Number(temporalBlinksSampled),
+        temporalBlinksSampled: Math.round(Number(temporalBlinksSampled)),
         temporalWindowSec: Number(temporalWindowSec),
         calibratedAt: new Date().toISOString(),
       },
+    };
+
+    const profileData = {
+      calibrationMode: String(calibrationMode),
+      centerEarMedian: Number(centerEarMedian),
+      centerEarMadScaled: Number(centerEarMadScaled),
+      blinkDurationMedianMs: Number(blinkDurationMedianMs),
+      blinkDurationMadMs: Number(blinkDurationMadMs),
+      blinkRcrMedian: Number(blinkRcrMedian),
+      blinkRcrMad: Number(blinkRcrMad),
+      blinkFreqMedianPerMin: Number(blinkFreqMedianPerMin),
+      blinkFreqMadPerMin: Number(blinkFreqMadPerMin),
+      baselinePerclosPct: Number(baselinePerclosPct),
+      blinkAmplitudeMedian: Number(blinkAmplitudeMedian),
+      temporalBlinksSampled: Math.round(Number(temporalBlinksSampled)),
+      temporalWindowSec: Number(temporalWindowSec),
+      sensitivityLevel: String(sensitivityLevel),
+      neutralPitchDeg: Number(neutralPitchDeg),
+      neutralYawDeg: Number(neutralYawDeg),
+      calibrationReliability: Number(calibrationReliability),
+      zoneBaselines: enrichedZoneBaselines,
+      isCalibrated: true,
+      calibratedAt: new Date(),
     };
 
     const profile = await prisma.driverProfile.upsert({
       where: { userId },
       create: {
         userId,
-        calibrationMode: String(calibrationMode),
-        centerEarMedian: Number(centerEarMedian),
-        centerEarMadScaled: Number(centerEarMadScaled),
-        blinkDurationMedianMs: Number(blinkDurationMedianMs),
-        blinkDurationMadMs: Number(blinkDurationMadMs),
-        blinkRcrMedian: Number(blinkRcrMedian),
-        blinkRcrMad: Number(blinkRcrMad),
-        neutralPitchDeg: Number(neutralPitchDeg),
-        neutralYawDeg: Number(neutralYawDeg),
-        calibrationReliability: Number(calibrationReliability),
-        zoneBaselines: enrichedZoneBaselines,
-        isCalibrated: true,
-        calibratedAt: new Date(),
+        ...profileData,
       },
       update: {
-        calibrationMode: String(calibrationMode),
-        centerEarMedian: Number(centerEarMedian),
-        centerEarMadScaled: Number(centerEarMadScaled),
-        blinkDurationMedianMs: Number(blinkDurationMedianMs),
-        blinkDurationMadMs: Number(blinkDurationMadMs),
-        blinkRcrMedian: Number(blinkRcrMedian),
-        blinkRcrMad: Number(blinkRcrMad),
-        neutralPitchDeg: Number(neutralPitchDeg),
-        neutralYawDeg: Number(neutralYawDeg),
-        calibrationReliability: Number(calibrationReliability),
-        zoneBaselines: enrichedZoneBaselines,
-        isCalibrated: true,
-        calibratedAt: new Date(),
+        ...profileData,
       },
     });
 
@@ -110,12 +111,17 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Best-effort sync to FastAPI worker so the live session uses the latest profile immediately
+    // Authenticated best-effort sync to FastAPI worker so the live session uses the latest profile immediately
     const apiBaseUrl = resolveCloudFastApiUrl();
+    const role = (session.user as any)?.role || "USER";
+    const backendToken = createBackendAccessToken({ userId, role });
 
     fetch(`${apiBaseUrl}/api/v1/profiles`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${backendToken}`,
+      },
       body: JSON.stringify({
         version: 1,
         driver_id: userId,
@@ -125,14 +131,15 @@ export async function POST(req: NextRequest) {
         center_ear_median: profile.centerEarMedian,
         blink_duration_median_ms: profile.blinkDurationMedianMs,
         blink_duration_mad_ms: profile.blinkDurationMadMs,
-        blink_rcr_median: profile.blinkRcrMedian,
-        blink_rcr_mad: profile.blinkRcrMad,
-        blink_freq_median_per_min: Number(blinkFreqMedianPerMin),
-        blink_freq_mad_per_min: Number(blinkFreqMadPerMin),
-        baseline_perclos_pct: Number(baselinePerclosPct),
-        blink_amplitude_median: Number(blinkAmplitudeMedian),
-        temporal_blinks_sampled: Number(temporalBlinksSampled),
-        temporal_window_sec: Number(temporalWindowSec),
+        blinkRcrMedian: profile.blinkRcrMedian,
+        blinkRcrMad: profile.blinkRcrMad,
+        blink_freq_median_per_min: Number(profile.blinkFreqMedianPerMin),
+        blink_freq_mad_per_min: Number(profile.blinkFreqMadPerMin),
+        baseline_perclos_pct: Number(profile.baselinePerclosPct),
+        blink_amplitude_median: Number(profile.blinkAmplitudeMedian),
+        temporal_blinks_sampled: Number(profile.temporalBlinksSampled),
+        temporal_window_sec: Number(profile.temporalWindowSec),
+        sensitivity_level: profile.sensitivityLevel,
         neutral_pitch_deg: profile.neutralPitchDeg,
         neutral_yaw_deg: profile.neutralYawDeg,
         calibration_reliability: profile.calibrationReliability,

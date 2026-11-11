@@ -165,6 +165,10 @@ class FrameTelemetryDTO(BaseModel):
     timestamp_ms: float = Field(description="Frame capture or presentation timestamp in milliseconds")
     fps: float = Field(description="Instantaneous pipeline processing frame rate", ge=0.0)
     face_detected: bool = Field(description="True if a human face was tracked in this frame")
+    face_visible: bool = Field(default=False, description="Explicit driver face visibility indicator")
+    grace_period_active: bool = Field(default=False, description="True if face-loss grace period is buffering dropout")
+    last_seen_ms: Optional[float] = Field(default=None, description="Timestamp in ms when driver face was last detected")
+    tracking_mode: Optional[str] = Field(default=None, description="Active landmarking implementation")
     
     # State & Risk
     state: AlertStateEnum = Field(description="DriveGuard FSM state: NORMAL, WARNING, CRITICAL, MONITORING_UNAVAILABLE")

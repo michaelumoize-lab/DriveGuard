@@ -186,11 +186,17 @@ def test_recovery_from_sustained_face_loss_restores_monitoring(dummy_frame):
     assert dto_rec1.monitoring_status == "MONITORING_RECOVERING"
     ts += 33.3
 
-    # Frame 2 of recovery: confirmed active
+    # Frame 2 of recovery: still confirming (consecutive count = 2)
     dto_rec2 = engine.process_frame(dummy_frame, timestamp_ms=ts)
     assert dto_rec2.face_detected is True
-    assert dto_rec2.monitoring_status == "MONITORING_ACTIVE"
-    assert dto_rec2.state == AlertStateEnum.NORMAL
+    assert dto_rec2.monitoring_status == "MONITORING_RECOVERING"
+    ts += 33.3
+
+    # Frame 3 of recovery: confirmed active (consecutive count = 3 >= REQUIRED_RECOVERY_FRAMES)
+    dto_rec3 = engine.process_frame(dummy_frame, timestamp_ms=ts)
+    assert dto_rec3.face_detected is True
+    assert dto_rec3.monitoring_status == "MONITORING_ACTIVE"
+    assert dto_rec3.state == AlertStateEnum.NORMAL
 
 
 def test_gaze_dwell_timer_does_not_accumulate_across_face_loss_gap(dummy_frame):

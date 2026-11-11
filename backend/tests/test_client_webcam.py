@@ -270,8 +270,10 @@ class TestClientWebcamHUD(unittest.TestCase):
         """Verify binary JPEG frames sent over WebSocket return complete telemetry DTO."""
         test_client = TestClient(app)
         session_id = f"test_webcam_{int(time.time())}"
+        from backend.app.core.auth import create_backend_access_token
+        token = create_backend_access_token("test_user_webcam", role="user", session_id=session_id)
 
-        with test_client.websocket_connect(f"/ws/v1/session/{session_id}") as ws:
+        with test_client.websocket_connect(f"/ws/v1/session/{session_id}?token={token}") as ws:
             # 1. Receive SESSION_READY handshake
             handshake = ws.receive_json()
             self.assertEqual(handshake.get("type"), "SESSION_READY")
