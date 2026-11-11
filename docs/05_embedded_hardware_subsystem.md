@@ -27,7 +27,7 @@ flowchart TD
 
     subgraph SerialBus ["Isolated Physical Interconnect"]
         UART["Full-Duplex USB-UART Serial Link (115200 Baud)\n8-Byte Packed Binary Telemetry Frame"]
-        TELEMETRY <==>|UART TX / RX| UART
+        TELEMETRY <-->|"UART TX / RX"| UART
     end
 
     subgraph EmbeddedController ["Embedded Safety Subsystem (ESP32 / STM32 / RP2040)"]

@@ -101,14 +101,14 @@ flowchart TD
 
     subgraph MediaTransport ["Real-Time Transport Layer"]
         SFU["LiveKit Cloud / Local SFU\n(Ultra-Low Latency WebRTC Video & DataChannels)"]
-        LK_CLIENT <-->|Video & Reliable Control Channels| SFU
+        LK_CLIENT <-->|"Video & Reliable Control Channels"| SFU
     end
 
     subgraph Backend ["AI Processing Layer (Python / FastAPI)"]
         WORKER["LiveKit AI Worker Session\n(Bounded Queue, Watchdog & Invariant Accounting)"]
         POOL["Dedicated Inference Thread Pool\n(Single-Threaded CPU Offloading)"]
         
-        SFU <-->|Subscribed Media Stream| WORKER
+        SFU <-->|"Subscribed Media Stream"| WORKER
         WORKER --> POOL
         
         subgraph Pipeline ["AI Pipeline (SessionAIEngine)"]
@@ -123,20 +123,22 @@ flowchart TD
             POOL --> MP
             MP --> PDBP
             MP --> CASCADE
-            CASCADE -->|Clear Case| GEOM
-            CASCADE -->|Uncertain Case| ONNX
-            GEOM & ONNX --> KINE
-            KINE & PDBP --> RISK
+            CASCADE -->|"Clear Case"| GEOM
+            CASCADE -->|"Uncertain Case"| ONNX
+            GEOM --> KINE
+            ONNX --> KINE
+            KINE --> RISK
+            PDBP --> RISK
         end
 
-        RISK -->|Reliable SAFETY_EVENT| WORKER
-        RISK -->|Live Frame Telemetry DTO| WORKER
+        RISK -->|"Reliable SAFETY_EVENT"| WORKER
+        RISK -->|"Live Frame Telemetry DTO"| WORKER
     end
 
     subgraph EmbeddedSubsystem ["Cyber-Physical Safety Subsystem (ESP32)"]
         MCU["ESP32 Safety Co-Processor\n(Hardware Watchdog & Alert FSM)"]
         HAPTIC["TI DRV2605L + LRA Motor\n(Steering Wheel Vibration)"]
-        OLED_HUD["0.96'' SSD1306 OLED HUD\n(Line-of-Sight PERCLOS Gauge)"]
+        OLED_HUD["0.96-inch SSD1306 OLED HUD\n(Line-of-Sight PERCLOS Gauge)"]
         PIEZO["Passive Piezo Buzzer\n(Hardware PWM Frequency Siren)"]
         ACK_BTN["Driver Acknowledge Button\n(Reaction Time & Alarm Reset)"]
         INA_MON["INA219 Power Monitor\n(Real-Time Energy Profiling)"]
@@ -148,13 +150,14 @@ flowchart TD
         ACK_BTN --> MCU
     end
 
-    WORKER <==>|Isolated USB-UART Link (115200 Baud)| MCU
+    WORKER <-->|"Isolated USB-UART Link (115200 Baud)"| MCU
 
     subgraph Storage ["Persistence Layer"]
         DB[("Neon Serverless PostgreSQL\n(Profiles, Sessions, Alert Logs)")]
         PRISMA["Prisma ORM Client"]
         
-        UI <-->|REST API| PRISMA <--> DB
+        UI <-->|"REST API"| PRISMA
+        PRISMA <--> DB
     end
 ```
 
