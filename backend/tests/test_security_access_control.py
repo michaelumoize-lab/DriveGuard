@@ -11,6 +11,7 @@ Verifies:
 7. Global exception handler suppresses stack traces and returns correlation_id.
 """
 
+import asyncio
 import time
 import unittest
 import jwt
@@ -184,6 +185,12 @@ class TestSecurityAccessControl(unittest.TestCase):
 
     def test_cross_user_worker_stop_forbidden(self) -> None:
         """User Alice cannot stop a LiveKit worker owned by User Bob."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
         alice_headers = {"Authorization": f"Bearer {self.alice_token}"}
 
         # Register a mock active worker session owned by Bob

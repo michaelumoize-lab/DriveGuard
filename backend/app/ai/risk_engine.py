@@ -391,6 +391,7 @@ class PersonalisedAdaptiveRiskEngine:
         reasons: List[str] = []
         if is_microsleep:
             reasons.append("MICROSLEEP_PROLONGED_CLOSURE")
+            reasons.append("PROLONGED_EYE_CLOSURE_MICROSLEEP")
         personal_dur_cutoff_ms = max(
             310.0, self.profile.blink_duration_median_ms + 2.2 * effective_dur_mad
         )

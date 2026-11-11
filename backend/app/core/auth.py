@@ -14,6 +14,7 @@ Implements:
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -39,6 +40,30 @@ class AuthenticatedUser:
     @property
     def is_admin(self) -> bool:
         return self.role.upper() == "ADMIN"
+
+
+def create_backend_access_token(
+    user_id: str,
+    role: str = "user",
+    session_id: Optional[str] = None,
+    driver_id: Optional[str] = None,
+    expires_in_seconds: int = 3600,
+) -> str:
+    """Create a signed backend access token for tests or internal services."""
+    now = int(time.time())
+    payload: Dict[str, Any] = {
+        "sub": user_id,
+        "role": role,
+        "iss": settings.AUTH_TOKEN_ISSUER,
+        "aud": settings.AUTH_TOKEN_AUDIENCE,
+        "iat": now,
+        "exp": now + expires_in_seconds,
+    }
+    if session_id:
+        payload["sid"] = session_id
+    if driver_id:
+        payload["driver_id"] = driver_id
+    return jwt.encode(payload, settings.AUTH_SECRET, algorithm="HS256")
 
 
 def verify_backend_token(token: str) -> AuthenticatedUser:

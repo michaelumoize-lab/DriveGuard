@@ -28,6 +28,13 @@ class CreateSessionRequest(BaseModel):
     )
 
 
+class SwitchExperimentRequest(BaseModel):
+    experiment_mode: str = Field(
+        ...,
+        description="Target experiment mode: A_GEOMETRIC_ONLY, B_CNN_ALWAYS, or C_CONFIDENCE_GATED_CASCADE",
+    )
+
+
 @router.get("", response_model=List[Dict[str, Any]])
 def list_sessions(
     current_user: AuthenticatedUser = Depends(get_current_user),
@@ -93,6 +100,40 @@ def get_session_details(
     owner = getattr(engine, "owner_id", engine.driver_id)
     verify_resource_ownership(current_user, owner, "monitoring session")
     return engine.get_session_summary()
+
+
+@router.post("/{session_id}/experiment", response_model=Dict[str, Any])
+async def switch_session_experiment_mode(
+    session_id: str,
+    request: SwitchExperimentRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Synchronously switch the active AI experiment mode for a running session at the next frame boundary.
+    Restricted to the owner of the monitoring session.
+    """
+    engine = session_manager.get_session(session_id)
+    if engine is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session '{session_id}' not found.",
+        )
+    owner = getattr(engine, "owner_id", engine.driver_id)
+    verify_resource_ownership(current_user, owner, "monitoring session")
+
+    try:
+        new_mode = await engine.submit_command("SWITCH_EXPERIMENT", mode=request.experiment_mode)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+
+    return {
+        "session_id": session_id,
+        "experiment_mode": new_mode.value if hasattr(new_mode, "value") else str(new_mode),
+        "status": "SUCCESS",
+    }
 
 
 @router.delete("/{session_id}", response_model=Dict[str, Any])

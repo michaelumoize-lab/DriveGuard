@@ -1114,4 +1114,6 @@ class SessionAIEngine:
         }
         if hasattr(self.landmarker, "get_diagnostics"):
             summary["landmarker_diagnostics"] = self.landmarker.get_diagnostics()
+        if hasattr(self.cascade, "get_diagnostics"):
+            summary["cascade_diagnostics"] = self.cascade.get_diagnostics()
         return summary

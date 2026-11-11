@@ -54,6 +54,11 @@ export interface CascadeStatus {
   arbitration_winner: string;
   disagreement_flag: boolean;
   cnn_latency_ms: number;
+  cnn_execution_mode?: string;
+  verifier_invoked?: boolean;
+  gate_trigger_reason?: string;
+  onnx_inference_executed?: boolean;
+  cnn_inference_duration_ms?: number | null;
 }
 
 export interface ConventionalComparison {
