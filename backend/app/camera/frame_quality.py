@@ -98,6 +98,7 @@ class FrameQualityAnalyzer:
         underexposed_threshold: float = 35.0,
         overexposed_threshold: float = 225.0,
         blur_threshold: float = 80.0,
+        severe_blur_threshold: float = 20.0,
     ) -> None:
         """
         Initialize analyzer with customizable thresholds.
@@ -106,15 +107,21 @@ class FrameQualityAnalyzer:
             underexposed_threshold: Mean grayscale luminance below which image is too dark (default: 35.0).
             overexposed_threshold: Mean grayscale luminance above which image is washed out (default: 225.0).
             blur_threshold: Laplacian variance below which image is considered blurry (default: 80.0).
+            severe_blur_threshold: Laplacian variance at or below which blur is completely non-viable (default: 20.0).
         """
         if underexposed_threshold >= overexposed_threshold:
             raise ValueError("underexposed_threshold must be strictly less than overexposed_threshold.")
         if blur_threshold <= 0:
             raise ValueError("blur_threshold must be positive.")
+        if severe_blur_threshold < 0 or severe_blur_threshold >= blur_threshold:
+            raise ValueError(
+                f"severe_blur_threshold must be non-negative and strictly less than blur_threshold ({blur_threshold}), got {severe_blur_threshold}"
+            )
 
         self.underexposed_threshold = underexposed_threshold
         self.overexposed_threshold = overexposed_threshold
         self.blur_threshold = blur_threshold
+        self.severe_blur_threshold = severe_blur_threshold
 
     def analyze(self, frame: np.ndarray) -> FrameQualityResult:
         """
@@ -188,8 +195,13 @@ class FrameQualityAnalyzer:
             status = QualityStatus.POOR_LIGHTING
             is_viable = True  # Marginal lighting may still locate high-contrast facial mesh
         else:
-            status = QualityStatus.BLURRY
-            is_viable = True  # Mild blur can still track general head posture
+            if blur_var <= self.severe_blur_threshold:
+                # Severe blur (e.g., zero variance uniform image or extreme defocus) cannot yield facial landmarks
+                status = QualityStatus.SEVERELY_DEGRADED
+                is_viable = False
+            else:
+                status = QualityStatus.BLURRY
+                is_viable = True  # Mild blur can still track general head posture
 
         return FrameQualityResult(
             mean_luminance=mean_lum,

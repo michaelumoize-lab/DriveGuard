@@ -36,7 +36,11 @@ from typing import Any, List, Union
 import cv2
 
 from backend.app.camera.base import BaseCamera
-from backend.app.camera.camera_config import CameraBackend, CameraConfig
+from backend.app.camera.camera_config import (
+    CameraBackend,
+    CameraConfig,
+    sanitize_source_identifier,
+)
 from backend.app.camera.opencv_camera import OpenCVCamera
 from backend.app.camera.phone_camera import PhoneCamera, PhoneCameraConfig
 
@@ -71,7 +75,8 @@ def create_camera(
         or source.lower().startswith("https://")
         or source.lower().startswith("rtsp://")
     ):
-        logger.info("Factory selecting PhoneCamera adapter for URL: %s", source)
+        safe_url = sanitize_source_identifier(source)
+        logger.info("Factory selecting PhoneCamera adapter for URL: %s", safe_url)
         phone_config = PhoneCameraConfig(
             stream_url=source,
             target_fps=target_fps,

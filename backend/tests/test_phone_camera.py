@@ -48,6 +48,20 @@ def test_phone_camera_config_invalid_timeout(invalid_timeout: float) -> None:
         PhoneCameraConfig("http://192.168.1.50:8080/video", timeout_sec=invalid_timeout)
 
 
+@pytest.mark.parametrize("invalid_interval", [-0.1, -1.0])
+def test_phone_camera_config_invalid_reconnect_interval(invalid_interval: float) -> None:
+    """Verifies that negative reconnect intervals raise ValueError."""
+    with pytest.raises(ValueError, match="reconnect_interval_sec must be non-negative"):
+        PhoneCameraConfig("http://192.168.1.50:8080/video", reconnect_interval_sec=invalid_interval)
+
+
+@pytest.mark.parametrize("invalid_buffer", [0, 2, 5])
+def test_phone_camera_config_invalid_buffer_size(invalid_buffer: int) -> None:
+    """Verifies that buffer_size != 1 is rejected per latest-frame policy."""
+    with pytest.raises(ValueError, match="latest-frame policy requires buffer_size=1"):
+        PhoneCameraConfig("http://192.168.1.50:8080/video", buffer_size=invalid_buffer)
+
+
 def test_camera_manager_factory_dispatch() -> None:
     """
     Verifies that create_camera automatically selects OpenCVCamera for device indices
@@ -75,7 +89,7 @@ def test_camera_manager_factory_dispatch() -> None:
 def test_phone_camera_mocked_lifecycle() -> None:
     """
     Verifies PhoneCamera connects, grabs/retrieves frames in background worker,
-    and closes cleanly using a mock VideoCapture backend.
+    redacts credentials in source_id, and closes cleanly using a mock VideoCapture backend.
     """
     mock_cap = MagicMock()
     mock_cap.isOpened.return_value = True
@@ -89,13 +103,18 @@ def test_phone_camera_mocked_lifecycle() -> None:
         5: 30.0,    # cv2.CAP_PROP_FPS
     }.get(prop, 0.0)
 
-    with patch("cv2.VideoCapture", return_value=mock_cap):
-        config = PhoneCameraConfig("http://192.168.1.50:8080/video")
+    with patch("cv2.VideoCapture", return_value=mock_cap) as mock_vc_ctor:
+        # Pass stream URL with sensitive credentials
+        raw_url = "http://admin:secretPass123@192.168.1.50:8080/video?token=myToken"
+        config = PhoneCameraConfig(raw_url)
         camera = PhoneCamera(config)
 
         opened = camera.open()
         assert opened is True
         assert camera.is_opened() is True
+
+        # Verify underlying VideoCapture was opened with the real functional URL
+        assert mock_vc_ctor.call_args[0][0] == raw_url
 
         # Allow background thread to process a frame
         time.sleep(0.1)
@@ -104,7 +123,10 @@ def test_phone_camera_mocked_lifecycle() -> None:
         assert success is True
         assert packet is not None
         assert packet.resolution == (1280, 720)
-        assert "phone:http://192.168.1.50:8080/video" in packet.source_id
+        # Verify credentials and sensitive tokens are strictly redacted in source_id
+        assert "secretPass123" not in packet.source_id
+        assert "myToken" not in packet.source_id
+        assert packet.source_id == "phone:http://admin:***@192.168.1.50:8080/video?token=***"
 
         # Clean close
         camera.close()
@@ -136,5 +158,65 @@ def test_phone_camera_watchdog_timeout_on_stream_loss() -> None:
 
         # Watchdog should flag disconnected
         assert camera.is_opened() is False
+
+        camera.close()
+
+
+def test_phone_camera_watchdog_timeout_on_repeated_retrieve_failure() -> None:
+    """
+    Verifies that when grab succeeds but retrieve repeatedly fails (e.g. corrupt decode),
+    the watchdog detects timeout and marks connection inactive.
+    """
+    mock_cap = MagicMock()
+    mock_cap.isOpened.return_value = True
+    mock_cap.grab.return_value = True
+    # Simulate decode failure: retrieve returns False / empty
+    mock_cap.retrieve.return_value = (False, None)
+    mock_cap.get.side_effect = lambda prop: {3: 1280.0, 4: 720.0, 5: 30.0}.get(prop, 0.0)
+
+    with patch("cv2.VideoCapture", return_value=mock_cap):
+        config = PhoneCameraConfig("http://192.168.1.50:8080/video", timeout_sec=0.6, auto_reconnect=False)
+        camera = PhoneCamera(config)
+        camera.open()
+
+        assert camera.is_opened() is True
+
+        # Wait past watchdog timeout (0.6s)
+        time.sleep(0.8)
+
+        # Watchdog must flag disconnected even though grab() succeeded
+        assert camera.is_opened() is False
+
+        camera.close()
+
+
+def test_phone_camera_open_stops_prior_worker() -> None:
+    """Verifies that calling open() coordinates with and stops any existing worker thread."""
+    mock_cap1 = MagicMock()
+    mock_cap1.isOpened.return_value = True
+    mock_cap1.grab.return_value = True
+    mock_cap1.retrieve.return_value = (True, np.zeros((720, 1280, 3), dtype=np.uint8))
+    mock_cap1.get.side_effect = lambda prop: {3: 1280.0, 4: 720.0, 5: 30.0}.get(prop, 0.0)
+
+    mock_cap2 = MagicMock()
+    mock_cap2.isOpened.return_value = True
+    mock_cap2.grab.return_value = True
+    mock_cap2.retrieve.return_value = (True, np.zeros((720, 1280, 3), dtype=np.uint8))
+    mock_cap2.get.side_effect = lambda prop: {3: 1280.0, 4: 720.0, 5: 30.0}.get(prop, 0.0)
+
+    with patch("cv2.VideoCapture", side_effect=[mock_cap1, mock_cap2]):
+        config = PhoneCameraConfig("http://192.168.1.50:8080/video")
+        camera = PhoneCamera(config)
+        assert camera.open() is True
+        old_thread = camera._capture_thread
+        assert old_thread is not None and old_thread.is_alive()
+
+        # Simulate connection drop so subsequent open() proceeds with reopening
+        camera._is_connected = False
+        assert camera.open() is True
+
+        # Prior thread must be cleanly joined
+        assert not old_thread.is_alive()
+        mock_cap1.release.assert_called()
 
         camera.close()

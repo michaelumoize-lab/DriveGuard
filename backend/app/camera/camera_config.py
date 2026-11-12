@@ -30,9 +30,72 @@ DriveGuard — Camera Configuration Module.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Tuple
+from typing import Tuple, Union
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+
+def sanitize_source_identifier(source: Union[int, str]) -> str:
+    """
+    Produce a log- and display-safe string identifier from a camera device index or stream URL.
+    Redacts user credentials and sensitive query parameters to prevent leaking secrets into logs.
+    """
+    if not isinstance(source, str):
+        return str(source)
+
+    try:
+        parts = urlsplit(source)
+    except Exception:
+        return str(source)
+
+    if not parts.scheme:
+        return source
+
+    netloc = parts.netloc
+    if parts.username or parts.password:
+        host_port = parts.hostname or ""
+        if parts.port:
+            host_port = f"{host_port}:{parts.port}"
+        if parts.username and parts.password:
+            netloc = f"{parts.username}:***@{host_port}"
+        elif parts.password:
+            netloc = f"***@{host_port}"
+        elif parts.username:
+            netloc = f"{parts.username}@{host_port}"
+
+    query = parts.query
+    if query:
+        sensitive_keys = {
+            "token",
+            "auth",
+            "key",
+            "secret",
+            "password",
+            "pass",
+            "pwd",
+            "access_token",
+            "api_key",
+            "apikey",
+        }
+        sanitized_pairs = []
+        for k, v in parse_qsl(query, keep_blank_values=True):
+            if k.lower() in sensitive_keys or any(
+                s in k.lower() for s in ("token", "secret", "pass", "auth")
+            ):
+                sanitized_pairs.append((k, "***"))
+            else:
+                sanitized_pairs.append((k, v))
+        query = urlencode(sanitized_pairs, safe="*")
+
+    return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
+
+
+def make_filename_safe(identifier: str) -> str:
+    """Sanitize identifier to contain only safe alphanumeric and underscore characters for filenames."""
+    sanitized = re.sub(r"[^a-zA-Z0-9_]+", "_", identifier).strip("_")
+    return sanitized[:40] if sanitized else "source"
 
 
 class CameraBackend(str, Enum):

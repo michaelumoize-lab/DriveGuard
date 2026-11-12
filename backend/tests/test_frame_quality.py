@@ -79,15 +79,36 @@ def test_overexposed_glare_frame() -> None:
 
 
 def test_blurry_frame_detection() -> None:
-    """Verifies that low-texture/blurred frames produce low Laplacian variance."""
-    analyzer = FrameQualityAnalyzer(blur_threshold=80.0)
+    """Verifies that low-texture/blurred frames produce low Laplacian variance and severe blur is non-viable."""
+    analyzer = FrameQualityAnalyzer(blur_threshold=80.0, severe_blur_threshold=20.0)
     # Uniform gray image has zero edge transitions (Laplacian var = 0)
     uniform_frame = np.full((100, 100, 3), 128, dtype=np.uint8)
 
     result = analyzer.analyze(uniform_frame)
     assert result.blur == BlurCondition.BLURRY
     assert result.blur_variance == pytest.approx(0.0, abs=1.0)
+    assert result.status == QualityStatus.SEVERELY_DEGRADED
+    assert result.is_viable_for_inference is False
     assert any("unfocused or smudged" in r for r in result.reasons)
+
+
+def test_mild_blur_retains_viability() -> None:
+    """Verifies that mild blur above severe threshold retains is_viable_for_inference=True."""
+    analyzer = FrameQualityAnalyzer(blur_threshold=80.0, severe_blur_threshold=20.0)
+
+    # Create block pattern and blur with (11, 11) kernel so variance drops between 20 and 80 (~59.0)
+    img = np.zeros((100, 100), dtype=np.uint8)
+    for i in range(0, 100, 20):
+        for j in range(0, 100, 20):
+            img[i : i + 10, j : j + 10] = 255
+    blurred = cv2.GaussianBlur(img, (11, 11), 3.0)
+    bgr = cv2.cvtColor(blurred, cv2.COLOR_GRAY2BGR)
+
+    result = analyzer.analyze(bgr)
+    assert result.blur == BlurCondition.BLURRY
+    assert 20.0 < result.blur_variance < 80.0
+    assert result.status == QualityStatus.BLURRY
+    assert result.is_viable_for_inference is True
 
 
 def test_sharp_optimal_frame() -> None:

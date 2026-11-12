@@ -36,6 +36,7 @@ if str(project_root) not in sys.path:
 import cv2
 import numpy as np
 
+from backend.app.camera.camera_config import make_filename_safe, sanitize_source_identifier
 from backend.app.camera.camera_manager import create_camera, discover_local_devices
 from backend.app.camera.frame_quality import FrameQualityAnalyzer, FrameQualityResult, QualityStatus
 
@@ -148,7 +149,8 @@ def run_benchmark(
     """
     Executes the camera capture verification loop for webcams or phone streams.
     """
-    logger.info("Initializing camera adapter for source '%s'...", source_identifier)
+    safe_identifier = sanitize_source_identifier(source_identifier)
+    logger.info("Initializing camera adapter for source '%s'...", safe_identifier)
 
     camera = create_camera(
         source=source_identifier,
@@ -161,12 +163,12 @@ def run_benchmark(
     )
 
     if not camera.open():
-        logger.error("Failed to open camera source '%s'.", source_identifier)
+        logger.error("Failed to open camera source '%s'.", safe_identifier)
         return 1
 
     try:
         actual_res = camera.get_actual_resolution()
-        window_name = f"DriveGuard Diagnostics [{source_identifier}]"
+        window_name = f"DriveGuard Diagnostics [{safe_identifier}]"
 
         if not headless:
             cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -243,10 +245,16 @@ def run_benchmark(
                     if hasattr(camera, "toggle_flip_horizontal"):
                         camera.toggle_flip_horizontal()
                 elif key in (ord("s"), ord("S")):
-                    sanitized_name = str(source_identifier).replace("://", "_").replace("/", "_").replace(":", "_")
-                    snapshot_filename = f"snapshot_{sanitized_name}_{int(time.time())}.png"
-                    cv2.imwrite(snapshot_filename, packet.frame)
-                    logger.info("Snapshot saved to %s", snapshot_filename)
+                    short_safe_tag = make_filename_safe(safe_identifier)
+                    snapshot_filename = f"snapshot_{short_safe_tag}_{int(time.time())}.png"
+                    save_ok = cv2.imwrite(snapshot_filename, packet.frame)
+                    if save_ok:
+                        logger.info("Snapshot saved successfully to %s", snapshot_filename)
+                    else:
+                        logger.error(
+                            "Failed to save snapshot to %s (cv2.imwrite returned False).",
+                            snapshot_filename,
+                        )
 
     finally:
         total_time = time.monotonic() - start_time
@@ -263,7 +271,7 @@ def run_benchmark(
     print("\n" + "=" * 60)
     print("      DRIVEGUARD CAMERA BENCHMARK SUMMARY")
     print("=" * 60)
-    print(f"Camera Source         : {source_identifier}")
+    print(f"Camera Source         : {safe_identifier}")
     print(f"Negotiated Resolution : {actual_res[0]}x{actual_res[1]}")
     print(f"Run Duration          : {total_time:.2f} seconds")
     print(f"Total Captured Frames : {buffer_stats['total_pushed']}")
@@ -281,7 +289,7 @@ def run_benchmark(
     print("=" * 60 + "\n")
 
     if total_frames_displayed == 0:
-        logger.error("No frames were captured or displayed from source '%s'.", source_identifier)
+        logger.error("No frames were captured or displayed from source '%s'.", safe_identifier)
         return 1
 
     return 0
