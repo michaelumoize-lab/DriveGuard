@@ -97,11 +97,15 @@ class DriverFeatureExtractor:
         ear_closure_threshold: float = 0.20,
         perclos_window_sec: float = 60.0,
         min_yawn_duration_ms: float = 1500.0,
+        neutral_pitch_deg: float = 0.0,
+        neutral_yaw_deg: float = 0.0,
     ) -> None:
         """
         Initialize the feature extraction pipeline.
         """
         self.ear_closure_threshold = ear_closure_threshold
+        self.neutral_pitch_deg = neutral_pitch_deg
+        self.neutral_yaw_deg = neutral_yaw_deg
 
         self._yawn_detector = YawnDetector(min_yawn_duration_ms=min_yawn_duration_ms)
         self._blink_detector = BlinkKinematicsDetector(closure_threshold=ear_closure_threshold)
@@ -126,13 +130,15 @@ class DriverFeatureExtractor:
                 landmarks=landmark_result.landmarks,
                 frame_width=frame_width,
                 frame_height=frame_height,
+                neutral_pitch_deg=self.neutral_pitch_deg,
+                neutral_yaw_deg=self.neutral_yaw_deg,
             )
 
-            # 2. Eye Aspect Ratio (Yaw-weighted & Pitch-compensated)
+            # 2. Eye Aspect Ratio (Yaw-weighted & Pitch-compensated relative to neutral)
             ear_res = extract_eye_aspect_ratio(
                 landmarks=landmark_result.landmarks,
-                yaw_deg=pose_res.yaw_deg,
-                pitch_deg=pose_res.pitch_deg,
+                yaw_deg=pose_res.rel_yaw_deg,
+                pitch_deg=pose_res.rel_pitch_deg,
                 aspect_ratio=aspect_ratio,
                 closure_threshold=self.ear_closure_threshold,
             )

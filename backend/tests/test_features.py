@@ -169,13 +169,19 @@ def test_extract_eye_aspect_ratio_pipeline() -> None:
 # ==============================================================================
 
 def test_classify_pose_zone() -> None:
-    """Verifies cockpit zone boundaries based on pitch, yaw, and roll."""
+    """Verifies cockpit zone boundaries based on pitch, yaw, roll, and neutral offsets."""
     assert classify_pose_zone(pitch_deg=0.0, yaw_deg=0.0, roll_deg=0.0) == PoseZone.CENTER
     assert classify_pose_zone(pitch_deg=0.0, yaw_deg=25.0, roll_deg=0.0) == PoseZone.LEFT_MIRROR
     assert classify_pose_zone(pitch_deg=0.0, yaw_deg=-25.0, roll_deg=0.0) == PoseZone.RIGHT_MIRROR
-    assert classify_pose_zone(pitch_deg=-18.0, yaw_deg=0.0, roll_deg=0.0) == PoseZone.DASHBOARD
-    assert classify_pose_zone(pitch_deg=50.0, yaw_deg=0.0, roll_deg=0.0) == PoseZone.OUT_OF_BOUNDS
-    assert classify_pose_zone(pitch_deg=0.0, yaw_deg=50.0, roll_deg=0.0) == PoseZone.OUT_OF_BOUNDS
+    assert classify_pose_zone(pitch_deg=-12.0, yaw_deg=0.0, roll_deg=0.0) == PoseZone.DASHBOARD
+    # Preserves natural coupled neck roll (38°) during mirror glances without tripping OOB
+    assert classify_pose_zone(pitch_deg=0.0, yaw_deg=40.0, roll_deg=38.0) == PoseZone.LEFT_MIRROR
+    # Extreme rotation triggers OUT_OF_BOUNDS
+    assert classify_pose_zone(pitch_deg=45.0, yaw_deg=0.0, roll_deg=0.0) == PoseZone.OUT_OF_BOUNDS
+    assert classify_pose_zone(pitch_deg=0.0, yaw_deg=55.0, roll_deg=0.0) == PoseZone.OUT_OF_BOUNDS
+    assert classify_pose_zone(pitch_deg=0.0, yaw_deg=0.0, roll_deg=52.0) == PoseZone.OUT_OF_BOUNDS
+    # Relative offset handling (e.g. camera resting yaw at -10°)
+    assert classify_pose_zone(pitch_deg=0.0, yaw_deg=5.0, neutral_yaw_deg=-10.0) == PoseZone.LEFT_MIRROR
 
 
 def test_estimate_head_pose_insufficient_landmarks() -> None:

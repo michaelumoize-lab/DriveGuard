@@ -78,19 +78,37 @@ class HeadPoseResult:
     zone: PoseZone
     is_looking_away: bool
     is_valid: bool
+    rel_pitch_deg: float = 0.0  # Pitch relative to neutral baseline
+    rel_yaw_deg: float = 0.0    # Yaw relative to neutral baseline
 
 
-def classify_pose_zone(pitch_deg: float, yaw_deg: float, roll_deg: float) -> PoseZone:
+def classify_pose_zone(
+    pitch_deg: float,
+    yaw_deg: float,
+    roll_deg: float = 0.0,
+    neutral_pitch_deg: float = 0.0,
+    neutral_yaw_deg: float = 0.0,
+) -> PoseZone:
     """
-    Classify continuous 3D Euler angles into discrete cockpit zones.
+    Classify continuous 3D Euler angles into discrete cockpit zones relative to driver neutral posture.
+
+    Calibrated according to Euro NCAP DMS 2026 and SAE J941 automotive ergonomics:
+    - OUT_OF_BOUNDS: |rel_yaw| > 50° OR |rel_pitch| > 38° OR |roll| > 48° (extreme turn / slumped)
+    - DASHBOARD: rel_pitch <= -9.0° (natural glance at instrument cluster)
+    - LEFT_MIRROR: rel_yaw >= 14.0° (driver-side wing mirror check, 14° to 50°)
+    - RIGHT_MIRROR: rel_yaw <= -14.0° (center rearview or passenger mirror check, -50° to -14°)
+    - CENTER: forward road view through windshield
     """
-    if abs(yaw_deg) > 42.0 or abs(pitch_deg) > 38.0 or abs(roll_deg) > 35.0:
+    rel_pitch = pitch_deg - neutral_pitch_deg
+    rel_yaw = yaw_deg - neutral_yaw_deg
+
+    if abs(rel_yaw) > 50.0 or abs(rel_pitch) > 38.0 or abs(roll_deg) > 48.0:
         return PoseZone.OUT_OF_BOUNDS
-    if pitch_deg < -14.0:
+    if rel_pitch <= -9.0:
         return PoseZone.DASHBOARD
-    if yaw_deg > 18.0:
+    if rel_yaw >= 14.0:
         return PoseZone.LEFT_MIRROR
-    if yaw_deg < -18.0:
+    if rel_yaw <= -14.0:
         return PoseZone.RIGHT_MIRROR
     return PoseZone.CENTER
 
@@ -99,6 +117,8 @@ def estimate_head_pose(
     landmarks: Union[Sequence[NormalizedLandmark], np.ndarray],
     frame_width: int = 1280,
     frame_height: int = 720,
+    neutral_pitch_deg: float = 0.0,
+    neutral_yaw_deg: float = 0.0,
 ) -> HeadPoseResult:
     """
     Compute 6-DoF head pose Euler angles and cockpit zone using cv2.solvePnP.
@@ -107,9 +127,11 @@ def estimate_head_pose(
         landmarks: Sequence of NormalizedLandmark points or (N, 2)/(N, 3) NumPy array.
         frame_width: Video frame width in pixels.
         frame_height: Video frame height in pixels.
+        neutral_pitch_deg: Baseline resting pitch angle (default: 0.0°).
+        neutral_yaw_deg: Baseline resting yaw angle (default: 0.0°).
 
     Returns:
-        HeadPoseResult detailing Pitch, Yaw, Roll, and classified PoseZone.
+        HeadPoseResult detailing Pitch, Yaw, Roll, relative angles, and classified PoseZone.
     """
     max_idx = max(SOLVEPNP_LANDMARK_INDICES)
     if len(landmarks) <= max_idx:
@@ -120,6 +142,8 @@ def estimate_head_pose(
             zone=PoseZone.OUT_OF_BOUNDS,
             is_looking_away=True,
             is_valid=False,
+            rel_pitch_deg=0.0,
+            rel_yaw_deg=0.0,
         )
 
     # Extract 2D image points in pixel space
@@ -194,7 +218,16 @@ def estimate_head_pose(
     elif pitch < -90.0:
         pitch += 180.0
 
-    zone = classify_pose_zone(pitch, yaw, roll)
+    rel_pitch = pitch - neutral_pitch_deg
+    rel_yaw = yaw - neutral_yaw_deg
+
+    zone = classify_pose_zone(
+        pitch_deg=pitch,
+        yaw_deg=yaw,
+        roll_deg=roll,
+        neutral_pitch_deg=neutral_pitch_deg,
+        neutral_yaw_deg=neutral_yaw_deg,
+    )
     is_looking_away = zone != PoseZone.CENTER
 
     return HeadPoseResult(
@@ -204,4 +237,6 @@ def estimate_head_pose(
         zone=zone,
         is_looking_away=is_looking_away,
         is_valid=True,
+        rel_pitch_deg=rel_pitch,
+        rel_yaw_deg=rel_yaw,
     )
