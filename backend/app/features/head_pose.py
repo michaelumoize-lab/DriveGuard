@@ -51,15 +51,14 @@ class PoseZone(str, Enum):
 
 
 # Canonical 3D anthropometric facial model points (in mm, centered at nose tip)
-# Upright camera image orientation: +X points right, +Y points down, +Z points towards camera
 CANONICAL_3D_FACE_POINTS = np.array(
     [
         (0.0, 0.0, 0.0),          # Nose tip (idx 1)
-        (0.0, 63.6, -12.5),       # Chin (idx 152) — physically down from nose (+Y)
-        (-43.3, -32.7, -26.0),    # Right eye outer corner (idx 33) — up (-Y), left (-X)
-        (43.3, -32.7, -26.0),     # Left eye outer corner (idx 263) — up (-Y), right (+X)
-        (-28.9, 28.9, -24.1),     # Right mouth corner (idx 61) — down (+Y), left (-X)
-        (28.9, 28.9, -24.1),      # Left mouth corner (idx 291) — down (+Y), right (+X)
+        (0.0, -63.6, -12.5),      # Chin (idx 152)
+        (-43.3, 32.7, -26.0),     # Left eye outer corner (idx 33)
+        (43.3, 32.7, -26.0),      # Right eye outer corner (idx 263)
+        (-28.9, -28.9, -24.1),    # Left mouth corner (idx 61)
+        (28.9, -28.9, -24.1),     # Right mouth corner (idx 291)
     ],
     dtype=np.float64,
 )
@@ -94,7 +93,7 @@ def classify_pose_zone(
     Classify continuous 3D Euler angles into discrete cockpit zones relative to driver neutral posture.
 
     Calibrated according to Euro NCAP DMS 2026 and SAE J941 automotive ergonomics:
-    - OUT_OF_BOUNDS: |rel_yaw| > 50° OR |rel_pitch| > 38° OR |roll| > 48° (extreme turn / slumped)
+    - OUT_OF_BOUNDS: |rel_yaw| > 50° OR |rel_pitch| > 38° (extreme head turn)
     - DASHBOARD: rel_pitch <= -9.0° (natural glance at instrument cluster)
     - LEFT_MIRROR: rel_yaw >= 14.0° (driver-side wing mirror check, 14° to 50°)
     - RIGHT_MIRROR: rel_yaw <= -14.0° (center rearview or passenger mirror check, -50° to -14°)
@@ -103,7 +102,7 @@ def classify_pose_zone(
     rel_pitch = pitch_deg - neutral_pitch_deg
     rel_yaw = yaw_deg - neutral_yaw_deg
 
-    if abs(rel_yaw) > 50.0 or abs(rel_pitch) > 38.0 or abs(roll_deg) > 48.0:
+    if abs(rel_yaw) > 50.0 or abs(rel_pitch) > 38.0:
         return PoseZone.OUT_OF_BOUNDS
     if rel_pitch <= -9.0:
         return PoseZone.DASHBOARD
