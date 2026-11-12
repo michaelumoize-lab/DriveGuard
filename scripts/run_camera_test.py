@@ -1,0 +1,276 @@
+"""
+DriveGuard — Phase 1 Hardware Camera Acquisition Benchmark & Verification Runner.
+
+What it does:
+  Initializes the specified video camera (e.g., built-in HP EliteBook webcam or external USB UVC device),
+  captures frames at the requested resolution and FPS using the DirectShow backend, measures true hardware
+  ingestion FPS versus consumer display loop FPS, and renders a diagnostic HUD overlay.
+
+Usage:
+  python scripts/run_camera_test.py [--device 0] [--width 1280] [--height 720] [--fps 30] [--backend DSHOW]
+
+Controls:
+  'q' or ESC : Exit gracefully and display performance summary
+  's'        : Save diagnostic snapshot PNG to disk
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import sys
+import time
+from pathlib import Path
+
+# Add project root to sys.path to allow running directly from anywhere
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+import cv2
+import numpy as np
+
+from backend.app.camera.camera_config import CameraBackend, CameraConfig
+from backend.app.camera.opencv_camera import OpenCVCamera
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("driveguard.benchmark")
+
+
+def draw_diagnostic_hud(
+    frame: np.ndarray,
+    source_id: str,
+    backend_name: str,
+    actual_res: tuple[int, int],
+    ingestion_fps: float,
+    display_fps: float,
+    frame_age_ms: float,
+    buffer_stats: dict,
+) -> np.ndarray:
+    """
+    Renders a semi-transparent diagnostic overlay with real-time performance indicators.
+    """
+    canvas = frame.copy()
+    height, width = canvas.shape[:2]
+
+    # Create semi-transparent top banner
+    banner_height = 85
+    overlay = canvas.copy()
+    cv2.rectangle(overlay, (0, 0), (width, banner_height), (15, 23, 42), -1)  # Slate-900
+    cv2.addWeighted(overlay, 0.75, canvas, 0.25, 0, canvas)
+
+    # Color indicator for FPS health
+    if ingestion_fps >= 25.0:
+        status_color = (34, 197, 94)    # Emerald-500 (Green)
+        status_text = "STABLE"
+    elif ingestion_fps >= 15.0:
+        status_color = (234, 179, 8)    # Amber-500 (Yellow)
+        status_text = "JITTER"
+    else:
+        status_color = (239, 68, 68)    # Red-500 (Alert)
+        status_text = "LOW FPS"
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    # Title & Health Status Pill
+    cv2.putText(canvas, "DriveGuard — Phase 1 Camera Diagnostics", (16, 24), font, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
+    
+    # Status pill badge
+    pill_text = f"[{status_text} | {ingestion_fps:.1f} FPS]"
+    cv2.putText(canvas, pill_text, (width - 240, 24), font, 0.60, status_color, 2, cv2.LINE_AA)
+
+    # Line 2: Telemetry Metrics
+    w, h = actual_res
+    telemetry_line_1 = (
+        f"Source: {source_id} ({backend_name}) | "
+        f"Resolution: {w}x{h} | "
+        f"Ingestion: {ingestion_fps:.1f} FPS | "
+        f"Display: {display_fps:.1f} FPS"
+    )
+    cv2.putText(canvas, telemetry_line_1, (16, 50), font, 0.48, (226, 232, 240), 1, cv2.LINE_AA)
+
+    # Line 3: Latency & Queue Stats
+    dropped = buffer_stats.get("total_dropped", 0)
+    pushed = buffer_stats.get("total_pushed", 0)
+    drop_pct = (dropped / max(1, pushed)) * 100.0
+    telemetry_line_2 = (
+        f"Frame Latency: {frame_age_ms:.1f} ms | "
+        f"Dropped: {dropped} ({drop_pct:.1f}%) | "
+        f"Press 'q' or ESC to exit | 's' to snapshot"
+    )
+    cv2.putText(canvas, telemetry_line_2, (16, 72), font, 0.44, (148, 163, 184), 1, cv2.LINE_AA)
+
+    return canvas
+
+
+def run_benchmark(
+    device_index: int = 0,
+    target_width: int = 1280,
+    target_height: int = 720,
+    target_fps: int = 30,
+    backend_str: str = "DSHOW",
+    duration_sec: float = 0.0,
+    headless: bool = False,
+) -> int:
+    """
+    Executes the Phase 1 camera capture verification loop.
+    """
+    backend_enum = CameraBackend(backend_str.upper())
+    config = CameraConfig(
+        device_index=device_index,
+        target_width=target_width,
+        target_height=target_height,
+        target_fps=target_fps,
+        backend=backend_enum,
+        buffer_size=1,
+    )
+
+    camera = OpenCVCamera(config)
+    logger.info("Initializing OpenCVCamera...")
+
+    if not camera.open():
+        logger.error("Failed to open camera on device %d with backend %s.", device_index, backend_str)
+        return 1
+
+    actual_res = camera.get_actual_resolution()
+    window_name = f"DriveGuard Diagnostics [Device {device_index}]"
+
+    if not headless:
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(window_name, actual_res[0], actual_res[1])
+
+    # Performance tracking metrics
+    start_time = time.monotonic()
+    total_frames_displayed = 0
+    display_fps = 0.0
+    fps_timer = time.monotonic()
+    fps_frame_count = 0
+    latencies_ms = []
+
+    logger.info("Starting live capture loop. Press 'q' or ESC to terminate.")
+
+    try:
+        while True:
+            loop_now = time.monotonic()
+
+            # Auto-exit if duration is set (used for automated testing)
+            if duration_sec > 0 and (loop_now - start_time) >= duration_sec:
+                logger.info("Target duration of %.1fs reached.", duration_sec)
+                break
+
+            success, packet = camera.read(timeout_sec=0.1)
+            if not success or packet is None:
+                time.sleep(0.005)
+                continue
+
+            total_frames_displayed += 1
+            fps_frame_count += 1
+            frame_age = packet.age_ms
+            latencies_ms.append(frame_age)
+
+            # Measure consumer display FPS every 0.5s
+            elapsed = loop_now - fps_timer
+            if elapsed >= 0.5:
+                display_fps = fps_frame_count / elapsed
+                fps_timer = loop_now
+                fps_frame_count = 0
+
+            # Render overlay if running in GUI mode
+            if not headless:
+                hud_frame = draw_diagnostic_hud(
+                    frame=packet.frame,
+                    source_id=packet.source_id,
+                    backend_name=config.backend.value,
+                    actual_res=actual_res,
+                    ingestion_fps=camera.get_actual_fps(),
+                    display_fps=display_fps,
+                    frame_age_ms=frame_age,
+                    buffer_stats=camera.get_buffer_stats(),
+                )
+                cv2.imshow(window_name, hud_frame)
+
+                key = cv2.waitKey(1) & 0xFF
+                if key in (27, ord("q"), ord("Q")):
+                    logger.info("User requested termination.")
+                    break
+                elif key in (ord("s"), ord("S")):
+                    snapshot_filename = f"snapshot_dev{device_index}_{int(time.time())}.png"
+                    cv2.imwrite(snapshot_filename, packet.frame)
+                    logger.info("Snapshot saved to %s", snapshot_filename)
+
+    finally:
+        total_time = time.monotonic() - start_time
+        camera.close()
+        if not headless:
+            cv2.destroyAllWindows()
+
+    # Benchmark Summary
+    avg_display_fps = total_frames_displayed / max(0.001, total_time)
+    avg_latency = float(np.mean(latencies_ms)) if latencies_ms else 0.0
+    p95_latency = float(np.percentile(latencies_ms, 95)) if latencies_ms else 0.0
+    buffer_stats = camera.get_buffer_stats()
+
+    print("\n" + "=" * 60)
+    print("      DRIVEGUARD PHASE 1 CAMERA BENCHMARK SUMMARY")
+    print("=" * 60)
+    print(f"Device Index          : {device_index} ({config.backend.value})")
+    print(f"Negotiated Resolution : {actual_res[0]}x{actual_res[1]}")
+    print(f"Run Duration          : {total_time:.2f} seconds")
+    print(f"Total Captured Frames : {buffer_stats['total_pushed']}")
+    print(f"Total Rendered Frames : {total_frames_displayed}")
+    print(f"Dropped Backlog Frames: {buffer_stats['total_dropped']}")
+    print(f"Average Display FPS   : {avg_display_fps:.2f} FPS")
+    print(f"Hardware Ingestion FPS: {camera.get_actual_fps():.2f} FPS")
+    print(f"Mean Frame Latency    : {avg_latency:.2f} ms")
+    print(f"95th Percentile Age   : {p95_latency:.2f} ms")
+    print("=" * 60 + "\n")
+
+    return 0
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="DriveGuard Phase 1 Camera Benchmark")
+    parser.add_argument("--device", type=int, default=0, help="Camera device index (default: 0)")
+    parser.add_argument("--width", type=int, default=1280, help="Requested width (default: 1280)")
+    parser.add_argument("--height", type=int, default=720, help="Requested height (default: 720)")
+    parser.add_argument("--fps", type=int, default=30, help="Requested FPS (default: 30)")
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="DSHOW",
+        choices=["DSHOW", "MSMF", "ANY"],
+        help="Windows capture backend (default: DSHOW)",
+    )
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=0.0,
+        help="Run duration in seconds (0 for indefinite until 'q' pressed)",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run without displaying GUI window (for automated benchmarking)",
+    )
+
+    args = parser.parse_args()
+    sys.exit(
+        run_benchmark(
+            device_index=args.device,
+            target_width=args.width,
+            target_height=args.height,
+            target_fps=args.fps,
+            backend_str=args.backend,
+            duration_sec=args.duration,
+            headless=args.headless,
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()
