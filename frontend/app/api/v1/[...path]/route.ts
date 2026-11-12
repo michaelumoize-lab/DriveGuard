@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PRODUCTION_FASTAPI_URL, resolveCloudFastApiUrl } from "@/lib/fastapi-url";
 import { getServerSession } from "@/lib/get-session";
-import { createBackendAccessToken } from "@/lib/backend-auth";
+import { createBackendAccessToken, verifyBackendAccessToken } from "@/lib/backend-auth";
 import { prisma } from "@/lib/prisma";
 
 export const dynamic = "force-dynamic";
@@ -21,16 +21,37 @@ async function proxyToFastApi(
   const primaryBase = resolveCloudFastApiUrl();
 
   if (!isPublicHealth) {
-    const session = await getServerSession();
-    const userId = session?.user?.id;
+    let userId: string | null = null;
+    let role: string = "USER";
+
+    // 1. Check for incoming Authorization: Bearer <token>
+    const incomingAuth = req.headers.get("authorization");
+    if (incomingAuth && incomingAuth.startsWith("Bearer ")) {
+      const rawToken = incomingAuth.slice(7).trim();
+      const verified = verifyBackendAccessToken(rawToken);
+      if (verified && verified.sub) {
+        userId = verified.sub;
+        role = verified.role || "USER";
+        backendToken = rawToken;
+      }
+    }
+
+    // 2. Check Better Auth session from request headers with fallback
+    if (!userId) {
+      const session = (await getServerSession(req.headers)) || (await getServerSession());
+      userId = session?.user?.id ?? null;
+      if (userId) {
+        role = (session?.user as any)?.role || "USER";
+        backendToken = createBackendAccessToken({ userId, role });
+      }
+    }
+
     if (!userId) {
       return NextResponse.json(
         { error: "Unauthorized: Active driver session required" },
         { status: 401 }
       );
     }
-    const role = (session?.user as any)?.role || "USER";
-    backendToken = createBackendAccessToken({ userId, role });
 
     // DG-04: Prioritize PostgreSQL calibration records across backend restarts.
     // When initializing a session or requesting a LiveKit token, synchronize the authoritative
