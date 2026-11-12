@@ -138,17 +138,57 @@ def test_opencv_camera_mocked_lifecycle() -> None:
         
         opened = camera.open()
         assert opened is True
-        assert camera.is_opened() is True
+        try:
+            assert camera.is_opened() is True
 
-        # Wait briefly for capture worker to push at least one frame
-        time.sleep(0.1)
-        
-        success, packet = camera.read(timeout_sec=0.5)
-        assert success is True
-        assert packet is not None
-        assert packet.resolution == (1280, 720)
+            # Wait briefly for capture worker to push at least one frame
+            time.sleep(0.1)
+            
+            success, packet = camera.read(timeout_sec=0.5)
+            assert success is True
+            assert packet is not None
+            assert packet.resolution == (1280, 720)
+        finally:
+            # Clean close guaranteed
+            camera.close()
 
-        # Clean close
-        camera.close()
         assert camera.is_opened() is False
         mock_cap.release.assert_called_once()
+
+
+def test_camera_config_invalid_backend() -> None:
+    """Verifies that non-CameraBackend values raise ValueError."""
+    with pytest.raises(ValueError, match="backend must be an instance of CameraBackend"):
+        CameraConfig(backend="INVALID_BACKEND")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("invalid_cap", [0, 2, 5])
+def test_frame_buffer_capacity_strictly_one(invalid_cap: int) -> None:
+    """Verifies that FrameBuffer requires capacity=1 for latest-frame strategy."""
+    with pytest.raises(ValueError, match="latest-frame policy requires capacity=1"):
+        FrameBuffer(capacity=invalid_cap)
+
+
+def test_opencv_camera_read_exception_disconnects() -> None:
+    """
+    Verifies that when cap.read() throws an exception, consecutive failures accumulate
+    and the camera enters disconnected state without crashing.
+    """
+    mock_cap = MagicMock()
+    mock_cap.isOpened.return_value = True
+    mock_cap.read.side_effect = RuntimeError("Hardware I/O error on camera bus")
+    mock_cap.get.side_effect = lambda prop: 30.0
+
+    with patch("cv2.VideoCapture", return_value=mock_cap):
+        camera = OpenCVCamera(CameraConfig(device_index=0, warmup_frames=0, auto_reconnect=False))
+        opened = camera.open()
+        assert opened is True
+
+        # Wait for worker to encounter read failures
+        time.sleep(0.4)
+
+        try:
+            # Since auto_reconnect is False and reads fail, camera should flag disconnected
+            assert camera.is_opened() is False
+        finally:
+            camera.close()

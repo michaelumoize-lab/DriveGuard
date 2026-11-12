@@ -164,30 +164,30 @@ def run_benchmark(
         logger.error("Failed to open camera source '%s'.", source_identifier)
         return 1
 
-    actual_res = camera.get_actual_resolution()
-    window_name = f"DriveGuard Diagnostics [{source_identifier}]"
-
-    if not headless:
-        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        # Avoid zero or invalid dimensions
-        w = actual_res[0] if actual_res[0] > 0 else target_width
-        h = actual_res[1] if actual_res[1] > 0 else target_height
-        cv2.resizeWindow(window_name, w, h)
-
-    quality_analyzer = FrameQualityAnalyzer()
-
-    # Performance tracking metrics
-    start_time = time.monotonic()
-    total_frames_displayed = 0
-    display_fps = 0.0
-    fps_timer = time.monotonic()
-    fps_frame_count = 0
-    latencies_ms = []
-    latest_quality: Optional[FrameQualityResult] = None
-
-    logger.info("Starting live capture loop. Press 'q' or ESC to terminate.")
-
     try:
+        actual_res = camera.get_actual_resolution()
+        window_name = f"DriveGuard Diagnostics [{source_identifier}]"
+
+        if not headless:
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            # Avoid zero or invalid dimensions
+            w = actual_res[0] if actual_res[0] > 0 else target_width
+            h = actual_res[1] if actual_res[1] > 0 else target_height
+            cv2.resizeWindow(window_name, w, h)
+
+        quality_analyzer = FrameQualityAnalyzer()
+
+        # Performance tracking metrics
+        start_time = time.monotonic()
+        total_frames_displayed = 0
+        display_fps = 0.0
+        fps_timer = time.monotonic()
+        fps_frame_count = 0
+        latencies_ms = []
+        latest_quality: Optional[FrameQualityResult] = None
+
+        logger.info("Starting live capture loop. Press 'q' or ESC to terminate.")
+
         while True:
             loop_now = time.monotonic()
 
@@ -198,6 +198,11 @@ def run_benchmark(
 
             success, packet = camera.read(timeout_sec=0.1)
             if not success or packet is None:
+                if not headless:
+                    key = cv2.waitKey(1) & 0xFF
+                    if key in (27, ord("q"), ord("Q")):
+                        logger.info("User requested termination.")
+                        break
                 time.sleep(0.005)
                 continue
 
@@ -274,6 +279,10 @@ def run_benchmark(
         print(f"Sharpness Score       : {latest_quality.blur_variance:.1f} ({latest_quality.blur.value})")
         print(f"Inference Viability   : {'VIABLE' if latest_quality.is_viable_for_inference else 'UNRELIABLE / DEGRADED'}")
     print("=" * 60 + "\n")
+
+    if total_frames_displayed == 0:
+        logger.error("No frames were captured or displayed from source '%s'.", source_identifier)
+        return 1
 
     return 0
 

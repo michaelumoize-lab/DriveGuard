@@ -100,7 +100,7 @@ OPTIONAL CLOUD SERVICES (future, never required for core detection)
 ```
 
 ### Distinction: Local-First vs. Browser-Only
-The primary camera capture and inference path runs inside the local Python engine. The browser dashboard acts strictly as an optional display and management interface consuming local telemetry via WebSocket/HTTP, never capturing or streaming raw camera frames over the network.
+The primary camera capture and inference path runs inside the local Python engine. The browser dashboard acts strictly as an optional display and management interface consuming local telemetry via WebSocket/HTTP, never capturing or streaming raw camera frames over the network. If an optional local MJPEG preview stream is enabled for debugging or visual calibration, it must be bound strictly to the localhost loopback interface (`127.0.0.1`), require explicit local user activation, enforce access controls, and strictly prohibit transmitting raw frames outside the local machine boundary.
 
 ### Proposed Modular Directory Structure
 
@@ -344,7 +344,7 @@ DriveGuard/
     - `GET /api/status`: System health, camera status, active profile.
     - `POST /api/monitor/start`, `POST /api/monitor/stop`.
     - `WS /ws/telemetry`: High-frequency metrics stream (EAR, PERCLOS, Alert State, FPS) at 10-30 Hz.
-    - Optional local MJPEG preview endpoint (`GET /api/stream/preview`) for in-browser visual monitoring.
+    - Optional local MJPEG preview endpoint (`GET /api/stream/preview`) for in-browser visual monitoring, strictly bound to `127.0.0.1`, requiring explicit user consent/activation, local access controls, and strict prohibition of transmitting raw frames beyond the local machine boundary.
   - [ ] Update frontend dashboard to read from local API/WebSocket instead of running LiveKit video streaming.
   - [ ] Keep core Python engine completely functional whether the browser dashboard is open or closed.
 - **Deliverables:** `api/` module and updated Next.js API client hooks.

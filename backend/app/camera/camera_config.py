@@ -67,6 +67,10 @@ class CameraConfig:
 
     def __post_init__(self) -> None:
         """Validate configuration parameters upon instantiation."""
+        if not isinstance(self.backend, CameraBackend):
+            raise ValueError(
+                f"backend must be an instance of CameraBackend enum, got {self.backend!r}"
+            )
         if self.device_index < 0:
             raise ValueError(f"device_index must be non-negative, got {self.device_index}")
         if self.target_width <= 0 or self.target_height <= 0:
@@ -77,9 +81,9 @@ class CameraConfig:
             raise ValueError(
                 f"target_fps must be between 1 and 120 FPS, got {self.target_fps}"
             )
-        if self.buffer_size < 1:
+        if self.buffer_size != 1:
             raise ValueError(
-                f"buffer_size must be at least 1, got {self.buffer_size}"
+                f"DriveGuard latest-frame policy requires buffer_size=1, got {self.buffer_size}"
             )
 
     @property

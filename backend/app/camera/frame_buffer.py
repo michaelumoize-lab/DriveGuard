@@ -48,8 +48,10 @@ class FrameBuffer:
         Args:
             capacity: Maximum number of frames to retain (default: 1 for latest-frame strategy).
         """
-        if capacity < 1:
-            raise ValueError(f"capacity must be at least 1, got {capacity}")
+        if capacity != 1:
+            raise ValueError(
+                f"DriveGuard latest-frame policy requires capacity=1, got {capacity}"
+            )
         self._capacity = capacity
         self._lock = threading.Lock()
         self._new_frame_event = threading.Event()

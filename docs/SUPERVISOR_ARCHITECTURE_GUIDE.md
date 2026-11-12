@@ -99,15 +99,15 @@ DriveGuard/
 3. Browser tab throttling when in the background.
 4. Total loss of native camera controls (DirectShow / UVC manual exposure and infrared lighting).
 
-By capturing directly in Python via `cv2.CAP_DSHOW` with a dedicated thread and a 1-slot buffer (`maxlen=1`), frame latency is reduced to under 30 milliseconds, and old frames are automatically dropped rather than creating a dangerous processing backlog.
+By capturing directly in Python via `cv2.CAP_DSHOW` with a dedicated thread and a 1-slot buffer (`maxlen=1`), old frames are automatically dropped rather than creating a dangerous processing backlog. In hardware verification, this design benchmarked at a mean frame latency of 1.30 ms and 95th percentile age of 15.05 ms on the HP EliteBook 840 G4 webcam at 1280x720@30FPS via DirectShow.
 
 ### Q2: How does the system prevent false alarms when the driver checks rear-view mirrors?
-**Answer:** DriveGuard uses a **4-Zone Pose-Conditioned Calibration**. When the driver turns their head to check the left or right mirror (detected via 6-DoF SolvePnP head pose), the decision engine applies the calibrated baseline for that specific zone, preventing false alerts from temporary profile-angle eye narrowing or brief head rotation.
+**Answer (Planned/Proposed Architecture for Phase 6 & 8):** DriveGuard is designed to use **4-Zone Pose-Conditioned Calibration**. When the driver turns their head to check the left or right mirror (detected via 6-DoF SolvePnP head pose), the decision engine is planned to apply the calibrated baseline for that specific zone, preventing false alerts from temporary profile-angle eye narrowing or brief head rotation.
 
 ### Q3: What prevents the adaptive algorithm from learning that prolonged eye closure is "normal"?
-**Answer:** The system enforces **bounded adaptive thresholds**. Personalization adjusts sensitivity relative to natural facial geometry (e.g., naturally narrow eyelids or deep-set eyes), but hard mathematical safety clamps are permanently active. For instance, any eye closure exceeding 1.5 seconds immediately bypasses personalization and triggers an urgent warning.
+**Answer (Planned/Proposed Architecture for Phase 7 & 8):** The planned architecture enforces **bounded adaptive thresholds**. Personalization will adjust sensitivity relative to natural facial geometry (e.g., naturally narrow eyelids or deep-set eyes), while hard mathematical safety clamps remain permanently active. For instance, any eye closure exceeding 1.5 seconds immediately bypasses personalization and triggers an urgent warning.
 
 ### Q4: What happens if the ESP32 hardware or camera disconnects while driving?
-**Answer:** All modules follow the **Fault Isolation Principle**:
-- If the ESP32 disconnects, the serial worker marks hardware as unavailable and continues local visual/audio alerts without stalling the vision thread.
-- If the camera disconnects, the engine enters an explicit `INSUFFICIENT_DATA` / `CAMERA_FAULT` state, warning the driver rather than assuming the driver is asleep or awake.
+**Answer (Planned/Proposed Architecture for Phase 9 & 10):** All modules are designed around the **Fault Isolation Principle**:
+- If the ESP32 disconnects, the serial worker is planned to mark hardware as unavailable and continue local visual/audio alerts without stalling the vision thread.
+- If the camera disconnects, the engine is designed to enter an explicit `INSUFFICIENT_DATA` / `CAMERA_FAULT` state, warning the driver rather than assuming the driver is asleep or awake.

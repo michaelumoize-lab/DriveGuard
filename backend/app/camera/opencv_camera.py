@@ -97,11 +97,24 @@ class OpenCVCamera(BaseCamera):
     def open(self) -> bool:
         """
         Open the camera device, negotiate resolution/FPS, and start the capture thread.
+        Coordinates with any existing worker to guarantee a single owner.
         """
         with self._lock:
+            # If already open and capturing normally, return True
             if self._is_connected and self._cap is not None and self._cap.isOpened():
                 logger.info("Camera already opened on device index %d.", self._config.device_index)
                 return True
+
+            # If a prior capture thread is running (e.g. attempting reconnection), stop and join it
+            if self._capture_thread is not None and self._capture_thread.is_alive():
+                logger.info("Stopping prior capture worker before reopening device %d...", self._config.device_index)
+                self._stop_event.set()
+                self._capture_thread.join(timeout=2.0)
+                self._capture_thread = None
+                if self._cap is not None:
+                    self._cap.release()
+                    self._cap = None
+                self._stop_event.clear()
 
             cv_backend = self._resolve_backend_flag()
             logger.info(
@@ -179,11 +192,19 @@ class OpenCVCamera(BaseCamera):
 
         while not self._stop_event.is_set():
             if self._cap is None or not self._cap.isOpened():
-                time.sleep(0.05)
+                if self._config.auto_reconnect:
+                    self._attempt_reconnect()
+                else:
+                    time.sleep(0.05)
                 continue
 
-            grabbed, frame = self._cap.read()
-            capture_time_ns = time.monotonic_ns()
+            try:
+                grabbed, frame = self._cap.read()
+                capture_time_ns = time.monotonic_ns()
+            except Exception as exc:
+                logger.warning("Exception during frame capture from %s: %s", source_id, exc)
+                grabbed, frame = False, None
+                capture_time_ns = time.monotonic_ns()
 
             if not grabbed or frame is None or frame.size == 0:
                 consecutive_read_failures += 1
@@ -194,6 +215,7 @@ class OpenCVCamera(BaseCamera):
                         consecutive_read_failures,
                     )
                     self._is_connected = False
+                    self._buffer.clear()
                     if self._config.auto_reconnect:
                         self._attempt_reconnect()
                         consecutive_read_failures = 0
@@ -236,24 +258,64 @@ class OpenCVCamera(BaseCamera):
         logger.info("Camera capture worker thread stopped for %s.", source_id)
 
     def _attempt_reconnect(self) -> None:
-        """Attempt to reopen a disconnected camera device."""
+        """
+        Attempt to reopen a disconnected camera device with retry loop up to reconnect_timeout_sec.
+        Respects stop_event and reads back negotiated resolution and FPS upon reconnection.
+        """
+        if self._stop_event.is_set():
+            return
+
         logger.info("Attempting camera reconnect on device %d...", self._config.device_index)
         if self._cap is not None:
             self._cap.release()
             self._cap = None
-        
-        time.sleep(1.0)
+
+        deadline = time.monotonic() + self._config.reconnect_timeout_sec
         cv_backend = self._resolve_backend_flag()
-        try:
-            new_cap = cv2.VideoCapture(self._config.device_index, cv_backend)
-            if new_cap.isOpened():
-                new_cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self._config.target_width))
-                new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self._config.target_height))
-                self._cap = new_cap
-                self._is_connected = True
-                logger.info("Camera reconnected successfully.")
-        except Exception as exc:
-            logger.error("Camera reconnect failed: %s", exc)
+
+        while not self._stop_event.is_set() and not self._is_connected:
+            if time.monotonic() > deadline:
+                logger.warning(
+                    "Camera reconnect timed out after %.1fs on device %d.",
+                    self._config.reconnect_timeout_sec,
+                    self._config.device_index,
+                )
+                break
+
+            try:
+                new_cap = cv2.VideoCapture(self._config.device_index, cv_backend)
+                if self._stop_event.is_set():
+                    new_cap.release()
+                    return
+
+                if new_cap.isOpened():
+                    new_cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self._config.target_width))
+                    new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self._config.target_height))
+                    new_cap.set(cv2.CAP_PROP_FPS, float(self._config.target_fps))
+                    new_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1.0)
+
+                    self._actual_width = int(new_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    self._actual_height = int(new_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    rep_fps = float(new_cap.get(cv2.CAP_PROP_FPS))
+                    self._actual_fps = rep_fps if rep_fps > 0 else float(self._config.target_fps)
+
+                    self._cap = new_cap
+                    self._is_connected = True
+                    logger.info(
+                        "Camera reconnected successfully on device %d. Negotiated: %dx%d (reported FPS: %.1f).",
+                        self._config.device_index,
+                        self._actual_width,
+                        self._actual_height,
+                        self._actual_fps,
+                    )
+                    return
+                else:
+                    new_cap.release()
+            except Exception as exc:
+                logger.error("Camera reconnect attempt failed: %s", exc)
+
+            # Sleep briefly while checking stop_event
+            self._stop_event.wait(timeout=min(0.5, max(0.1, deadline - time.monotonic())))
 
     def read(self, timeout_sec: float = 0.1) -> Tuple[bool, Optional[FramePacket]]:
         """
@@ -269,20 +331,31 @@ class OpenCVCamera(BaseCamera):
     def close(self) -> None:
         """
         Safely stop the capture worker and release camera hardware descriptors.
+        Preserves capture ownership until worker thread termination is confirmed.
         """
         with self._lock:
             self._stop_event.set()
             if self._capture_thread is not None and self._capture_thread.is_alive():
                 self._capture_thread.join(timeout=2.0)
+                if not self._capture_thread.is_alive():
+                    self._capture_thread = None
+                    if self._cap is not None:
+                        self._cap.release()
+                        self._cap = None
+                    self._buffer.clear()
+                    self._is_connected = False
+                else:
+                    logger.warning(
+                        "Capture worker thread join timed out; preserving capture descriptors until worker exits."
+                    )
+            else:
                 self._capture_thread = None
-
-            if self._cap is not None:
-                self._cap.release()
-                self._cap = None
-
-            self._is_connected = False
-            self._buffer.clear()
-            logger.info("Camera device %d released cleanly.", self._config.device_index)
+                if self._cap is not None:
+                    self._cap.release()
+                    self._cap = None
+                self._buffer.clear()
+                self._is_connected = False
+            logger.info("Camera device %d release procedure completed.", self._config.device_index)
 
     def is_opened(self) -> bool:
         """Returns True if the camera device is currently acquiring frames."""
