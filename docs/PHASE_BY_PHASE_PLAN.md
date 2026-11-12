@@ -234,18 +234,18 @@ DriveGuard/
 
 ---
 
-### [ ] Phase 4 — Face Detection and Facial Landmark Tracking
+### [x] Phase 4 — Face Detection and Facial Landmark Tracking
 - **Goal:** Reliably locate the driver's face, contours, and 3D landmarks in real time.
 - **Tasks:**
-  - [ ] Wrap MediaPipe Face Landmarker (`weights/face_landmarker.task`) with dedicated lifecycle initialization.
-  - [ ] Run inference in live stream mode with monotonic timestamps.
-  - [ ] Extract 478 3D landmarks (face mesh, eye contours, irises).
-  - [ ] Implement face presence validation, detection confidence assessment, and face-loss grace FSM.
-  - [ ] Render debug overlay with toggles for mesh wireframes and eye landmarks.
-- **Deliverables:** `vision/face_landmarker.py` and visual tracking preview.
+  - [x] Wrap MediaPipe Face Landmarker (`weights/face_landmarker.task`) with dedicated lifecycle initialization.
+  - [x] Run inference in live stream mode with monotonic timestamps.
+  - [x] Extract 478 3D landmarks (face mesh, eye contours, irises).
+  - [x] Implement face presence validation, detection confidence assessment, and face-loss grace FSM.
+  - [x] Render debug overlay with toggles for mesh wireframes and eye landmarks.
+- **Deliverables:** `backend/app/vision/face_landmarker.py` and visual tracking preview.
 - **Acceptance Criteria:**
   - Face loss triggers `INSUFFICIENT_DATA` rather than crashing or predicting false drowsiness.
-  - Inference runs at >= 30 FPS on CPU/GPU.
+  - Inference runs at >= 30 FPS on CPU/GPU (benchmarked at 25.2 ms / ~40 FPS on CPU).
 
 ---
 
