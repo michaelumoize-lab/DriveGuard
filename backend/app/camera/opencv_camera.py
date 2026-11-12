@@ -79,6 +79,8 @@ class OpenCVCamera(BaseCamera):
         self._actual_fps: float = 0.0
         self._ingestion_fps: float = 0.0
         self._frame_count: int = 0
+        self._flip_horizontal: bool = self._config.flip_horizontal
+        self._flip_vertical: bool = self._config.flip_vertical
         
         # Rolling FPS calculation window
         self._fps_window_start: float = time.monotonic()
@@ -206,6 +208,14 @@ class OpenCVCamera(BaseCamera):
             self._frame_count += 1
             self._fps_window_frames += 1
 
+            # Apply orientation/mirror transforms if requested
+            if self._flip_horizontal and self._flip_vertical:
+                frame = cv2.flip(frame, -1)
+            elif self._flip_horizontal:
+                frame = cv2.flip(frame, 1)
+            elif self._flip_vertical:
+                frame = cv2.flip(frame, 0)
+
             # Update rolling measured ingestion FPS every 0.5s
             now_sec = time.monotonic()
             elapsed_sec = now_sec - self._fps_window_start
@@ -285,6 +295,12 @@ class OpenCVCamera(BaseCamera):
     def get_actual_resolution(self) -> Tuple[int, int]:
         """Return the negotiated video frame resolution (width, height)."""
         return self._actual_width, self._actual_height
+
+    def toggle_flip_horizontal(self) -> bool:
+        """Toggle horizontal mirroring dynamically at runtime."""
+        self._flip_horizontal = not self._flip_horizontal
+        logger.info("Camera horizontal mirroring toggled to: %s", self._flip_horizontal)
+        return self._flip_horizontal
 
     def get_buffer_stats(self) -> dict:
         """Return buffer performance statistics."""

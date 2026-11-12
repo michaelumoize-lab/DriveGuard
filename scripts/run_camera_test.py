@@ -1,13 +1,17 @@
 """
-DriveGuard — Phase 1 Hardware Camera Acquisition Benchmark & Verification Runner.
+DriveGuard — Camera Acquisition Benchmark & Verification Runner (Phase 1 & Phase 2).
 
 What it does:
-  Initializes the specified video camera (e.g., built-in HP EliteBook webcam or external USB UVC device),
-  captures frames at the requested resolution and FPS using the DirectShow backend, measures true hardware
-  ingestion FPS versus consumer display loop FPS, and renders a diagnostic HUD overlay.
+  Initializes a video source (laptop webcam, external USB UVC camera, or phone stream URL),
+  captures frames at the requested resolution and FPS, measures true hardware ingestion FPS
+  versus consumer display loop FPS, and renders a diagnostic HUD overlay.
 
 Usage:
-  python scripts/run_camera_test.py [--device 0] [--width 1280] [--height 720] [--fps 30] [--backend DSHOW]
+  # Test built-in HP EliteBook webcam (Phase 1)
+  python scripts/run_camera_test.py --device 0
+
+  # Test phone camera stream (Phase 2)
+  python scripts/run_camera_test.py --url http://192.168.1.50:8080/video
 
 Controls:
   'q' or ESC : Exit gracefully and display performance summary
@@ -22,6 +26,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 # Add project root to sys.path to allow running directly from anywhere
 project_root = Path(__file__).resolve().parent.parent
@@ -31,8 +36,7 @@ if str(project_root) not in sys.path:
 import cv2
 import numpy as np
 
-from backend.app.camera.camera_config import CameraBackend, CameraConfig
-from backend.app.camera.opencv_camera import OpenCVCamera
+from backend.app.camera.camera_manager import create_camera, discover_local_devices
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,7 +49,6 @@ logger = logging.getLogger("driveguard.benchmark")
 def draw_diagnostic_hud(
     frame: np.ndarray,
     source_id: str,
-    backend_name: str,
     actual_res: tuple[int, int],
     ingestion_fps: float,
     display_fps: float,
@@ -78,7 +81,7 @@ def draw_diagnostic_hud(
     font = cv2.FONT_HERSHEY_SIMPLEX
 
     # Title & Health Status Pill
-    cv2.putText(canvas, "DriveGuard — Phase 1 Camera Diagnostics", (16, 24), font, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(canvas, "DriveGuard — Camera Diagnostics (Phases 1 & 2)", (16, 24), font, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
     
     # Status pill badge
     pill_text = f"[{status_text} | {ingestion_fps:.1f} FPS]"
@@ -87,7 +90,7 @@ def draw_diagnostic_hud(
     # Line 2: Telemetry Metrics
     w, h = actual_res
     telemetry_line_1 = (
-        f"Source: {source_id} ({backend_name}) | "
+        f"Source: {source_id} | "
         f"Resolution: {w}x{h} | "
         f"Ingestion: {ingestion_fps:.1f} FPS | "
         f"Display: {display_fps:.1f} FPS"
@@ -101,7 +104,7 @@ def draw_diagnostic_hud(
     telemetry_line_2 = (
         f"Frame Latency: {frame_age_ms:.1f} ms | "
         f"Dropped: {dropped} ({drop_pct:.1f}%) | "
-        f"Press 'q' or ESC to exit | 's' to snapshot"
+        f"Press 'q'/ESC: exit | 'm': toggle mirror | 's': snapshot"
     )
     cv2.putText(canvas, telemetry_line_2, (16, 72), font, 0.44, (148, 163, 184), 1, cv2.LINE_AA)
 
@@ -109,40 +112,44 @@ def draw_diagnostic_hud(
 
 
 def run_benchmark(
-    device_index: int = 0,
+    source_identifier: str | int = 0,
     target_width: int = 1280,
     target_height: int = 720,
     target_fps: int = 30,
     backend_str: str = "DSHOW",
     duration_sec: float = 0.0,
     headless: bool = False,
+    flip_h: bool = False,
+    flip_v: bool = False,
 ) -> int:
     """
-    Executes the Phase 1 camera capture verification loop.
+    Executes the camera capture verification loop for webcams or phone streams.
     """
-    backend_enum = CameraBackend(backend_str.upper())
-    config = CameraConfig(
-        device_index=device_index,
+    logger.info("Initializing camera adapter for source '%s'...", source_identifier)
+
+    camera = create_camera(
+        source=source_identifier,
         target_width=target_width,
         target_height=target_height,
         target_fps=target_fps,
-        backend=backend_enum,
-        buffer_size=1,
+        backend=backend_str,
+        flip_horizontal=flip_h,
+        flip_vertical=flip_v,
     )
 
-    camera = OpenCVCamera(config)
-    logger.info("Initializing OpenCVCamera...")
-
     if not camera.open():
-        logger.error("Failed to open camera on device %d with backend %s.", device_index, backend_str)
+        logger.error("Failed to open camera source '%s'.", source_identifier)
         return 1
 
     actual_res = camera.get_actual_resolution()
-    window_name = f"DriveGuard Diagnostics [Device {device_index}]"
+    window_name = f"DriveGuard Diagnostics [{source_identifier}]"
 
     if not headless:
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(window_name, actual_res[0], actual_res[1])
+        # Avoid zero or invalid dimensions
+        w = actual_res[0] if actual_res[0] > 0 else target_width
+        h = actual_res[1] if actual_res[1] > 0 else target_height
+        cv2.resizeWindow(window_name, w, h)
 
     # Performance tracking metrics
     start_time = time.monotonic()
@@ -185,8 +192,7 @@ def run_benchmark(
                 hud_frame = draw_diagnostic_hud(
                     frame=packet.frame,
                     source_id=packet.source_id,
-                    backend_name=config.backend.value,
-                    actual_res=actual_res,
+                    actual_res=camera.get_actual_resolution(),
                     ingestion_fps=camera.get_actual_fps(),
                     display_fps=display_fps,
                     frame_age_ms=frame_age,
@@ -198,8 +204,12 @@ def run_benchmark(
                 if key in (27, ord("q"), ord("Q")):
                     logger.info("User requested termination.")
                     break
+                elif key in (ord("m"), ord("M")):
+                    if hasattr(camera, "toggle_flip_horizontal"):
+                        camera.toggle_flip_horizontal()
                 elif key in (ord("s"), ord("S")):
-                    snapshot_filename = f"snapshot_dev{device_index}_{int(time.time())}.png"
+                    sanitized_name = str(source_identifier).replace("://", "_").replace("/", "_").replace(":", "_")
+                    snapshot_filename = f"snapshot_{sanitized_name}_{int(time.time())}.png"
                     cv2.imwrite(snapshot_filename, packet.frame)
                     logger.info("Snapshot saved to %s", snapshot_filename)
 
@@ -216,9 +226,9 @@ def run_benchmark(
     buffer_stats = camera.get_buffer_stats()
 
     print("\n" + "=" * 60)
-    print("      DRIVEGUARD PHASE 1 CAMERA BENCHMARK SUMMARY")
+    print("      DRIVEGUARD CAMERA BENCHMARK SUMMARY")
     print("=" * 60)
-    print(f"Device Index          : {device_index} ({config.backend.value})")
+    print(f"Camera Source         : {source_identifier}")
     print(f"Negotiated Resolution : {actual_res[0]}x{actual_res[1]}")
     print(f"Run Duration          : {total_time:.2f} seconds")
     print(f"Total Captured Frames : {buffer_stats['total_pushed']}")
@@ -234,8 +244,14 @@ def run_benchmark(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DriveGuard Phase 1 Camera Benchmark")
+    parser = argparse.ArgumentParser(description="DriveGuard Camera Benchmark (Webcam & Phone Stream)")
     parser.add_argument("--device", type=int, default=0, help="Camera device index (default: 0)")
+    parser.add_argument(
+        "--url",
+        type=str,
+        default=None,
+        help="Phone stream URL (e.g. http://192.168.1.50:8080/video or rtsp://...)",
+    )
     parser.add_argument("--width", type=int, default=1280, help="Requested width (default: 1280)")
     parser.add_argument("--height", type=int, default=720, help="Requested height (default: 720)")
     parser.add_argument("--fps", type=int, default=30, help="Requested FPS (default: 30)")
@@ -244,7 +260,7 @@ def main() -> None:
         type=str,
         default="DSHOW",
         choices=["DSHOW", "MSMF", "ANY"],
-        help="Windows capture backend (default: DSHOW)",
+        help="Windows capture backend for webcams (default: DSHOW)",
     )
     parser.add_argument(
         "--duration",
@@ -257,17 +273,42 @@ def main() -> None:
         action="store_true",
         help="Run without displaying GUI window (for automated benchmarking)",
     )
+    parser.add_argument(
+        "--flip-h",
+        action="store_true",
+        help="Horizontally flip / mirror video (corrects selfie camera flip)",
+    )
+    parser.add_argument(
+        "--flip-v",
+        action="store_true",
+        help="Vertically flip video (corrects upside down phone mounts)",
+    )
+    parser.add_argument(
+        "--probe",
+        action="store_true",
+        help="Probe and list all available local video capture devices on Windows",
+    )
 
     args = parser.parse_args()
+
+    if args.probe:
+        devices = discover_local_devices(max_devices_to_probe=4)
+        print(f"Available local capture device indices: {devices}")
+        return
+
+    source = args.url if args.url else args.device
+
     sys.exit(
         run_benchmark(
-            device_index=args.device,
+            source_identifier=source,
             target_width=args.width,
             target_height=args.height,
             target_fps=args.fps,
             backend_str=args.backend,
             duration_sec=args.duration,
             headless=args.headless,
+            flip_h=args.flip_h,
+            flip_v=args.flip_v,
         )
     )
 

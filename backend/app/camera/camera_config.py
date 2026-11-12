@@ -62,6 +62,8 @@ class CameraConfig:
     auto_reconnect: bool = True
     reconnect_timeout_sec: float = 5.0
     warmup_frames: int = 5
+    flip_horizontal: bool = False
+    flip_vertical: bool = False
 
     def __post_init__(self) -> None:
         """Validate configuration parameters upon instantiation."""

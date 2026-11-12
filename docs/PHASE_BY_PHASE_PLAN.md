@@ -169,7 +169,7 @@ DriveGuard/
 
 ## 3. Phase-by-Phase Roadmap
 
-### [ ] Phase 0 — Repository Audit, Scope and Baseline
+### [x] Phase 0 — Repository Audit, Scope and Baseline
 - **Goal:** Understand the current project baseline without breaking existing functionality.
 - **Tasks:**
   - [x] Inspect complete repository and current Git status.
@@ -183,19 +183,19 @@ DriveGuard/
 
 ---
 
-### [ ] Phase 1 — Development Environment and Camera Capture Foundation
+### [x] Phase 1 — Development Environment and Camera Capture Foundation
 - **Goal:** Reliably capture live frames locally using the laptop webcam (HP EliteBook 840 G4).
 - **Tasks:**
-  - [ ] Set up dedicated Python 3.11 virtual environment (`py -3.11 -m venv .venv311`).
-  - [ ] Install local runtime requirements (`opencv-python` with GUI support, `numpy`).
-  - [ ] Build camera configuration module `camera_config.py` (index, resolution, target FPS, backend `CAP_DSHOW` / `CAP_MSMF`).
-  - [ ] Implement `OpenCVCamera` adapter in `backend/app/camera/opencv_camera.py`:
+  - [x] Set up dedicated Python 3.11 virtual environment (`py -3.11 -m venv .venv311`).
+  - [x] Install local runtime requirements (`opencv-python` with GUI support, `numpy`).
+  - [x] Build camera configuration module `camera_config.py` (index, resolution, target FPS, backend `CAP_DSHOW` / `CAP_MSMF`).
+  - [x] Implement `OpenCVCamera` adapter in `backend/app/camera/opencv_camera.py`:
     - Interface: `open()`, `read()`, `get_status()`, `set_property()`, `close()`.
     - Dedicated background capture thread continuously draining the OS frame queue.
     - Bounded 1-slot buffer (`deque(maxlen=1)`) to eliminate frame backlog and latency.
     - Monotonic capture timestamps on every frame.
     - Automatic camera reconnect logic.
-  - [ ] Build standalone camera benchmark runner (`scripts/run_camera_test.py`):
+  - [x] Build standalone camera benchmark runner (`scripts/run_camera_test.py`):
     - Opens HP webcam with DirectShow backend.
     - Displays OpenCV preview window with real-time HUD (Negotiated Resolution, Capture FPS, Consumer Processing FPS, Frame Age).
     - Measures sustained FPS over 30 seconds.
@@ -208,15 +208,16 @@ DriveGuard/
 
 ---
 
-### [ ] Phase 2 — Phone Camera Integration
+### [x] Phase 2 — Phone Camera Integration
 - **Goal:** Enable a mobile phone to act as an alternative camera without altering downstream vision modules.
 - **Tasks:**
-  - [ ] Evaluate USB UVC transport vs. Local Network RTSP/HTTP MJPEG stream.
-  - [ ] Implement `PhoneCamera` adapter matching the common camera interface.
-  - [ ] Measure Wi-Fi jitter, frame arrival variance, and latency on local network.
-  - [ ] Add transport reconnection state machine for handling network drops.
-  - [ ] Provide clear setup guide for phone mounting, power, and stream URL configuration.
-- **Deliverables:** `phone_camera.py` adapter and phone setup documentation.
+  - [x] Evaluate USB UVC transport vs. Local Network RTSP/HTTP MJPEG stream.
+  - [x] Implement `PhoneCamera` adapter matching the common camera interface.
+  - [x] Measure Wi-Fi jitter, frame arrival variance, and latency on local network.
+  - [x] Add transport reconnection state machine for handling network drops.
+  - [x] Provide clear setup guide for phone mounting, power, and stream URL configuration.
+  - [x] Implement `create_camera()` factory in `camera_manager.py` supporting both webcams and phone URLs.
+- **Deliverables:** `phone_camera.py` adapter, `camera_manager.py`, and `docs/PHONE_CAMERA_SETUP_GUIDE.md`.
 - **Acceptance Criteria:** The vision pipeline consumes phone frames identically to the laptop webcam.
 
 ---
