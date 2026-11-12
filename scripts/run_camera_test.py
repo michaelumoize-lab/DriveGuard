@@ -39,6 +39,7 @@ import numpy as np
 from backend.app.camera.camera_config import make_filename_safe, sanitize_source_identifier
 from backend.app.camera.camera_manager import create_camera, discover_local_devices
 from backend.app.camera.frame_quality import FrameQualityAnalyzer, FrameQualityResult, QualityStatus
+from backend.app.features import DriverFeatureExtractor, DriverFeatures
 from backend.app.vision.face_landmarker import (
     DriveGuardFaceLandmarker,
     FaceLandmarkResult,
@@ -63,18 +64,20 @@ def draw_diagnostic_hud(
     buffer_stats: dict,
     quality: Optional[FrameQualityResult] = None,
     landmark_result: Optional[FaceLandmarkResult] = None,
+    driver_features: Optional[DriverFeatures] = None,
     draw_mesh: bool = False,
     draw_eyes: bool = True,
 ) -> np.ndarray:
     """
     Renders a semi-transparent diagnostic overlay with real-time performance indicators,
-    optical quality metrics (Phase 3), and facial landmark tracking state (Phase 4).
+    optical quality metrics (Phase 3), facial landmark tracking (Phase 4), and
+    physiological feature extraction (Phase 5).
     """
     canvas = frame.copy()
     height, width = canvas.shape[:2]
 
-    # Create semi-transparent top banner
-    banner_height = 110
+    # Create semi-transparent top banner (height 130 to accommodate Phase 5 features)
+    banner_height = 130
     overlay = canvas.copy()
     cv2.rectangle(overlay, (0, 0), (width, banner_height), (15, 23, 42), -1)  # Slate-900
     cv2.addWeighted(overlay, 0.75, canvas, 0.25, 0, canvas)
@@ -95,10 +98,10 @@ def draw_diagnostic_hud(
     # Title
     cv2.putText(
         canvas,
-        "DriveGuard — Camera & Landmark Tracking (Phase 4)",
+        "DriveGuard — Driver Feature Extraction (Phase 5)",
         (16, 24),
         font,
-        0.58,
+        0.56,
         (255, 255, 255),
         2,
         cv2.LINE_AA,
@@ -142,9 +145,9 @@ def draw_diagnostic_hud(
         f"Ingestion: {ingestion_fps:.1f} FPS | "
         f"Display: {display_fps:.1f} FPS"
     )
-    cv2.putText(canvas, telemetry_line_1, (16, 48), font, 0.44, (226, 232, 240), 1, cv2.LINE_AA)
+    cv2.putText(canvas, telemetry_line_1, (16, 46), font, 0.42, (226, 232, 240), 1, cv2.LINE_AA)
 
-    # Line 3: Optical Quality & Landmark Telemetry
+    # Line 3: Optical Quality & Landmark Latency
     ai_info = f"AI Latency: {landmark_result.inference_latency_ms:.1f}ms" if landmark_result else "AI: N/A"
     if quality is not None:
         telemetry_line_2 = (
@@ -154,9 +157,33 @@ def draw_diagnostic_hud(
         )
     else:
         telemetry_line_2 = f"Frame Latency: {frame_age_ms:.1f}ms | {ai_info}"
-    cv2.putText(canvas, telemetry_line_2, (16, 70), font, 0.44, (148, 163, 184), 1, cv2.LINE_AA)
+    cv2.putText(canvas, telemetry_line_2, (16, 66), font, 0.42, (148, 163, 184), 1, cv2.LINE_AA)
 
-    # Line 4: Controls
+    # Line 4: Physiological Features (Phase 5)
+    if driver_features is not None and driver_features.has_face:
+        ear = driver_features.ear
+        pose = driver_features.head_pose
+        mar = driver_features.mar
+        blink = driver_features.blink
+        perclos = driver_features.perclos
+
+        telemetry_line_3 = (
+            f"EAR: {ear.compensated_ear:.2f} (L:{ear.left_ear:.2f} R:{ear.right_ear:.2f}) | "
+            f"PERCLOS: {perclos.perclos_pct:.1f}% | "
+            f"MAR: {mar.mar:.2f} (Yawns: {mar.total_yawn_count}) | "
+            f"Pose: {pose.zone.value} (P:{pose.pitch_deg:+.0f}\xb0 Y:{pose.yaw_deg:+.0f}\xb0) | "
+            f"Blinks: {blink.total_blink_count}"
+        )
+        features_color = (56, 189, 248)  # Sky-400
+    elif driver_features is not None:
+        telemetry_line_3 = f"Physiological Features: [NO FACE DETECTED — {driver_features.face_status.value}]"
+        features_color = (148, 163, 184)  # Slate-400
+    else:
+        telemetry_line_3 = "Physiological Features: N/A"
+        features_color = (148, 163, 184)
+    cv2.putText(canvas, telemetry_line_3, (16, 88), font, 0.42, features_color, 1, cv2.LINE_AA)
+
+    # Line 5: Controls
     dropped = buffer_stats.get("total_dropped", 0)
     mesh_str = "ON" if draw_mesh else "OFF"
     eyes_str = "ON" if draw_eyes else "OFF"
@@ -164,7 +191,7 @@ def draw_diagnostic_hud(
         f"Dropped: {dropped} | "
         f"'q'/ESC: exit | 'm': mirror | 'w': wireframe ({mesh_str}) | 'e': eyes ({eyes_str}) | 's': snapshot"
     )
-    cv2.putText(canvas, controls_line, (16, 92), font, 0.40, (100, 116, 139), 1, cv2.LINE_AA)
+    cv2.putText(canvas, controls_line, (16, 110), font, 0.40, (100, 116, 139), 1, cv2.LINE_AA)
 
     return canvas
 
@@ -213,6 +240,7 @@ def run_benchmark(
 
         quality_analyzer = FrameQualityAnalyzer()
         landmarker = DriveGuardFaceLandmarker()
+        feature_extractor = DriverFeatureExtractor()
 
         # Visualization toggles (Phase 4)
         draw_mesh: bool = False
@@ -229,6 +257,7 @@ def run_benchmark(
         total_face_hits = 0
         latest_quality: Optional[FrameQualityResult] = None
         latest_landmark: Optional[FaceLandmarkResult] = None
+        latest_features: Optional[DriverFeatures] = None
 
         logger.info("Starting live capture loop. Press 'q' or ESC to terminate.")
 
@@ -264,6 +293,15 @@ def run_benchmark(
             if latest_landmark.has_face:
                 total_face_hits += 1
 
+            # Extract physiological driver features (Phase 5)
+            f_w = actual_res[0] if actual_res[0] > 0 else packet.frame.shape[1]
+            f_h = actual_res[1] if actual_res[1] > 0 else packet.frame.shape[0]
+            latest_features = feature_extractor.extract(
+                latest_landmark,
+                frame_width=f_w,
+                frame_height=f_h,
+            )
+
             # Measure consumer display FPS every 0.5s
             elapsed = loop_now - fps_timer
             if elapsed >= 0.5:
@@ -283,6 +321,7 @@ def run_benchmark(
                     buffer_stats=camera.get_buffer_stats(),
                     quality=latest_quality,
                     landmark_result=latest_landmark,
+                    driver_features=latest_features,
                     draw_mesh=draw_mesh,
                     draw_eyes=draw_eyes,
                 )
@@ -360,6 +399,19 @@ def run_benchmark(
         print(f"Face Detection Rate   : {face_hit_rate:.1f}% ({total_face_hits}/{total_frames_displayed} frames)")
         print(f"Mean AI Inference Lat : {avg_ai_ms:.2f} ms")
         print(f"95th Percentile AI Lat: {p95_ai_ms:.2f} ms")
+    if latest_features is not None:
+        print("-" * 60)
+        print("      PHYSIOLOGICAL FEATURES (PHASE 5)")
+        print("-" * 60)
+        print(f"Compensated EAR       : {latest_features.ear.compensated_ear:.3f} (Left: {latest_features.ear.left_ear:.3f}, Right: {latest_features.ear.right_ear:.3f})")
+        print(f"Eye Closure State     : {'CLOSED' if latest_features.ear.is_closed else 'OPEN'}")
+        print(f"Rolling PERCLOS (60s) : {latest_features.perclos.perclos_pct:.1f}% ({'RELIABLE' if latest_features.perclos.is_reliable else 'UNRELIABLE - INSUFFICIENT COVERAGE'})")
+        print(f"Mouth Aspect Ratio    : {latest_features.mar.mar:.3f} (Open: {latest_features.mar.is_mouth_open})")
+        print(f"Total Authentic Yawns : {latest_features.mar.total_yawn_count}")
+        print(f"Blink Tracking        : {latest_features.blink.total_blink_count} blinks ({latest_features.blink.prolonged_blink_count} prolonged)")
+        if latest_features.blink.recent_blink_rcr is not None:
+            print(f"Recent Blink Kinematics: Duration={latest_features.blink.recent_blink_duration_ms:.1f}ms, RCR={latest_features.blink.recent_blink_rcr:.2f}")
+        print(f"Head Pose Orientation : Zone={latest_features.head_pose.zone.value} (Pitch={latest_features.head_pose.pitch_deg:+.1f}\xb0, Yaw={latest_features.head_pose.yaw_deg:+.1f}\xb0, Roll={latest_features.head_pose.roll_deg:+.1f}\xb0)")
     print("=" * 60 + "\n")
 
     if total_frames_displayed == 0:
