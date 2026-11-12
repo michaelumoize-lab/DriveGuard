@@ -97,11 +97,12 @@ class BlinkKinematicsDetector:
 
     def __init__(
         self,
-        closure_threshold: float = 0.20,
-        reopen_threshold: float = 0.23,
-        min_blink_duration_ms: float = 60.0,
-        prolonged_duration_ms: float = 350.0,
+        closure_threshold: float = 0.205,
+        reopen_threshold: float = 0.240,
+        min_blink_duration_ms: float = 40.0,
+        prolonged_duration_ms: float = 300.0,
         microsleep_duration_ms: float = 800.0,
+        min_amplitude: float = 0.04,
         max_sampling_gap_ms: float = 250.0,
     ) -> None:
         self.closure_threshold = closure_threshold
@@ -109,6 +110,7 @@ class BlinkKinematicsDetector:
         self.min_blink_duration_ms = min_blink_duration_ms
         self.prolonged_duration_ms = prolonged_duration_ms
         self.microsleep_duration_ms = microsleep_duration_ms
+        self.min_amplitude = min_amplitude
         self.max_sampling_gap_ms = max_sampling_gap_ms
 
         self._state = BlinkState.OPEN
@@ -129,6 +131,13 @@ class BlinkKinematicsDetector:
         self._prolonged_blinks: int = 0
         self._recent_duration_ms: Optional[float] = None
         self._recent_rcr: Optional[float] = None
+
+    def update_thresholds(self, closure_threshold: float, reopen_threshold: float) -> None:
+        """
+        Dynamically update closure and reopen thresholds from calibrated or rolling baseline.
+        """
+        self.closure_threshold = float(closure_threshold)
+        self.reopen_threshold = float(reopen_threshold)
 
     def _interpolate_crossing(
         self,
@@ -197,11 +206,12 @@ class BlinkKinematicsDetector:
         if self._prev_ear is not None and self._prev_ts is not None:
             if self._state == BlinkState.OPEN:
                 if is_below_closed:
-                    # Direct drop below closed threshold
+                    # Direct drop below closed threshold in a single frame step
                     t_cross = self._interpolate_crossing(
                         self._prev_ts, self._prev_ear, timestamp_ms, compensated_ear, self.closure_threshold
                     )
-                    self._blink_start_ts = t_cross
+                    # The closing phase began at self._prev_ts (prior open frame)
+                    self._blink_start_ts = self._prev_ts
                     self._closure_start_ts = t_cross
                     self._open_ear_before = self._prev_ear
                     self._min_ear = compensated_ear
@@ -225,6 +235,7 @@ class BlinkKinematicsDetector:
                 elif compensated_ear >= self.reopen_threshold:
                     # Incomplete false closure, aborted
                     self._state = BlinkState.OPEN
+                    self._blink_start_ts = None
 
             elif self._state in (BlinkState.CLOSED, BlinkState.PROLONGED_CLOSURE):
                 if compensated_ear < self._min_ear:
@@ -248,7 +259,7 @@ class BlinkKinematicsDetector:
                     t_end = self._interpolate_crossing(
                         self._prev_ts, self._prev_ear, timestamp_ms, compensated_ear, self.reopen_threshold
                     )
-                    start_ts = self._blink_start_ts or self._prev_ts
+                    start_ts = self._blink_start_ts if self._blink_start_ts is not None else self._prev_ts
                     min_ts = self._min_ear_ts or (start_ts + (t_end - start_ts) * 0.5)
 
                     duration_ms = max(1.0, t_end - start_ts)
@@ -261,17 +272,20 @@ class BlinkKinematicsDetector:
                     v_reopen = amplitude / reopen_dt_sec
                     rcr = v_reopen / max(1e-6, v_close)
 
-                    # Classify duration
-                    if duration_ms < self.min_blink_duration_ms:
+                    # Classify duration & filter noise using UTA-RLDD minimum amplitude (0.04)
+                    if duration_ms < self.min_blink_duration_ms or amplitude < self.min_amplitude:
                         classification = BlinkClassification.UNCERTAIN
                     elif duration_ms <= self.prolonged_duration_ms:
                         classification = BlinkClassification.NORMAL
+                        self._total_blinks += 1
                     elif duration_ms < self.microsleep_duration_ms:
                         classification = BlinkClassification.PROLONGED
                         self._prolonged_blinks += 1
+                        self._total_blinks += 1
                     else:
                         classification = BlinkClassification.MICROSLEEP_CANDIDATE
                         self._prolonged_blinks += 1
+                        self._total_blinks += 1
 
                     is_binocular = self._was_left_closed and self._was_right_closed
 
@@ -290,9 +304,9 @@ class BlinkKinematicsDetector:
                         is_binocular=is_binocular,
                     )
 
-                    self._total_blinks += 1
-                    self._recent_duration_ms = duration_ms
-                    self._recent_rcr = rcr
+                    if classification != BlinkClassification.UNCERTAIN:
+                        self._recent_duration_ms = duration_ms
+                        self._recent_rcr = rcr
 
                     # Reset to open
                     self._state = BlinkState.OPEN

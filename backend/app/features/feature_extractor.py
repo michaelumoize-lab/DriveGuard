@@ -28,8 +28,11 @@ DriveGuard — Unified Driver Feature Extractor (Phase 5).
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
-from typing import Optional
+from typing import Deque, Optional, Tuple
+
+import numpy as np
 
 from backend.app.features.blink_detector import (
     BlinkKinematicsDetector,
@@ -100,6 +103,8 @@ class DriverFeatureExtractor:
         neutral_pitch_deg: float = 0.0,
         neutral_yaw_deg: float = 0.0,
         is_mirrored: bool = False,
+        open_ear_baseline: Optional[float] = None,
+        auto_adaptive_thresholds: bool = True,
     ) -> None:
         """
         Initialize the feature extraction pipeline.
@@ -108,10 +113,50 @@ class DriverFeatureExtractor:
         self.neutral_pitch_deg = neutral_pitch_deg
         self.neutral_yaw_deg = neutral_yaw_deg
         self.is_mirrored = is_mirrored
+        self.open_ear_baseline = open_ear_baseline
+        self.auto_adaptive_thresholds = auto_adaptive_thresholds
+        self._open_ear_history: Deque[float] = deque(maxlen=150)
+
+        initial_closure = ear_closure_threshold
+        initial_reopen = max(ear_closure_threshold + 0.03, ear_closure_threshold * 1.15)
+        if open_ear_baseline is not None and open_ear_baseline > 0.10:
+            initial_closure = min(0.26, max(0.16, open_ear_baseline * 0.70))
+            initial_reopen = min(0.30, max(0.20, open_ear_baseline * 0.82))
 
         self._yawn_detector = YawnDetector(min_yawn_duration_ms=min_yawn_duration_ms)
-        self._blink_detector = BlinkKinematicsDetector(closure_threshold=ear_closure_threshold)
+        self._blink_detector = BlinkKinematicsDetector(
+            closure_threshold=initial_closure,
+            reopen_threshold=initial_reopen,
+        )
         self._perclos_calculator = PerclosCalculator(window_sec=perclos_window_sec)
+
+    def get_effective_thresholds(self) -> Tuple[float, float]:
+        """
+        Compute empirical or calibrated closure and reopen thresholds.
+        If a calibrated baseline is provided, it takes precedence.
+        Otherwise, if adaptive tracking is enabled and sufficient open-eye frames (>=20)
+        are accumulated during CENTER forward gaze, dynamically computes thresholds
+        proportional to the rolling median open EAR.
+        Safety clamps enforce [0.16, 0.26] for closure and [0.20, 0.30] for reopen.
+        """
+        if self.open_ear_baseline is not None and self.open_ear_baseline > 0.10:
+            base = self.open_ear_baseline
+        elif self.auto_adaptive_thresholds and len(self._open_ear_history) >= 20:
+            base = float(np.median(self._open_ear_history))
+        else:
+            return (
+                self.ear_closure_threshold,
+                max(self.ear_closure_threshold + 0.03, self.ear_closure_threshold * 1.15),
+            )
+        c = min(0.26, max(0.16, base * 0.70))
+        r = min(0.30, max(0.20, base * 0.82))
+        return c, r
+
+    def set_calibrated_baseline(self, baseline: Optional[float]) -> None:
+        """Update or clear driver-specific calibrated open-eye EAR baseline."""
+        self.open_ear_baseline = baseline
+        c, r = self.get_effective_thresholds()
+        self._blink_detector.update_thresholds(c, r)
 
     def extract(
         self,
@@ -127,6 +172,9 @@ class DriverFeatureExtractor:
         has_face = landmark_result.has_face and len(landmark_result.landmarks) >= 468
         aspect_ratio = frame_width / max(1.0, float(frame_height))
         mirrored = self.is_mirrored if is_mirrored is None else is_mirrored
+
+        c_thresh, r_thresh = self.get_effective_thresholds()
+        self._blink_detector.update_thresholds(c_thresh, r_thresh)
 
         if has_face:
             # 1. 6-DoF Head Pose Estimation & Cockpit Zone
@@ -145,8 +193,17 @@ class DriverFeatureExtractor:
                 yaw_deg=pose_res.rel_yaw_deg,
                 pitch_deg=pose_res.rel_pitch_deg,
                 aspect_ratio=aspect_ratio,
-                closure_threshold=self.ear_closure_threshold,
+                closure_threshold=c_thresh,
             )
+
+            # Accumulate rolling open-eye baseline if driver is looking forward and eyes are open
+            if (
+                ear_res.is_valid
+                and pose_res.zone == PoseZone.CENTER
+                and not ear_res.is_closed
+                and ear_res.compensated_ear >= 0.16
+            ):
+                self._open_ear_history.append(ear_res.compensated_ear)
 
             # 3. Mouth Aspect Ratio & Yawn Tracking
             mar_res = self._yawn_detector.update(
@@ -188,7 +245,7 @@ class DriverFeatureExtractor:
                 right_ear=0.0,
                 weighted_ear=0.0,
                 compensated_ear=0.0,
-                closure_threshold=self.ear_closure_threshold,
+                closure_threshold=c_thresh,
                 is_left_closed=False,
                 is_right_closed=False,
                 is_closed=False,
@@ -229,3 +286,4 @@ class DriverFeatureExtractor:
         self._yawn_detector.reset()
         self._blink_detector.reset()
         self._perclos_calculator.reset()
+        self._open_ear_history.clear()

@@ -129,15 +129,15 @@ def test_calculate_yaw_weighted_ear() -> None:
     neutral_ear = calculate_yaw_weighted_ear(left_val, right_val, yaw_deg=0.0)
     assert math.isclose(neutral_ear, 0.28, abs_tol=1e-4)
 
-    # Looking left (yaw > +15°): right eye faces camera, weighted 75%
+    # Looking left (yaw > +15°): camera-facing eye (left_ear / idx 33) weighted 75%
     looking_left = calculate_yaw_weighted_ear(left_val, right_val, yaw_deg=20.0)
-    assert math.isclose(looking_left, 0.25 * left_val + 0.75 * right_val, abs_tol=1e-4)
-    assert looking_left > neutral_ear
+    assert math.isclose(looking_left, 0.75 * left_val + 0.25 * right_val, abs_tol=1e-4)
+    assert looking_left < neutral_ear
 
-    # Looking right (yaw < -15°): left eye faces camera, weighted 75%
+    # Looking right (yaw < -15°): camera-facing eye (right_ear / idx 362) weighted 75%
     looking_right = calculate_yaw_weighted_ear(left_val, right_val, yaw_deg=-20.0)
-    assert math.isclose(looking_right, 0.75 * left_val + 0.25 * right_val, abs_tol=1e-4)
-    assert looking_right < neutral_ear
+    assert math.isclose(looking_right, 0.25 * left_val + 0.75 * right_val, abs_tol=1e-4)
+    assert looking_right > neutral_ear
 
 
 def test_calculate_pitch_compensated_ear() -> None:

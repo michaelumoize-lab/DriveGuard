@@ -110,14 +110,24 @@ def calculate_yaw_weighted_ear(left_ear: float, right_ear: float, yaw_deg: float
     """
     Combine left and right EAR with yaw perspective weighting.
 
-    When the driver turns their head to check mirrors:
-    - Positive yaw (> 15 deg, head turned left): right eye is more frontal to camera.
-    - Negative yaw (< -15 deg, head turned right): left eye is more frontal to camera.
+    Coordinate & Anatomical Mapping:
+    - left_ear is computed from LEFT_EYE_INDICES (MediaPipe landmark 33), which is anatomically
+      the driver's RIGHT eye (located on the left side of the camera image).
+    - right_ear is computed from RIGHT_EYE_INDICES (MediaPipe landmark 362), which is anatomically
+      the driver's LEFT eye (located on the right side of the camera image).
+
+    Perspective Physics:
+    - Positive yaw (> 15 deg, turned to driver's left): The driver's right eye (left_ear / idx 33)
+      directly faces the camera lens with full openness, while the driver's left eye (right_ear / idx 362)
+      turns away, foreshortening vertically. Therefore, left_ear receives 75% weight and right_ear receives 25%.
+    - Negative yaw (< -15 deg, turned to driver's right): The driver's left eye (right_ear / idx 362)
+      directly faces the camera lens, while the driver's right eye (left_ear / idx 33) turns away.
+      Therefore, right_ear receives 75% weight and left_ear receives 25%.
     """
     if yaw_deg > 15.0:
-        w_left, w_right = 0.25, 0.75
-    elif yaw_deg < -15.0:
         w_left, w_right = 0.75, 0.25
+    elif yaw_deg < -15.0:
+        w_left, w_right = 0.25, 0.75
     else:
         w_left, w_right = 0.50, 0.50
 
