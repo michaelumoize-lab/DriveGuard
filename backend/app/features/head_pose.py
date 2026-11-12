@@ -119,6 +119,7 @@ def estimate_head_pose(
     frame_height: int = 720,
     neutral_pitch_deg: float = 0.0,
     neutral_yaw_deg: float = 0.0,
+    is_mirrored: bool = False,
 ) -> HeadPoseResult:
     """
     Compute 6-DoF head pose Euler angles and cockpit zone using cv2.solvePnP.
@@ -129,6 +130,7 @@ def estimate_head_pose(
         frame_height: Video frame height in pixels.
         neutral_pitch_deg: Baseline resting pitch angle (default: 0.0°).
         neutral_yaw_deg: Baseline resting yaw angle (default: 0.0°).
+        is_mirrored: True if the video frame is horizontally mirrored (selfie view).
 
     Returns:
         HeadPoseResult detailing Pitch, Yaw, Roll, relative angles, and classified PoseZone.
@@ -208,9 +210,22 @@ def estimate_head_pose(
     proj_matrix = np.hstack((rot_mat, tvec))
     _, _, _, _, _, _, euler_angles = cv2.decomposeProjectionMatrix(proj_matrix)
 
-    pitch = float(euler_angles[0, 0])
-    yaw = float(euler_angles[1, 0])
-    roll = float(euler_angles[2, 0])
+    raw_pitch = float(euler_angles[0, 0])
+    raw_yaw = float(euler_angles[1, 0])
+    raw_roll = float(euler_angles[2, 0])
+
+    # Convert Euler yaw to driver-centric convention:
+    # Turning to the driver's LEFT is positive (+yaw), turning to RIGHT is negative (-yaw).
+    # On an unmirrored camera, OpenCV decomposeProjectionMatrix returns negative yaw for left turns;
+    # on a mirrored camera (selfie/flip), the horizontal axis is already inverted.
+    if is_mirrored:
+        yaw = raw_yaw
+        roll = -raw_roll
+    else:
+        yaw = -raw_yaw
+        roll = raw_roll
+
+    pitch = raw_pitch
 
     # Normalize pitch wrap-around near +/-180 deg
     if pitch > 90.0:

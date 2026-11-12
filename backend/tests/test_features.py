@@ -209,7 +209,7 @@ def test_estimate_head_pose_synthetic_poses() -> None:
     dist = np.zeros((4, 1), dtype=np.float64)
     tvec_gt = np.array([[0.0], [0.0], [600.0]], dtype=np.float64)
 
-    def _project_and_estimate(rvec: np.ndarray) -> HeadPoseResult:
+    def _project_and_estimate(rvec: np.ndarray, is_mirrored: bool = False) -> HeadPoseResult:
         proj, _ = cv2.projectPoints(CANONICAL_3D_FACE_POINTS, rvec, tvec_gt, cam_mat, dist)
         proj = proj.reshape(-1, 2)
         overrides = {
@@ -217,7 +217,7 @@ def test_estimate_head_pose_synthetic_poses() -> None:
             for i, idx in enumerate(SOLVEPNP_LANDMARK_INDICES)
         }
         lms = _build_mock_landmarks(overrides)
-        return estimate_head_pose(lms, frame_width=frame_w, frame_height=frame_h)
+        return estimate_head_pose(lms, frame_width=frame_w, frame_height=frame_h, is_mirrored=is_mirrored)
 
     # 1. Frontal face (0°, 0°, 0°)
     res_front = _project_and_estimate(np.zeros((3, 1), dtype=np.float64))
@@ -234,19 +234,33 @@ def test_estimate_head_pose_synthetic_poses() -> None:
     assert -18.0 <= res_pitch.pitch_deg <= -12.0
     assert res_pitch.zone == PoseZone.DASHBOARD
 
-    # 3. Yaw left +20° (looking at left mirror)
-    rvec_yaw_left, _ = cv2.Rodrigues(np.array([0.0, np.radians(20.0), 0.0]))
-    res_yaw_left = _project_and_estimate(rvec_yaw_left)
-    assert res_yaw_left.is_valid is True
-    assert 17.0 <= res_yaw_left.yaw_deg <= 23.0
-    assert res_yaw_left.zone == PoseZone.LEFT_MIRROR
+    # 3. Unmirrored optical projection:
+    # Turning to driver's LEFT moves face to camera right (+X in 2D image, corresponding to -Y rotation).
+    rvec_unmir_left, _ = cv2.Rodrigues(np.array([0.0, np.radians(-20.0), 0.0]))
+    res_unmir_left = _project_and_estimate(rvec_unmir_left, is_mirrored=False)
+    assert res_unmir_left.is_valid is True
+    assert 17.0 <= res_unmir_left.yaw_deg <= 23.0
+    assert res_unmir_left.zone == PoseZone.LEFT_MIRROR
 
-    # 4. Yaw right -20° (looking at right mirror)
-    rvec_yaw_right, _ = cv2.Rodrigues(np.array([0.0, np.radians(-20.0), 0.0]))
-    res_yaw_right = _project_and_estimate(rvec_yaw_right)
-    assert res_yaw_right.is_valid is True
-    assert -23.0 <= res_yaw_right.yaw_deg <= -17.0
-    assert res_yaw_right.zone == PoseZone.RIGHT_MIRROR
+    rvec_unmir_right, _ = cv2.Rodrigues(np.array([0.0, np.radians(20.0), 0.0]))
+    res_unmir_right = _project_and_estimate(rvec_unmir_right, is_mirrored=False)
+    assert res_unmir_right.is_valid is True
+    assert -23.0 <= res_unmir_right.yaw_deg <= -17.0
+    assert res_unmir_right.zone == PoseZone.RIGHT_MIRROR
+
+    # 4. Mirrored camera projection (selfie mode / cv2.flip):
+    # Driver turning left is horizontally flipped to image left (+Y rotation in mirrored coordinates).
+    rvec_mir_left, _ = cv2.Rodrigues(np.array([0.0, np.radians(20.0), 0.0]))
+    res_mir_left = _project_and_estimate(rvec_mir_left, is_mirrored=True)
+    assert res_mir_left.is_valid is True
+    assert 17.0 <= res_mir_left.yaw_deg <= 23.0
+    assert res_mir_left.zone == PoseZone.LEFT_MIRROR
+
+    rvec_mir_right, _ = cv2.Rodrigues(np.array([0.0, np.radians(-20.0), 0.0]))
+    res_mir_right = _project_and_estimate(rvec_mir_right, is_mirrored=True)
+    assert res_mir_right.is_valid is True
+    assert -23.0 <= res_mir_right.yaw_deg <= -17.0
+    assert res_mir_right.zone == PoseZone.RIGHT_MIRROR
 
 
 # ==============================================================================

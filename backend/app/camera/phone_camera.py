@@ -420,6 +420,11 @@ class PhoneCamera(BaseCamera):
         """Return the actual video frame resolution (width, height)."""
         return self._actual_width, self._actual_height
 
+    @property
+    def is_flip_horizontal(self) -> bool:
+        """Return True if horizontal mirroring/flipping is currently active."""
+        return self._flip_horizontal
+
     def toggle_flip_horizontal(self) -> bool:
         """Toggle horizontal mirroring dynamically at runtime."""
         self._flip_horizontal = not self._flip_horizontal

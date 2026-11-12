@@ -326,6 +326,9 @@ def run_benchmark(
             if latest_landmark.has_face:
                 total_face_hits += 1
 
+            # Check mirror status from camera adapter
+            is_mirrored = getattr(camera, "is_flip_horizontal", False)
+
             # Extract physiological driver features (Phase 5)
             f_w = actual_res[0] if actual_res[0] > 0 else packet.frame.shape[1]
             f_h = actual_res[1] if actual_res[1] > 0 else packet.frame.shape[0]
@@ -333,6 +336,7 @@ def run_benchmark(
                 latest_landmark,
                 frame_width=f_w,
                 frame_height=f_h,
+                is_mirrored=is_mirrored,
             )
 
             # Evaluate Drowsiness Intelligence Engine (Phase 6)

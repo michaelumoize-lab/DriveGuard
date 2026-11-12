@@ -99,6 +99,7 @@ class DriverFeatureExtractor:
         min_yawn_duration_ms: float = 1500.0,
         neutral_pitch_deg: float = 0.0,
         neutral_yaw_deg: float = 0.0,
+        is_mirrored: bool = False,
     ) -> None:
         """
         Initialize the feature extraction pipeline.
@@ -106,6 +107,7 @@ class DriverFeatureExtractor:
         self.ear_closure_threshold = ear_closure_threshold
         self.neutral_pitch_deg = neutral_pitch_deg
         self.neutral_yaw_deg = neutral_yaw_deg
+        self.is_mirrored = is_mirrored
 
         self._yawn_detector = YawnDetector(min_yawn_duration_ms=min_yawn_duration_ms)
         self._blink_detector = BlinkKinematicsDetector(closure_threshold=ear_closure_threshold)
@@ -116,6 +118,7 @@ class DriverFeatureExtractor:
         landmark_result: FaceLandmarkResult,
         frame_width: int = 1280,
         frame_height: int = 720,
+        is_mirrored: Optional[bool] = None,
     ) -> DriverFeatures:
         """
         Extract all geometric, kinematic, and temporal features from a FaceLandmarkResult.
@@ -123,6 +126,7 @@ class DriverFeatureExtractor:
         ts_ms = float(landmark_result.timestamp_ms)
         has_face = landmark_result.has_face and len(landmark_result.landmarks) >= 468
         aspect_ratio = frame_width / max(1.0, float(frame_height))
+        mirrored = self.is_mirrored if is_mirrored is None else is_mirrored
 
         if has_face:
             # 1. 6-DoF Head Pose Estimation & Cockpit Zone
@@ -132,6 +136,7 @@ class DriverFeatureExtractor:
                 frame_height=frame_height,
                 neutral_pitch_deg=self.neutral_pitch_deg,
                 neutral_yaw_deg=self.neutral_yaw_deg,
+                is_mirrored=mirrored,
             )
 
             # 2. Eye Aspect Ratio (Yaw-weighted & Pitch-compensated relative to neutral)

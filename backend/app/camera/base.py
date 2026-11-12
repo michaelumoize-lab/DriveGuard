@@ -139,6 +139,11 @@ class BaseCamera(abc.ABC):
         """
         pass
 
+    @property
+    def is_flip_horizontal(self) -> bool:
+        """Return True if horizontal mirroring/flipping is currently active."""
+        return False
+
     def __enter__(self) -> BaseCamera:
         """Context manager entry."""
         if not self.open():
