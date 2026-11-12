@@ -21,18 +21,25 @@ You can run them in **two ways**:
 
 ## Configuring the Phone Camera Stream URL
 
-`01_run_phone_camera.bat` and `01_run_phone_camera.ps1` automatically resolve the phone video stream URL in the following priority order:
+`01_run_phone_camera.bat` and `01_run_phone_camera.ps1` provide an interactive menu with presets:
 
-1. **CLI Parameter**: Pass the URL directly when running from command line:
+- **Option [1]**: `http://192.168.0.135:4747/video` (DroidCam / Port 4747)
+- **Option [2]**: `http://192.168.0.103:8080/video` (IP Webcam / Port 8080)
+- **Option [3]**: Custom URL (manually entered)
+
+URL resolution priority:
+1. **Interactive Prompt**: When double-clicking the batch file, choose `1`, `2`, or `3` (or press **ENTER** to accept the default / last-selected source). You can also type or paste any custom URL directly.
+2. **CLI Parameter**: Pass `1`, `2`, or the full URL directly when running from command line:
    ```cmd
+   launchers\01_run_phone_camera.bat 1
+   launchers\01_run_phone_camera.bat 2
    launchers\01_run_phone_camera.bat http://192.168.1.50:8080/video
    ```
-2. **Environment Variable**: Set `DRIVEGUARD_PHONE_URL`:
+3. **Environment Variable**: Set `DRIVEGUARD_PHONE_URL`:
    ```cmd
    set DRIVEGUARD_PHONE_URL=http://192.168.1.50:8080/video
    ```
-3. **Configuration File**: Saved in `launchers/phone_url.txt`. You can edit this file directly to set your phone's Wi-Fi IP and port.
-4. **Interactive Prompt**: When double-clicking the batch file, it prints the configured URL. Press **ENTER** to connect immediately, or type a new URL to connect and save it automatically for next time.
+4. **Configuration File**: Saved in `launchers/phone_url.txt` after every selection.
 
 ---
 

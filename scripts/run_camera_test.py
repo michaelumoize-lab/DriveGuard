@@ -40,6 +40,11 @@ from backend.app.camera.camera_config import make_filename_safe, sanitize_source
 from backend.app.camera.camera_manager import create_camera, discover_local_devices
 from backend.app.camera.frame_quality import FrameQualityAnalyzer, FrameQualityResult, QualityStatus
 from backend.app.features import DriverFeatureExtractor, DriverFeatures
+from backend.app.intelligence import (
+    DrowsinessAssessment,
+    DrowsinessEngine,
+    DrowsinessState,
+)
 from backend.app.vision.face_landmarker import (
     DriveGuardFaceLandmarker,
     FaceLandmarkResult,
@@ -65,19 +70,20 @@ def draw_diagnostic_hud(
     quality: Optional[FrameQualityResult] = None,
     landmark_result: Optional[FaceLandmarkResult] = None,
     driver_features: Optional[DriverFeatures] = None,
+    assessment: Optional[DrowsinessAssessment] = None,
     draw_mesh: bool = False,
     draw_eyes: bool = True,
 ) -> np.ndarray:
     """
     Renders a semi-transparent diagnostic overlay with real-time performance indicators,
-    optical quality metrics (Phase 3), facial landmark tracking (Phase 4), and
-    physiological feature extraction (Phase 5).
+    optical quality metrics (Phase 3), facial landmark tracking (Phase 4),
+    physiological feature extraction (Phase 5), and drowsiness intelligence state (Phase 6).
     """
     canvas = frame.copy()
     height, width = canvas.shape[:2]
 
-    # Create semi-transparent top banner (height 130 to accommodate Phase 5 features)
-    banner_height = 130
+    # Create semi-transparent top banner (height 155 to accommodate Phase 6 intelligence)
+    banner_height = 155
     overlay = canvas.copy()
     cv2.rectangle(overlay, (0, 0), (width, banner_height), (15, 23, 42), -1)  # Slate-900
     cv2.addWeighted(overlay, 0.75, canvas, 0.25, 0, canvas)
@@ -98,7 +104,7 @@ def draw_diagnostic_hud(
     # Title
     cv2.putText(
         canvas,
-        "DriveGuard — Driver Feature Extraction (Phase 5)",
+        "DriveGuard — Drowsiness Intelligence Engine (Phase 6)",
         (16, 24),
         font,
         0.56,
@@ -136,6 +142,12 @@ def draw_diagnostic_hud(
             lm_color = (239, 68, 68)
             lm_text = f"[AI: {landmark_result.status.value}]"
         cv2.putText(canvas, lm_text, (width - 660, 24), font, 0.50, lm_color, 2, cv2.LINE_AA)
+
+    # Drowsiness State Badge (Phase 6)
+    if assessment is not None:
+        state_color = assessment.status_color_bgr
+        state_badge = f"[{assessment.state.value}]"
+        cv2.putText(canvas, state_badge, (width - 860, 24), font, 0.50, state_color, 2, cv2.LINE_AA)
 
     # Line 2: Telemetry Metrics
     w, h = actual_res
@@ -183,7 +195,21 @@ def draw_diagnostic_hud(
         features_color = (148, 163, 184)
     cv2.putText(canvas, telemetry_line_3, (16, 88), font, 0.42, features_color, 1, cv2.LINE_AA)
 
-    # Line 5: Controls
+    # Line 5: Drowsiness Intelligence (Phase 6)
+    if assessment is not None:
+        state_color = assessment.status_color_bgr
+        reason_text = assessment.primary_reason_text
+        intel_line = (
+            f"Drowsiness: {assessment.state.value} (Sev {assessment.severity}) | "
+            f"Confidence: {assessment.confidence.overall_confidence:.2f} ({assessment.confidence.tier.value}) | "
+            f"Reason: {reason_text}"
+        )
+        cv2.putText(canvas, intel_line, (16, 110), font, 0.42, state_color, 1, cv2.LINE_AA)
+    else:
+        intel_line = "Drowsiness Intelligence: N/A"
+        cv2.putText(canvas, intel_line, (16, 110), font, 0.42, (148, 163, 184), 1, cv2.LINE_AA)
+
+    # Line 6: Controls
     dropped = buffer_stats.get("total_dropped", 0)
     mesh_str = "ON" if draw_mesh else "OFF"
     eyes_str = "ON" if draw_eyes else "OFF"
@@ -191,7 +217,11 @@ def draw_diagnostic_hud(
         f"Dropped: {dropped} | "
         f"'q'/ESC: exit | 'm': mirror | 'w': wireframe ({mesh_str}) | 'e': eyes ({eyes_str}) | 's': snapshot"
     )
-    cv2.putText(canvas, controls_line, (16, 110), font, 0.40, (100, 116, 139), 1, cv2.LINE_AA)
+    cv2.putText(canvas, controls_line, (16, 132), font, 0.40, (100, 116, 139), 1, cv2.LINE_AA)
+
+    # Subtle status border around the full viewport
+    border_color = assessment.status_color_bgr if assessment else (34, 197, 94)
+    cv2.rectangle(canvas, (0, 0), (width - 1, height - 1), border_color, 4)
 
     return canvas
 
@@ -242,6 +272,7 @@ def run_benchmark(
         quality_analyzer = FrameQualityAnalyzer()
         landmarker = DriveGuardFaceLandmarker()
         feature_extractor = DriverFeatureExtractor()
+        drowsiness_engine = DrowsinessEngine()
 
         # Visualization toggles (Phase 4)
         draw_mesh: bool = False
@@ -259,6 +290,7 @@ def run_benchmark(
         latest_quality: Optional[FrameQualityResult] = None
         latest_landmark: Optional[FaceLandmarkResult] = None
         latest_features: Optional[DriverFeatures] = None
+        latest_assessment: Optional[DrowsinessAssessment] = None
 
         logger.info("Starting live capture loop. Press 'q' or ESC to terminate.")
 
@@ -303,6 +335,12 @@ def run_benchmark(
                 frame_height=f_h,
             )
 
+            # Evaluate Drowsiness Intelligence Engine (Phase 6)
+            latest_assessment = drowsiness_engine.evaluate(
+                features=latest_features,
+                quality=latest_quality,
+            )
+
             # Measure consumer display FPS every 0.5s
             elapsed = loop_now - fps_timer
             if elapsed >= 0.5:
@@ -323,6 +361,7 @@ def run_benchmark(
                     quality=latest_quality,
                     landmark_result=latest_landmark,
                     driver_features=latest_features,
+                    assessment=latest_assessment,
                     draw_mesh=draw_mesh,
                     draw_eyes=draw_eyes,
                 )

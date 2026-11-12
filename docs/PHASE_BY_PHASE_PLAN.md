@@ -266,17 +266,23 @@ DriveGuard/
 
 ---
 
-### [ ] Phase 6 — Temporal Analysis and Baseline Drowsiness Engine
+### [x] Phase 6 — Temporal Analysis and Baseline Drowsiness Engine
 - **Goal:** Fuse multiple temporal features into robust, explainable drowsiness assessments.
 - **Tasks:**
-  - [ ] Implement rolling temporal accumulators (10s, 30s, 60s windows).
-  - [ ] Define multi-indicator decision policy:
-    - Primary urgent trigger: Sustained eye closure (eyes closed > threshold duration, e.g. 1.5s).
-    - Cumulative fatigue triggers: Elevated PERCLOS (> 0.15), prolonged blink duration (> 300ms), frequent yawns, head nodding episodes.
-  - [ ] Implement 5 output states: `NORMAL`, `ATTENTION`, `DROWSINESS_WARNING`, `CRITICAL_WARNING`, `INSUFFICIENT_DATA`.
-  - [ ] Add explainable reason codes attached to every decision (e.g. `SUSTAINED_EYE_CLOSURE_1800MS`, `PERCLOS_ELEVATED_022`).
-- **Deliverables:** `intelligence/drowsiness_engine.py` and rule-based decision arbiter.
-- **Acceptance Criteria:** Zero single-frame false alarms; decisions require temporal persistence.
+  - [x] Implement rolling temporal accumulators (`TemporalAnalyzer` tracking 10s, 30s, 60s windows).
+  - [x] Define multi-indicator decision policy:
+    - Primary urgent trigger: Sustained eye closure (eyes closed >= 1.5s immediately triggers `CRITICAL_WARNING`).
+    - Urgent nodding microsleep trigger: Head pitch slump (< -15°) during eye closure (>= 800ms) triggers `CRITICAL_WARNING`.
+    - Severe PERCLOS crisis trigger: Cumulative PERCLOS >= 30% triggers `CRITICAL_WARNING`.
+    - Cumulative fatigue triggers: Elevated PERCLOS (>= 15%), sluggish/prolonged blinks (mean duration >= 350ms or 3+ prolonged blinks), frequent yawns (2+ in 60s coupled with fatigue indicators).
+    - Early warnings: Extended closure (500ms - 1500ms), authentic yawn, mild PERCLOS (8% - 15%).
+  - [x] Implement 5 output states: `NORMAL`, `ATTENTION`, `DROWSINESS_WARNING`, `CRITICAL_WARNING`, `INSUFFICIENT_DATA`.
+  - [x] Add explainable reason codes attached to every decision (`ExplainableReason` with underlying metric values and safety thresholds).
+  - [x] Automotive context awareness: Suppress false distraction alarms during transient mirror glances (<= 3.0s) and instrument cluster glances (<= 2.0s).
+  - [x] Asymmetric hysteresis and recovery cooldown: Fast escalation for safety; cooldown required for de-escalation (2.0s from critical, 1.5s from warning, 1.0s from attention) to eliminate alarm chattering.
+  - [x] Diagnostic HUD integration: Real-time Drowsiness State badge, severity, explainable reason code, and dynamic colored status viewport border in `scripts/run_camera_test.py`.
+- **Deliverables:** `backend/app/intelligence/` package (`reason_codes.py`, `confidence.py`, `temporal_analyzer.py`, `decision_engine.py`, `drowsiness_engine.py`, `__init__.py`) and test suite `backend/tests/test_drowsiness_engine.py`.
+- **Acceptance Criteria:** Zero single-frame false alarms; decisions require temporal persistence; 15/15 unit tests passing (149/149 across entire repository).
 
 ---
 
