@@ -36,6 +36,10 @@ if str(project_root) not in sys.path:
 import cv2
 import numpy as np
 
+from backend.app.ai.pdbp_calibration import (
+    DriverBehaviourProfile,
+    GuidedCalibrationSession,
+)
 from backend.app.camera.camera_config import make_filename_safe, sanitize_source_identifier
 from backend.app.camera.camera_manager import create_camera, discover_local_devices
 from backend.app.camera.frame_quality import FrameQualityAnalyzer, FrameQualityResult, QualityStatus
@@ -45,6 +49,7 @@ from backend.app.intelligence import (
     DrowsinessEngine,
     DrowsinessState,
 )
+from backend.app.services.profile_store import profile_store
 from backend.app.vision.face_landmarker import (
     DriveGuardFaceLandmarker,
     FaceLandmarkResult,
@@ -73,6 +78,9 @@ def draw_diagnostic_hud(
     assessment: Optional[DrowsinessAssessment] = None,
     draw_mesh: bool = False,
     draw_eyes: bool = True,
+    calibration_info: Optional[tuple] = None,
+    calibration_banner: Optional[str] = None,
+    calibrated_profile_name: Optional[str] = None,
 ) -> np.ndarray:
     """
     Renders a semi-transparent diagnostic overlay with real-time performance indicators,
@@ -149,6 +157,13 @@ def draw_diagnostic_hud(
         state_badge = f"[{assessment.state.value}]"
         cv2.putText(canvas, state_badge, (width - 860, 24), font, 0.50, state_color, 2, cv2.LINE_AA)
 
+    # Profile Badge
+    if calibrated_profile_name:
+        prof_badge = f"[PROFILE: {calibrated_profile_name}]"
+        cv2.putText(canvas, prof_badge, (width - 1080, 24), font, 0.50, (56, 189, 248), 2, cv2.LINE_AA)
+    else:
+        cv2.putText(canvas, "[ADAPTIVE EAR]", (width - 1040, 24), font, 0.50, (148, 163, 184), 2, cv2.LINE_AA)
+
     # Line 2: Telemetry Metrics
     w, h = actual_res
     telemetry_line_1 = (
@@ -180,7 +195,7 @@ def draw_diagnostic_hud(
         perclos = driver_features.perclos
 
         telemetry_line_3 = (
-            f"EAR: {ear.compensated_ear:.2f} (L:{ear.left_ear:.2f} R:{ear.right_ear:.2f}) | "
+            f"EAR: {ear.compensated_ear:.2f} (thr:{ear.closure_threshold:.2f} L:{ear.left_ear:.2f} R:{ear.right_ear:.2f}) | "
             f"PERCLOS: {perclos.perclos_pct:.1f}% | "
             f"MAR: {mar.mar:.2f} (Yawns: {mar.total_yawn_count}) | "
             f"Pose: {pose.zone.value} (P:{pose.pitch_deg:+.0f}\xb0 Y:{pose.yaw_deg:+.0f}\xb0) | "
@@ -215,9 +230,44 @@ def draw_diagnostic_hud(
     eyes_str = "ON" if draw_eyes else "OFF"
     controls_line = (
         f"Dropped: {dropped} | "
-        f"'q'/ESC: exit | 'm': mirror | 'w': wireframe ({mesh_str}) | 'e': eyes ({eyes_str}) | 's': snapshot"
+        f"'q'/ESC: exit | 'c': 4-zone calib | 'm': mirror | 'w': wireframe ({mesh_str}) | 'e': eyes ({eyes_str}) | 's': snapshot"
     )
     cv2.putText(canvas, controls_line, (16, 132), font, 0.40, (100, 116, 139), 1, cv2.LINE_AA)
+
+    # Active Calibration Banner (Phase 7 Guided Calibration)
+    if calibration_info is not None:
+        step_num, total_steps, progress_ratio, instruction, is_aligned, feedback = calibration_info
+        box_y = height - 110
+        box_h = 95
+        sub = canvas.copy()
+        cv2.rectangle(sub, (20, box_y), (width - 20, box_y + box_h), (15, 23, 42), -1)
+        cv2.addWeighted(sub, 0.85, canvas, 0.15, 0, canvas)
+
+        b_color = (34, 197, 94) if is_aligned else (234, 179, 8)
+        cv2.rectangle(canvas, (20, box_y), (width - 20, box_y + box_h), b_color, 2)
+
+        cv2.putText(canvas, instruction, (36, box_y + 26), font, 0.52, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(canvas, feedback, (36, box_y + 58), font, 0.48, b_color, 2, cv2.LINE_AA)
+
+        bar_x = width - 360
+        bar_y = box_y + 42
+        bar_w = 300
+        bar_h = 18
+        cv2.rectangle(canvas, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (51, 65, 85), -1)
+        fill_w = int(bar_w * max(0.0, min(1.0, progress_ratio)))
+        if fill_w > 0:
+            cv2.rectangle(canvas, (bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h), (34, 197, 94), -1)
+        cv2.rectangle(canvas, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (148, 163, 184), 1)
+        cv2.putText(canvas, f"{int(progress_ratio * 100)}%", (bar_x + bar_w + 10, bar_y + 14), font, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+
+    elif calibration_banner:
+        box_y = height - 75
+        box_h = 55
+        sub = canvas.copy()
+        cv2.rectangle(sub, (20, box_y), (width - 20, box_y + box_h), (6, 78, 59), -1)
+        cv2.addWeighted(sub, 0.85, canvas, 0.15, 0, canvas)
+        cv2.rectangle(canvas, (20, box_y), (width - 20, box_y + box_h), (34, 197, 94), 2)
+        cv2.putText(canvas, calibration_banner, (36, box_y + 35), font, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
 
     # Subtle status border around the full viewport
     border_color = assessment.status_color_bgr if assessment else (34, 197, 94)
@@ -236,6 +286,9 @@ def run_benchmark(
     headless: bool = False,
     flip_h: bool = False,
     flip_v: bool = False,
+    profile_arg: Optional[str] = None,
+    start_calibrating: bool = False,
+    driver_id: str = "driver_default",
 ) -> int:
     """
     Executes the camera capture verification loop for webcams or phone streams.
@@ -269,10 +322,66 @@ def run_benchmark(
             h = actual_res[1] if actual_res[1] > 0 else target_height
             cv2.resizeWindow(window_name, w, h)
 
+        # Profile loading & FeatureExtractor initialization
+        profile_loaded: Optional[DriverBehaviourProfile] = None
+        calibrated_label: Optional[str] = None
+        if profile_arg:
+            p_path = Path(profile_arg)
+            if p_path.is_file():
+                try:
+                    profile_loaded = DriverBehaviourProfile.load_json(p_path)
+                    calibrated_label = profile_loaded.driver_id
+                    logger.info("Loaded driver profile from file: %s (driver_id: %s)", p_path, calibrated_label)
+                except Exception as e:
+                    logger.warning("Could not parse profile file %s: %s", p_path, e)
+            if profile_loaded is None:
+                profile_dto = profile_store.get_profile(profile_arg)
+                if profile_dto is not None:
+                    calibrated_label = profile_dto.driver_id
+                    profile_loaded = DriverBehaviourProfile(
+                        driver_id=profile_dto.driver_id,
+                        calibration_mode=profile_dto.calibration_mode,
+                        center_ear_median=profile_dto.center_ear_median,
+                        center_ear_mad_scaled=profile_dto.zone_baselines.get("CENTER", {}).ear_mad_scaled if "CENTER" in profile_dto.zone_baselines else 0.015,
+                        blink_duration_median_ms=profile_dto.blink_duration_median_ms,
+                        blink_duration_mad_ms=profile_dto.blink_duration_mad_ms,
+                        blink_rcr_median=profile_dto.blink_rcr_median,
+                        blink_rcr_mad=profile_dto.blink_rcr_mad,
+                        blink_freq_median_per_min=profile_dto.blink_freq_median_per_min,
+                        blink_freq_mad_per_min=profile_dto.blink_freq_mad_per_min,
+                        neutral_pitch_deg=profile_dto.neutral_pitch_deg,
+                        neutral_yaw_deg=profile_dto.neutral_yaw_deg,
+                        calibration_reliability=0.90,
+                    )
+                    logger.info("Loaded driver profile '%s' from profile store.", profile_arg)
+
         quality_analyzer = FrameQualityAnalyzer()
         landmarker = DriveGuardFaceLandmarker()
-        feature_extractor = DriverFeatureExtractor()
+
+        if profile_loaded is not None:
+            feature_extractor = DriverFeatureExtractor(
+                open_ear_baseline=profile_loaded.center_ear_median,
+                neutral_pitch_deg=profile_loaded.neutral_pitch_deg,
+                neutral_yaw_deg=profile_loaded.neutral_yaw_deg,
+            )
+        else:
+            feature_extractor = DriverFeatureExtractor()
+
         drowsiness_engine = DrowsinessEngine()
+
+        # Guided Calibration Session (Phase 7)
+        calibration_session: Optional[GuidedCalibrationSession] = None
+        calibration_banner_text: Optional[str] = None
+        calibration_banner_until: float = 0.0
+
+        if start_calibrating:
+            calibration_session = GuidedCalibrationSession(
+                driver_id=driver_id,
+                four_zone_mode=True,
+                step_duration_sec=6.0,
+            )
+            calibration_session.start()
+            logger.info("Started guided 4-zone calibration for driver '%s'.", driver_id)
 
         # Visualization toggles (Phase 4)
         draw_mesh: bool = False
@@ -292,7 +401,7 @@ def run_benchmark(
         latest_features: Optional[DriverFeatures] = None
         latest_assessment: Optional[DrowsinessAssessment] = None
 
-        logger.info("Starting live capture loop. Press 'q' or ESC to terminate.")
+        logger.info("Starting live capture loop. Press 'q' or ESC to terminate, 'c' to calibrate.")
 
         while True:
             loop_now = time.monotonic()
@@ -339,6 +448,42 @@ def run_benchmark(
                 is_mirrored=is_mirrored,
             )
 
+            # Ingest frame into calibration session if active
+            calib_info = None
+            if calibration_session is not None and calibration_session.is_running:
+                calib_info = calibration_session.get_progress(packet.timestamp_ms)
+                if latest_landmark is not None and latest_features is not None:
+                    completed_profile = calibration_session.ingest_frame(
+                        timestamp_ms=packet.timestamp_ms,
+                        face_detected=latest_landmark.has_face,
+                        geometric_reliability=0.95 if latest_landmark.has_face else 0.0,
+                        ear_value=latest_features.ear.compensated_ear,
+                        pitch_deg=latest_features.head_pose.pitch_deg,
+                        yaw_deg=latest_features.head_pose.yaw_deg,
+                        is_eye_currently_closed=latest_features.ear.is_closed,
+                        completed_blink=None,
+                        left_ear=latest_features.ear.left_ear,
+                        right_ear=latest_features.ear.right_ear,
+                        landmark_confidence=latest_landmark.presence_confidence,
+                    )
+                    if completed_profile is not None:
+                        out_dir = Path("backend/data/profiles")
+                        out_dir.mkdir(parents=True, exist_ok=True)
+                        saved_path = out_dir / f"{completed_profile.driver_id}_profile.json"
+                        completed_profile.save_json(saved_path)
+                        logger.info("Calibration complete! Saved profile to %s", saved_path)
+
+                        feature_extractor.set_calibrated_baseline(completed_profile.center_ear_median)
+                        feature_extractor.neutral_pitch_deg = completed_profile.neutral_pitch_deg
+                        feature_extractor.neutral_yaw_deg = completed_profile.neutral_yaw_deg
+                        calibrated_label = completed_profile.driver_id
+                        calibration_banner_text = (
+                            f"CALIBRATION COMPLETE: '{completed_profile.driver_id}' saved! "
+                            f"EAR base: {completed_profile.center_ear_median:.3f}"
+                        )
+                        calibration_banner_until = loop_now + 4.0
+                        calibration_session = None
+
             # Evaluate Drowsiness Intelligence Engine (Phase 6)
             latest_assessment = drowsiness_engine.evaluate(
                 features=latest_features,
@@ -353,6 +498,9 @@ def run_benchmark(
                 fps_frame_count = 0
 
             # Render overlay if running in GUI mode
+            if loop_now >= calibration_banner_until:
+                calibration_banner_text = None
+
             if not headless:
                 hud_frame = draw_diagnostic_hud(
                     frame=packet.frame,
@@ -368,6 +516,9 @@ def run_benchmark(
                     assessment=latest_assessment,
                     draw_mesh=draw_mesh,
                     draw_eyes=draw_eyes,
+                    calibration_info=calib_info,
+                    calibration_banner=calibration_banner_text,
+                    calibrated_profile_name=calibrated_label,
                 )
                 hud_frame = landmarker.draw_landmarks(
                     frame=hud_frame,
@@ -382,6 +533,18 @@ def run_benchmark(
                 if key in (27, ord("q"), ord("Q")):
                     logger.info("User requested termination.")
                     break
+                elif key in (ord("c"), ord("C")):
+                    if calibration_session is None or not calibration_session.is_running:
+                        calibration_session = GuidedCalibrationSession(
+                            driver_id=driver_id,
+                            four_zone_mode=True,
+                            step_duration_sec=6.0,
+                        )
+                        calibration_session.start(timestamp_ms=packet.timestamp_ms)
+                        logger.info("Started interactive 4-zone guided calibration for driver '%s'.", driver_id)
+                    else:
+                        calibration_session = None
+                        logger.info("Cancelled ongoing calibration.")
                 elif key in (ord("m"), ord("M")):
                     if hasattr(camera, "toggle_flip_horizontal"):
                         camera.toggle_flip_horizontal()
@@ -511,6 +674,23 @@ def main() -> None:
         action="store_true",
         help="Probe and list all available local video capture devices on Windows",
     )
+    parser.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        help="Path to driver profile JSON or driver ID in profile store",
+    )
+    parser.add_argument(
+        "--calibrate",
+        action="store_true",
+        help="Start 4-zone guided driver calibration immediately on launch",
+    )
+    parser.add_argument(
+        "--driver-id",
+        type=str,
+        default="driver_default",
+        help="Driver identifier for calibration profile saving (default: driver_default)",
+    )
 
     args = parser.parse_args()
 
@@ -532,6 +712,9 @@ def main() -> None:
             headless=args.headless,
             flip_h=args.flip_h,
             flip_v=args.flip_v,
+            profile_arg=args.profile,
+            start_calibrating=args.calibrate,
+            driver_id=args.driver_id,
         )
     )
 
