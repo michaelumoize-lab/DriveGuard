@@ -222,15 +222,15 @@ DriveGuard/
 
 ---
 
-### [ ] Phase 3 — Camera Abstraction, Frame Quality, and Performance
+### [x] Phase 3 — Camera Abstraction, Frame Quality, and Performance
 - **Goal:** Standardize frame packets and make video stream health fully observable.
 - **Tasks:**
-  - [ ] Implement `FramePacket` dataclass (BGR frame, monotonic timestamp, sequence index, source identifier).
-  - [ ] Implement `CameraManager` providing dynamic camera discovery, selection, and hot-swapping.
-  - [ ] Add frame quality diagnostics: blur detection (Laplacian variance), low-light / underexposure check, and dropped frame counters.
-  - [ ] Establish strict memory bounds and thread ownership to prevent leaks.
-- **Deliverables:** `camera_manager.py`, `frame_buffer.py`, and diagnostic metrics.
-- **Acceptance Criteria:** Hot-swapping camera sources requires zero modifications to downstream AI code.
+  - [x] Implement `FramePacket` dataclass (BGR frame, monotonic timestamp, sequence index, source identifier).
+  - [x] Implement `CameraManager` providing dynamic camera discovery, selection, and hot-swapping.
+  - [x] Add frame quality diagnostics: blur detection (Laplacian variance), low-light / underexposure check, and dropped frame counters (`FrameQualityAnalyzer`).
+  - [x] Establish strict memory bounds and thread ownership to prevent leaks (`FrameBuffer` 1-slot latest-frame strategy).
+- **Deliverables:** `camera_manager.py`, `frame_buffer.py`, `frame_quality.py`, and diagnostic metrics.
+- **Acceptance Criteria:** Hot-swapping camera sources requires zero modifications to downstream AI code; optical frame health is observable.
 
 ---
 
