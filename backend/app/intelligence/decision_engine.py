@@ -65,6 +65,7 @@ class DecisionEngine:
         recovery_warning_ms: float = 1500.0,
         recovery_attention_ms: float = 1000.0,
         face_loss_grace_ms: float = 1000.0,
+        sensor_unreliable_grace_ms: float = 1000.0,
     ) -> None:
         self.sustained_closure_threshold_ms = sustained_closure_threshold_ms
         self.extended_closure_threshold_ms = extended_closure_threshold_ms
@@ -78,11 +79,13 @@ class DecisionEngine:
         self.recovery_warning_ms = recovery_warning_ms
         self.recovery_attention_ms = recovery_attention_ms
         self.face_loss_grace_ms = face_loss_grace_ms
+        self.sensor_unreliable_grace_ms = sensor_unreliable_grace_ms
 
         # Active FSM State
         self.current_state: DrowsinessState = DrowsinessState.NORMAL
         self._recovery_start_ts_ms: Optional[float] = None
         self._stable_face_start_ts_ms: Optional[float] = None
+        self._sensor_unreliable_start_ts_ms: Optional[float] = None
 
     def evaluate(
         self,
@@ -100,9 +103,21 @@ class DecisionEngine:
         # ------------------------------------------------------------------
         is_face_lost = not metrics.has_face
         is_prolonged_face_loss = is_face_lost and (metrics.face_lost_duration_ms >= self.face_loss_grace_ms)
-        is_sensor_unreliable = not confidence.is_reliable and not is_face_lost
 
-        if is_prolonged_face_loss or is_sensor_unreliable:
+        # Track sensor unreliability duration (optical / landmark degradation with face present)
+        if not is_face_lost and not confidence.is_reliable:
+            if self._sensor_unreliable_start_ts_ms is None:
+                self._sensor_unreliable_start_ts_ms = ts_ms
+            sensor_unreliable_duration_ms = ts_ms - self._sensor_unreliable_start_ts_ms
+            is_prolonged_sensor_fault = sensor_unreliable_duration_ms >= self.sensor_unreliable_grace_ms
+            is_sensor_unreliable = True
+        else:
+            self._sensor_unreliable_start_ts_ms = None
+            sensor_unreliable_duration_ms = 0.0
+            is_prolonged_sensor_fault = False
+            is_sensor_unreliable = False
+
+        if is_prolonged_face_loss or is_prolonged_sensor_fault:
             self._stable_face_start_ts_ms = None
             candidate_state = DrowsinessState.INSUFFICIENT_DATA
             primary = ExplainableReason(
@@ -110,7 +125,7 @@ class DecisionEngine:
                 message=(
                     f"Driver face not detected for {metrics.face_lost_duration_ms:.0f}ms"
                     if is_prolonged_face_loss
-                    else "Sensor reliability compromised"
+                    else f"Sensor reliability degraded for {sensor_unreliable_duration_ms:.0f}ms"
                 ),
                 metric_value=metrics.face_lost_duration_ms if is_prolonged_face_loss else confidence.overall_confidence,
                 threshold=self.face_loss_grace_ms if is_prolonged_face_loss else 0.50,
@@ -126,13 +141,22 @@ class DecisionEngine:
                 is_mirror_check_context=False,
             )
 
-        if is_face_lost:
-            # Face loss within grace period: hold current state without triggering false alarms
+        if is_face_lost or is_sensor_unreliable:
+            # Face loss or sensor fault within grace period: hold current state without triggering false alarms
+            is_fl = is_face_lost
+            code = ReasonCode.FACE_LOST if is_fl else ReasonCode.SENSOR_DEGRADED
+            dur = metrics.face_lost_duration_ms if is_fl else sensor_unreliable_duration_ms
+            limit = self.face_loss_grace_ms if is_fl else self.sensor_unreliable_grace_ms
+            msg = (
+                f"Face loss grace period active ({dur:.0f}ms)"
+                if is_fl
+                else f"Sensor degradation grace period active ({dur:.0f}ms)"
+            )
             primary = ExplainableReason(
-                code=ReasonCode.FACE_LOST,
-                message=f"Face loss grace period active ({metrics.face_lost_duration_ms:.0f}ms)",
-                metric_value=metrics.face_lost_duration_ms,
-                threshold=self.face_loss_grace_ms,
+                code=code,
+                message=msg,
+                metric_value=dur,
+                threshold=limit,
             )
             return DecisionResult(
                 timestamp_ms=ts_ms,
@@ -219,7 +243,10 @@ class DecisionEngine:
                     )
                 )
 
-            if metrics.yawn_count_60s >= 2 and (metrics.perclos_pct >= 8.0 or metrics.prolonged_blink_count_60s >= 1):
+            if metrics.yawn_count_60s >= 2 and (
+                (metrics.perclos_is_reliable and metrics.perclos_pct >= 8.0)
+                or metrics.prolonged_blink_count_60s >= 1
+            ):
                 candidate_state = DrowsinessState.DROWSINESS_WARNING
                 reasons.append(
                     ExplainableReason(
@@ -362,3 +389,4 @@ class DecisionEngine:
         self.current_state = DrowsinessState.NORMAL
         self._recovery_start_ts_ms = None
         self._stable_face_start_ts_ms = None
+        self._sensor_unreliable_start_ts_ms = None

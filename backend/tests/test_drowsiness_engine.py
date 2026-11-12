@@ -489,3 +489,88 @@ def test_engine_reset() -> None:
     f_fresh = make_driver_features(timestamp_ms=2000.0)
     fresh_assessment = engine.evaluate(f_fresh)
     assert fresh_assessment.state == DrowsinessState.NORMAL
+
+
+def test_sensor_degraded_grace_period_prevents_cooldown_bypass() -> None:
+    """
+    A momentary sensor degradation (< 1000ms grace period) must hold the existing
+    alert state without flapping to INSUFFICIENT_DATA or bypassing the de-escalation cooldown.
+    """
+    engine = DrowsinessEngine(
+        perclos_warning_threshold_pct=15.0,
+        sensor_unreliable_grace_ms=1000.0,
+        recovery_warning_ms=1500.0,
+    )
+
+    # 1. Driver in DROWSINESS_WARNING (PERCLOS = 18%)
+    f1 = make_driver_features(timestamp_ms=1000.0, perclos_pct=18.0)
+    a1 = engine.evaluate(f1)
+    assert a1.state == DrowsinessState.DROWSINESS_WARNING
+
+    # 2. Frame at t=1033ms has motion blur (< 1000ms grace period)
+    q_blur = FrameQualityResult(
+        mean_luminance=120.0,
+        blur_variance=15.0,
+        lighting=LightingCondition.OPTIMAL,
+        blur=BlurCondition.BLURRY,
+        status=QualityStatus.BLURRY,
+        is_viable_for_inference=False,
+        reasons=("Motion blur",),
+    )
+    f2 = make_driver_features(timestamp_ms=1033.0, perclos_pct=18.0)
+    a2 = engine.evaluate(f2, quality=q_blur)
+    # Must hold DROWSINESS_WARNING during grace period rather than flipping to INSUFFICIENT_DATA
+    assert a2.state == DrowsinessState.DROWSINESS_WARNING
+    assert a2.primary_reason.code == ReasonCode.SENSOR_DEGRADED
+
+    # 3. Frame at t=1066ms is clear again, but with nominal metrics
+    f3 = make_driver_features(timestamp_ms=1066.0, perclos_pct=5.0)
+    a3 = engine.evaluate(f3)
+    # De-escalation cooldown (1500ms) must remain strictly enforced!
+    assert a3.state == DrowsinessState.DROWSINESS_WARNING
+
+    # 4. Prolonged sensor fault (lasting >= 1000ms) transitions to INSUFFICIENT_DATA
+    f_fault_1 = make_driver_features(timestamp_ms=2000.0, perclos_pct=18.0)
+    engine.evaluate(f_fault_1, quality=q_blur)
+
+    f_fault_2 = make_driver_features(timestamp_ms=3100.0, perclos_pct=18.0)
+    a_fault_2 = engine.evaluate(f_fault_2, quality=q_blur)
+    assert a_fault_2.state == DrowsinessState.INSUFFICIENT_DATA
+    assert a_fault_2.primary_reason.code == ReasonCode.SENSOR_DEGRADED
+
+
+def test_continuous_closure_resilience_to_momentary_ear_jitter() -> None:
+    """
+    Continuous eye closure tracking should not reset if a single frame has degenerate EAR
+    while the blink kinematics tracker confirms the eye remains closed.
+    """
+    engine = DrowsinessEngine(sustained_closure_threshold_ms=1500.0)
+
+    # t=1000ms: Eyes close
+    f1 = make_driver_features(
+        timestamp_ms=1000.0,
+        is_closed=True,
+        ear_val=0.10,
+        current_closure_duration_ms=0.0,
+    )
+    engine.evaluate(f1)
+
+    # t=1600ms: Eyes closed for 600ms, but ear_is_valid jittered to False
+    f2 = make_driver_features(
+        timestamp_ms=1600.0,
+        is_closed=True,
+        ear_is_valid=False,
+        current_closure_duration_ms=600.0,
+    )
+    a2 = engine.evaluate(f2)
+    assert a2.temporal_metrics.active_closure_duration_ms >= 600.0
+
+    # t=2600ms: Still closed for 1600ms -> Escalates to CRITICAL_WARNING
+    f3 = make_driver_features(
+        timestamp_ms=2600.0,
+        is_closed=True,
+        current_closure_duration_ms=1600.0,
+    )
+    a3 = engine.evaluate(f3)
+    assert a3.state == DrowsinessState.CRITICAL_WARNING
+    assert a3.primary_reason.code == ReasonCode.SUSTAINED_EYE_CLOSURE

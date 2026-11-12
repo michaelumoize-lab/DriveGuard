@@ -75,6 +75,8 @@ class DrowsinessEngine:
         recovery_critical_ms: float = 2000.0,
         recovery_warning_ms: float = 1500.0,
         recovery_attention_ms: float = 1000.0,
+        face_loss_grace_ms: float = 1000.0,
+        sensor_unreliable_grace_ms: float = 1000.0,
     ) -> None:
         self.temporal_analyzer = TemporalAnalyzer()
         self.confidence_evaluator = SignalConfidenceEvaluator()
@@ -88,6 +90,8 @@ class DrowsinessEngine:
             recovery_critical_ms=recovery_critical_ms,
             recovery_warning_ms=recovery_warning_ms,
             recovery_attention_ms=recovery_attention_ms,
+            face_loss_grace_ms=face_loss_grace_ms,
+            sensor_unreliable_grace_ms=sensor_unreliable_grace_ms,
         )
 
     def evaluate(

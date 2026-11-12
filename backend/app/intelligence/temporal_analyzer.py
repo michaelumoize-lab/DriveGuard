@@ -95,6 +95,7 @@ class TemporalAnalyzer:
             face_lost_ms = ts_ms - self._face_lost_start_ts_ms
             self._closure_start_ts_ms = None
             self._off_road_start_ts_ms = None
+            self._pitch_history.clear()
         else:
             self._face_lost_start_ts_ms = None
             face_lost_ms = 0.0
@@ -102,7 +103,11 @@ class TemporalAnalyzer:
         # ------------------------------------------------------------------
         # 2. Continuous Eye Closure Tracking
         # ------------------------------------------------------------------
-        if features.has_face and features.ear.is_valid and features.ear.is_closed:
+        is_currently_closed = (
+            features.has_face and features.ear.is_valid and features.ear.is_closed
+        ) or (features.has_face and features.blink.is_eye_closed)
+
+        if is_currently_closed:
             if self._closure_start_ts_ms is None:
                 self._closure_start_ts_ms = ts_ms
             raw_closure_duration = ts_ms - self._closure_start_ts_ms
