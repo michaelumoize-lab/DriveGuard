@@ -79,6 +79,7 @@ class PerclosCalculator:
         # Ring buffer storing tuples of: (timestamp_ms, dt_sec, is_closed)
         self._samples: Deque[Tuple[float, float, bool]] = deque()
         self._prev_ts_ms: Optional[float] = None
+        self._prev_has_face: bool = False
 
     def update(
         self,
@@ -95,11 +96,13 @@ class PerclosCalculator:
         else:
             dt_sec = 0.0
 
-        self._prev_ts_ms = timestamp_ms
-
-        # Only accumulate valid observation steps when face is present and step is reasonable
-        if has_face and 0.0 < dt_sec <= self.max_valid_dt_sec:
+        # An interval is valid only if face was actively observed at both start and end
+        was_observed = has_face and self._prev_has_face
+        if was_observed and 0.0 < dt_sec <= self.max_valid_dt_sec:
             self._samples.append((timestamp_ms, dt_sec, is_closed))
+
+        self._prev_ts_ms = timestamp_ms
+        self._prev_has_face = has_face
 
         # Evict samples older than sliding window threshold
         window_cutoff_ms = timestamp_ms - (self.window_sec * 1000.0)
@@ -138,3 +141,4 @@ class PerclosCalculator:
         """Reset internal accumulator for a new driving session."""
         self._samples.clear()
         self._prev_ts_ms = None
+        self._prev_has_face = False

@@ -60,6 +60,7 @@ class EyeAspectRatioResult:
     is_left_closed: bool
     is_right_closed: bool
     is_closed: bool
+    is_valid: bool = True
 
 
 def calculate_single_eye_ear(
@@ -157,10 +158,16 @@ def extract_eye_aspect_ratio(
     weighted = calculate_yaw_weighted_ear(left_ear, right_ear, yaw_deg)
     compensated = calculate_pitch_compensated_ear(weighted, pitch_deg)
 
-    is_left_closed = left_ear < closure_threshold
-    is_right_closed = right_ear < closure_threshold
-    # Binocular closure when compensated EAR is below the closure threshold
-    is_closed = compensated < closure_threshold
+    is_valid = (left_ear > 0.0) and (right_ear > 0.0)
+    if not is_valid:
+        is_left_closed = False
+        is_right_closed = False
+        is_closed = False
+    else:
+        is_left_closed = left_ear < closure_threshold
+        is_right_closed = right_ear < closure_threshold
+        # Binocular closure when compensated EAR is below the closure threshold
+        is_closed = compensated < closure_threshold
 
     return EyeAspectRatioResult(
         left_ear=left_ear,
@@ -171,4 +178,5 @@ def extract_eye_aspect_ratio(
         is_left_closed=is_left_closed,
         is_right_closed=is_right_closed,
         is_closed=is_closed,
+        is_valid=is_valid,
     )

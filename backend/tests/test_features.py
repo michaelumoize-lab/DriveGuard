@@ -157,11 +157,13 @@ def test_calculate_pitch_compensated_ear() -> None:
 
 
 def test_extract_eye_aspect_ratio_pipeline() -> None:
-    """Verifies the unified extract_eye_aspect_ratio function."""
+    """Verifies the unified extract_eye_aspect_ratio function handles degenerate and valid inputs."""
     lms = _build_mock_landmarks()
     res = extract_eye_aspect_ratio(lms, yaw_deg=0.0, pitch_deg=0.0)
     assert isinstance(res, EyeAspectRatioResult)
-    assert res.is_closed is True  # Default mock lms are degenerate (0.0 EAR)
+    # Degenerate eye landmarks are marked invalid and excluded from closure
+    assert res.is_valid is False
+    assert res.is_closed is False
 
 
 # ==============================================================================
@@ -192,10 +194,11 @@ def test_estimate_head_pose_insufficient_landmarks() -> None:
     assert res.is_looking_away is True
 
 
-def test_estimate_head_pose_synthetic_frontal_face() -> None:
+def test_estimate_head_pose_synthetic_poses() -> None:
     """
-    Project canonical 3D face model points with identity rotation and translation
-    to produce synthetic 2D image points, and verify solvePnP recovers ~0° angles.
+    Project canonical 3D face model points with various rotations (frontal, pitch down,
+    yaw left, yaw right) to produce synthetic 2D image points and verify solvePnP recovers
+    the expected Euler angles and PoseZones.
     """
     frame_w, frame_h = 1280, 720
     focal = float(frame_w)
@@ -205,31 +208,46 @@ def test_estimate_head_pose_synthetic_frontal_face() -> None:
         dtype=np.float64,
     )
     dist = np.zeros((4, 1), dtype=np.float64)
-
-    rvec_gt = np.zeros((3, 1), dtype=np.float64)
     tvec_gt = np.array([[0.0], [0.0], [600.0]], dtype=np.float64)
 
-    projected, _ = cv2.projectPoints(CANONICAL_3D_FACE_POINTS, rvec_gt, tvec_gt, cam_mat, dist)
-    projected = projected.reshape(-1, 2)
+    def _project_and_estimate(rvec: np.ndarray) -> HeadPoseResult:
+        proj, _ = cv2.projectPoints(CANONICAL_3D_FACE_POINTS, rvec, tvec_gt, cam_mat, dist)
+        proj = proj.reshape(-1, 2)
+        overrides = {
+            idx: (float(proj[i, 0] / frame_w), float(proj[i, 1] / frame_h), 0.0)
+            for i, idx in enumerate(SOLVEPNP_LANDMARK_INDICES)
+        }
+        lms = _build_mock_landmarks(overrides)
+        return estimate_head_pose(lms, frame_width=frame_w, frame_height=frame_h)
 
-    # Convert to normalized landmarks
-    overrides = {}
-    for i, idx in enumerate(SOLVEPNP_LANDMARK_INDICES):
-        overrides[idx] = (
-            float(projected[i, 0] / frame_w),
-            float(projected[i, 1] / frame_h),
-            0.0,
-        )
+    # 1. Frontal face (0°, 0°, 0°)
+    res_front = _project_and_estimate(np.zeros((3, 1), dtype=np.float64))
+    assert res_front.is_valid is True
+    assert abs(res_front.pitch_deg) < 3.0
+    assert abs(res_front.yaw_deg) < 3.0
+    assert abs(res_front.roll_deg) < 3.0
+    assert res_front.zone == PoseZone.CENTER
 
-    lms = _build_mock_landmarks(overrides)
-    res = estimate_head_pose(lms, frame_width=frame_w, frame_height=frame_h)
+    # 2. Pitch down -15° (looking at dashboard)
+    rvec_pitch_down, _ = cv2.Rodrigues(np.array([np.radians(-15.0), 0.0, 0.0]))
+    res_pitch = _project_and_estimate(rvec_pitch_down)
+    assert res_pitch.is_valid is True
+    assert -18.0 <= res_pitch.pitch_deg <= -12.0
+    assert res_pitch.zone == PoseZone.DASHBOARD
 
-    assert res.is_valid is True
-    assert abs(res.pitch_deg) < 5.0
-    assert abs(res.yaw_deg) < 5.0
-    assert abs(res.roll_deg) < 5.0
-    assert res.zone == PoseZone.CENTER
-    assert res.is_looking_away is False
+    # 3. Yaw left +20° (looking at left mirror)
+    rvec_yaw_left, _ = cv2.Rodrigues(np.array([0.0, np.radians(20.0), 0.0]))
+    res_yaw_left = _project_and_estimate(rvec_yaw_left)
+    assert res_yaw_left.is_valid is True
+    assert 17.0 <= res_yaw_left.yaw_deg <= 23.0
+    assert res_yaw_left.zone == PoseZone.LEFT_MIRROR
+
+    # 4. Yaw right -20° (looking at right mirror)
+    rvec_yaw_right, _ = cv2.Rodrigues(np.array([0.0, np.radians(-20.0), 0.0]))
+    res_yaw_right = _project_and_estimate(rvec_yaw_right)
+    assert res_yaw_right.is_valid is True
+    assert -23.0 <= res_yaw_right.yaw_deg <= -17.0
+    assert res_yaw_right.zone == PoseZone.RIGHT_MIRROR
 
 
 # ==============================================================================

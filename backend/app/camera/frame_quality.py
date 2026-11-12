@@ -133,7 +133,7 @@ class FrameQualityAnalyzer:
         Returns:
             FrameQualityResult detailing exposure, blur, and viability.
         """
-        if frame is None or frame.size == 0:
+        if frame is None or frame.size == 0 or getattr(frame, "dtype", None) != np.uint8:
             return FrameQualityResult(
                 mean_luminance=0.0,
                 blur_variance=0.0,
@@ -141,7 +141,7 @@ class FrameQualityAnalyzer:
                 blur=BlurCondition.BLURRY,
                 status=QualityStatus.SEVERELY_DEGRADED,
                 is_viable_for_inference=False,
-                reasons=("Empty or corrupted video frame.",),
+                reasons=("Empty, corrupted, or unsupported frame data type (expected uint8).",),
             )
 
         # Convert to single-channel 8-bit grayscale for photometric calculations

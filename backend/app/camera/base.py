@@ -141,7 +141,8 @@ class BaseCamera(abc.ABC):
 
     def __enter__(self) -> BaseCamera:
         """Context manager entry."""
-        self.open()
+        if not self.open():
+            raise RuntimeError(f"Failed to open camera: {self.source}")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:

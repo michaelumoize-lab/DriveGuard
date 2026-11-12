@@ -121,6 +121,8 @@ class BlinkKinematicsDetector:
         self._min_ear: float = 1.0
         self._min_ear_ts: Optional[float] = None
         self._open_ear_before: float = 0.30
+        self._was_left_closed: bool = False
+        self._was_right_closed: bool = False
 
         # Totals and historical metrics
         self._total_blinks: int = 0
@@ -184,6 +186,13 @@ class BlinkKinematicsDetector:
         # 2. State Machine Evaluation
         is_below_closed = compensated_ear < self.closure_threshold
         is_above_reopen = compensated_ear >= self.reopen_threshold
+
+        # Track whether individual eyes reached closure during this in-flight event
+        if is_below_closed or self._state in (BlinkState.CLOSING, BlinkState.CLOSED, BlinkState.PROLONGED_CLOSURE):
+            if left_ear < self.closure_threshold:
+                self._was_left_closed = True
+            if right_ear < self.closure_threshold:
+                self._was_right_closed = True
 
         if self._prev_ear is not None and self._prev_ts is not None:
             if self._state == BlinkState.OPEN:
@@ -264,7 +273,7 @@ class BlinkKinematicsDetector:
                         classification = BlinkClassification.MICROSLEEP_CANDIDATE
                         self._prolonged_blinks += 1
 
-                    is_binocular = (left_ear < self.reopen_threshold) and (right_ear < self.reopen_threshold)
+                    is_binocular = self._was_left_closed and self._was_right_closed
 
                     completed_blink = BlinkEvent(
                         start_ts_ms=start_ts,
@@ -290,6 +299,8 @@ class BlinkKinematicsDetector:
                     self._blink_start_ts = None
                     self._closure_start_ts = None
                     self._min_ear = 1.0
+                    self._was_left_closed = False
+                    self._was_right_closed = False
 
                 elif compensated_ear < self.closure_threshold:
                     # Dropped back into closed
@@ -323,6 +334,8 @@ class BlinkKinematicsDetector:
         self._blink_start_ts = None
         self._closure_start_ts = None
         self._min_ear = 1.0
+        self._was_left_closed = False
+        self._was_right_closed = False
         self._prev_ts = None
         self._prev_ear = None
 
@@ -332,6 +345,8 @@ class BlinkKinematicsDetector:
         self._blink_start_ts = None
         self._closure_start_ts = None
         self._min_ear = 1.0
+        self._was_left_closed = False
+        self._was_right_closed = False
 
     def reset(self) -> None:
         """Reset state for a new session."""
@@ -342,6 +357,8 @@ class BlinkKinematicsDetector:
         self._closure_start_ts = None
         self._min_ear = 1.0
         self._min_ear_ts = None
+        self._was_left_closed = False
+        self._was_right_closed = False
         self._total_blinks = 0
         self._prolonged_blinks = 0
         self._recent_duration_ms = None

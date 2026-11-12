@@ -148,22 +148,24 @@ class DriverFeatureExtractor:
                 landmarks=landmark_result.landmarks,
                 timestamp_ms=ts_ms,
                 aspect_ratio=aspect_ratio,
+                has_face=has_face,
             )
 
             # 4. Blink Kinematics FSM
+            valid_eye_tracking = has_face and ear_res.is_valid
             blink_res = self._blink_detector.update(
                 left_ear=ear_res.left_ear,
                 right_ear=ear_res.right_ear,
                 compensated_ear=ear_res.compensated_ear,
                 timestamp_ms=ts_ms,
-                has_face=True,
+                has_face=valid_eye_tracking,
             )
 
             # 5. Sliding-Window PERCLOS
             perclos_res = self._perclos_calculator.update(
                 timestamp_ms=ts_ms,
                 is_closed=ear_res.is_closed,
-                has_face=True,
+                has_face=valid_eye_tracking,
             )
 
         else:
@@ -185,11 +187,13 @@ class DriverFeatureExtractor:
                 is_left_closed=False,
                 is_right_closed=False,
                 is_closed=False,
+                is_valid=False,
             )
             mar_res = self._yawn_detector.update(
                 landmarks=(),
                 timestamp_ms=ts_ms,
                 aspect_ratio=aspect_ratio,
+                has_face=False,
             )
             blink_res = self._blink_detector.update(
                 left_ear=0.0,

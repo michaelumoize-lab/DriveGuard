@@ -218,15 +218,32 @@ class DriveGuardFaceLandmarker:
                 logger.info("Found Face Landmarker model at: %s", path)
                 return path
 
-        # If not found, download to standard weights directory
+        # If not found, download to standard weights directory atomically
         target_path = repo_root / "backend" / "weights" / "face_landmarker.task"
         target_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = target_path.with_suffix(".tmp")
         logger.info("Model not found locally. Downloading official MediaPipe Face Landmarker bundle to %s...", target_path)
         try:
-            urllib.request.urlretrieve(OFFICIAL_MODEL_URL, str(target_path))
+            req = urllib.request.Request(
+                OFFICIAL_MODEL_URL,
+                headers={"User-Agent": "DriveGuard-ModelDownloader/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=30.0) as resp, open(temp_path, "wb") as out_f:
+                while chunk := resp.read(65536):
+                    out_f.write(chunk)
+
+            if temp_path.stat().st_size < 100_000:
+                raise ValueError("Downloaded model file is suspiciously small or corrupted.")
+
+            temp_path.replace(target_path)
             logger.info("Model download complete (%d bytes).", target_path.stat().st_size)
             return target_path
         except Exception as exc:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
             raise FileNotFoundError(
                 f"Failed to locate or download face_landmarker.task model. "
                 f"Please place 'face_landmarker.task' in '{target_path}'."
@@ -298,7 +315,13 @@ class DriveGuardFaceLandmarker:
         else:
             raise TypeError(f"Expected FramePacket or np.ndarray, got {type(input_data)}")
 
-        if bgr_frame is None or bgr_frame.size == 0:
+        if (
+            bgr_frame is None
+            or bgr_frame.size == 0
+            or getattr(bgr_frame, "dtype", None) != np.uint8
+            or len(getattr(bgr_frame, "shape", ())) != 3
+            or bgr_frame.shape[2] != 3
+        ):
             return FaceLandmarkResult(
                 has_face=False,
                 landmarks=(),
@@ -317,11 +340,10 @@ class DriveGuardFaceLandmarker:
 
             t_start = time.perf_counter()
 
-            # MediaPipe Tasks expects RGB format
-            rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-            mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb_frame)
-
             try:
+                # MediaPipe Tasks expects RGB format
+                rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+                mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb_frame)
                 detection_result = self._landmarker.detect_for_video(mp_image, inferred_ms)
             except Exception as exc:
                 logger.error("MediaPipe inference exception: %s", exc)
@@ -330,7 +352,7 @@ class DriveGuardFaceLandmarker:
                     landmarks=(),
                     presence_confidence=0.0,
                     timestamp_ms=inferred_ms,
-                    status=FaceLandmarkStatus.INSUFFICIENT_DATA,
+                    status=FaceLandmarkStatus.CAMERA_FAULT,
                     inference_latency_ms=0.0,
                     reasons=(f"MediaPipe inference error: {exc}",),
                 )

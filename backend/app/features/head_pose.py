@@ -51,14 +51,15 @@ class PoseZone(str, Enum):
 
 
 # Canonical 3D anthropometric facial model points (in mm, centered at nose tip)
+# Upright camera image orientation: +X points right, +Y points down, +Z points towards camera
 CANONICAL_3D_FACE_POINTS = np.array(
     [
         (0.0, 0.0, 0.0),          # Nose tip (idx 1)
-        (0.0, -63.6, -12.5),      # Chin (idx 152)
-        (-43.3, 32.7, -26.0),     # Left eye outer corner (idx 33)
-        (43.3, 32.7, -26.0),      # Right eye outer corner (idx 263)
-        (-28.9, -28.9, -24.1),    # Left mouth corner (idx 61)
-        (28.9, -28.9, -24.1),     # Right mouth corner (idx 291)
+        (0.0, 63.6, -12.5),       # Chin (idx 152) — physically down from nose (+Y)
+        (-43.3, -32.7, -26.0),    # Right eye outer corner (idx 33) — up (-Y), left (-X)
+        (43.3, -32.7, -26.0),     # Left eye outer corner (idx 263) — up (-Y), right (+X)
+        (-28.9, 28.9, -24.1),     # Right mouth corner (idx 61) — down (+Y), left (-X)
+        (28.9, 28.9, -24.1),      # Left mouth corner (idx 291) — down (+Y), right (+X)
     ],
     dtype=np.float64,
 )

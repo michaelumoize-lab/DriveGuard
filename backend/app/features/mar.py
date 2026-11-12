@@ -143,10 +143,27 @@ class YawnDetector:
         landmarks: Union[Sequence[NormalizedLandmark], np.ndarray],
         timestamp_ms: float,
         aspect_ratio: float = 16.0 / 9.0,
+        has_face: bool = True,
     ) -> MouthAspectRatioResult:
         """
         Evaluate frame landmarks and update temporal yawn state.
         """
+        # If face is lost, cancel active in-flight opening without registering a completed yawn
+        if not has_face or len(landmarks) == 0:
+            self._is_opening = False
+            self._opening_start_ts = None
+            self._peak_mar = 0.0
+            self._last_ts = timestamp_ms
+            return MouthAspectRatioResult(
+                mar=0.0,
+                is_mouth_open=False,
+                is_yawn_in_progress=False,
+                current_yawn_duration_ms=0.0,
+                is_authentic_yawn=False,
+                completed_yawn=None,
+                total_yawn_count=self._total_yawns,
+            )
+
         mar = calculate_mar(landmarks, aspect_ratio=aspect_ratio)
         is_mouth_open = mar >= self.mar_open_threshold
 

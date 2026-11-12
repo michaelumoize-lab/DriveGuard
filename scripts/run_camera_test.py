@@ -227,6 +227,7 @@ def run_benchmark(
         logger.error("Failed to open camera source '%s'.", safe_identifier)
         return 1
 
+    start_time = time.monotonic()
     try:
         actual_res = camera.get_actual_resolution()
         window_name = f"DriveGuard Diagnostics [{safe_identifier}]"
@@ -349,10 +350,10 @@ def run_benchmark(
                     logger.info("Eye contour overlay toggled to: %s", draw_eyes)
                 elif key in (ord("s"), ord("S")):
                     short_safe_tag = make_filename_safe(safe_identifier)
-                    snapshot_filename = f"snapshot_{short_safe_tag}_{int(time.time())}.png"
-                    save_ok = cv2.imwrite(snapshot_filename, packet.frame)
+                    snapshot_filename = f"snapshot_{short_safe_tag}_{int(time.time() * 1000)}.png"
+                    save_ok = cv2.imwrite(snapshot_filename, hud_frame)
                     if save_ok:
-                        logger.info("Snapshot saved successfully to %s", snapshot_filename)
+                        logger.info("Diagnostic HUD snapshot saved to %s", snapshot_filename)
                     else:
                         logger.error(
                             "Failed to save snapshot to %s (cv2.imwrite returned False).",
@@ -361,6 +362,8 @@ def run_benchmark(
 
     finally:
         total_time = time.monotonic() - start_time
+        buffer_stats = camera.get_buffer_stats()
+        hardware_fps = camera.get_actual_fps()
         camera.close()
         if "landmarker" in locals() and landmarker is not None:
             landmarker.close()
@@ -374,7 +377,6 @@ def run_benchmark(
     avg_ai_ms = float(np.mean(inference_latencies_ms)) if inference_latencies_ms else 0.0
     p95_ai_ms = float(np.percentile(inference_latencies_ms, 95)) if inference_latencies_ms else 0.0
     face_hit_rate = (total_face_hits / max(1, total_frames_displayed)) * 100.0
-    buffer_stats = camera.get_buffer_stats()
 
     print("\n" + "=" * 60)
     print("      DRIVEGUARD CAMERA & AI BENCHMARK SUMMARY")
@@ -386,7 +388,7 @@ def run_benchmark(
     print(f"Total Rendered Frames : {total_frames_displayed}")
     print(f"Dropped Backlog Frames: {buffer_stats['total_dropped']}")
     print(f"Average Display FPS   : {avg_display_fps:.2f} FPS")
-    print(f"Hardware Ingestion FPS: {camera.get_actual_fps():.2f} FPS")
+    print(f"Hardware Ingestion FPS: {hardware_fps:.2f} FPS")
     print(f"Mean Frame Latency    : {avg_latency:.2f} ms")
     print(f"95th Percentile Age   : {p95_latency:.2f} ms")
     if latest_quality is not None:
