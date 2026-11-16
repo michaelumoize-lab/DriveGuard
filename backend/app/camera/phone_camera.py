@@ -60,7 +60,7 @@ class PhoneCameraConfig:
     auto_reconnect: bool = True
     reconnect_interval_sec: float = 2.0
     buffer_size: int = 1
-    flip_horizontal: bool = False
+    flip_horizontal: bool = True
     flip_vertical: bool = False
 
     def __post_init__(self) -> None:

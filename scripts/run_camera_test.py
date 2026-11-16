@@ -284,7 +284,7 @@ def run_benchmark(
     backend_str: str = "DSHOW",
     duration_sec: float = 0.0,
     headless: bool = False,
-    flip_h: bool = False,
+    flip_h: bool = True,
     flip_v: bool = False,
     profile_arg: Optional[str] = None,
     start_calibrating: bool = False,
@@ -661,8 +661,16 @@ def main() -> None:
     )
     parser.add_argument(
         "--flip-h",
+        dest="flip_h",
         action="store_true",
-        help="Horizontally flip / mirror video (corrects selfie camera flip)",
+        default=True,
+        help="Horizontally flip / mirror video (default: True, mirrored)",
+    )
+    parser.add_argument(
+        "--no-flip-h",
+        dest="flip_h",
+        action="store_false",
+        help="Disable horizontal flip / mirror video (use raw camera orientation)",
     )
     parser.add_argument(
         "--flip-v",

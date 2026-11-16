@@ -84,7 +84,7 @@ def create_camera(
             auto_reconnect=kwargs.get("auto_reconnect", True),
             reconnect_interval_sec=kwargs.get("reconnect_interval_sec", 2.0),
             buffer_size=kwargs.get("buffer_size", 1),
-            flip_horizontal=kwargs.get("flip_horizontal", False),
+            flip_horizontal=kwargs.get("flip_horizontal", True),
             flip_vertical=kwargs.get("flip_vertical", False),
         )
         return PhoneCamera(phone_config)
@@ -112,7 +112,7 @@ def create_camera(
         backend=backend_enum,
         buffer_size=kwargs.get("buffer_size", 1),
         auto_reconnect=kwargs.get("auto_reconnect", True),
-        flip_horizontal=kwargs.get("flip_horizontal", False),
+        flip_horizontal=kwargs.get("flip_horizontal", True),
         flip_vertical=kwargs.get("flip_vertical", False),
     )
     return OpenCVCamera(config)
