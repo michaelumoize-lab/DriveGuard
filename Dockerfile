@@ -47,7 +47,6 @@ COPY --from=builder /install /usr/local
 COPY backend/app ./backend/app
 COPY backend/weights ./backend/weights
 COPY backend/data ./backend/data
-COPY run.py .
 COPY requirements.txt .
 
 # Create non-root system user for security compliance

@@ -45,6 +45,7 @@ from backend.app.ai.pdbp_calibration import (
     GuidedCalibrationSession,
     ZoneBaseline,
 )
+from backend.app.ai.profile_adapter import dto_to_profile, profile_to_dto
 from backend.app.ai.risk_engine import (
     AlertState,
     PersonalisedAdaptiveRiskEngine,
@@ -329,50 +330,9 @@ class SessionAIEngine:
         )
 
     def export_profile_dto(self) -> DriverProfileDTO:
-        """Export the active driver profile as a validated Pydantic DTO."""
-        zone_dtos: Dict[str, ZoneBaselineDTO] = {}
-        for zk, zb in self.profile.zone_baselines.items():
-            zk_name = zk.value if isinstance(zk, PoseZone) else str(zk)
-            zone_dtos[zk_name] = ZoneBaselineDTO(
-                zone=zk_name,
-                ear_median=round(zb.ear_median, 4),
-                ear_mad_scaled=round(zb.ear_mad_scaled, 4),
-                dynamic_closure_threshold=round(zb.dynamic_closure_threshold, 4),
-                pitch_median_deg=round(zb.pitch_median_deg, 2),
-                yaw_median_deg=round(zb.yaw_median_deg, 2),
-                sample_count=zb.sample_count,
-                ear_left_median=round(zb.ear_left_median, 4) if zb.ear_left_median is not None else None,
-                ear_right_median=round(zb.ear_right_median, 4) if zb.ear_right_median is not None else None,
-                blendshape_open_median=round(zb.blendshape_open_median, 3) if zb.blendshape_open_median is not None else None,
-                confidence_median=round(zb.confidence_median, 3) if zb.confidence_median is not None else None,
-            )
-
-        cal_time = getattr(self.profile, "calibrated_at", None)
-        iso_time = cal_time.isoformat() if isinstance(cal_time, datetime) else datetime.now(timezone.utc).isoformat()
-
-        return DriverProfileDTO(
-            version=getattr(self.profile, "version", 1),
-            driver_id=self.profile.driver_id,
-            calibrated_at=iso_time,
-            is_calibrated=self.profile.calibration_mode != "UNCALIBRATED_DEFAULT",
-            calibration_mode=self.profile.calibration_mode,
-            zone_baselines=zone_dtos,
-            center_ear_median=round(self.profile.center_ear_median, 4),
-            blink_duration_median_ms=round(self.profile.blink_duration_median_ms, 1),
-            blink_duration_mad_ms=round(self.profile.blink_duration_mad_ms, 1),
-            blink_rcr_median=round(self.profile.blink_rcr_median, 3),
-            blink_rcr_mad=round(self.profile.blink_rcr_mad, 3),
-            blink_freq_median_per_min=round(getattr(self.profile, "blink_freq_median_per_min", 16.0), 1),
-            blink_freq_mad_per_min=round(getattr(self.profile, "blink_freq_mad_per_min", 4.5), 1),
-            baseline_perclos_pct=round(getattr(self.profile, "baseline_perclos_pct", 3.5), 2),
-            blink_amplitude_median=round(getattr(self.profile, "blink_amplitude_median", 0.14), 4),
-            temporal_blinks_sampled=int(getattr(self.profile, "temporal_blinks_sampled", 0)),
-            temporal_window_sec=round(getattr(self.profile, "temporal_window_sec", 120.0), 1),
-            sensitivity_level=getattr(self.profile, "sensitivity_level", "STANDARD") or "STANDARD",
-            neutral_pitch_deg=round(self.profile.neutral_pitch_deg, 2),
-            neutral_yaw_deg=round(self.profile.neutral_yaw_deg, 2),
-            calibration_reliability=round(self.profile.calibration_reliability, 3),
-        )
+        """Export the active driver profile as a validated Pydantic DTO (delegated to profile_adapter)."""
+        with self._process_lock:
+            return profile_to_dto(self.profile)
 
     def load_profile_dto(self, dto: DriverProfileDTO) -> None:
         """Load and activate a driver profile from a Pydantic DTO (synchronized under process lock)."""
@@ -380,51 +340,8 @@ class SessionAIEngine:
             self._load_profile_dto_locked(dto)
 
     def _load_profile_dto_locked(self, dto: DriverProfileDTO) -> None:
-        baselines: Dict[str, ZoneBaseline] = {}
-        for zk_str, zb_dto in dto.zone_baselines.items():
-            if zk_str.startswith("_"):
-                continue
-            baselines[zk_str] = ZoneBaseline(
-                zone=zk_str,
-                ear_median=zb_dto.ear_median,
-                ear_mad_scaled=zb_dto.ear_mad_scaled,
-                pitch_median_deg=zb_dto.pitch_median_deg,
-                yaw_median_deg=zb_dto.yaw_median_deg,
-                sample_count=zb_dto.sample_count,
-                ear_left_median=zb_dto.ear_left_median,
-                ear_right_median=zb_dto.ear_right_median,
-                blendshape_open_median=zb_dto.blendshape_open_median,
-                confidence_median=zb_dto.confidence_median,
-            )
-
-        center_mad = (
-            dto.zone_baselines["CENTER"].ear_mad_scaled
-            if "CENTER" in dto.zone_baselines
-            else 0.015
-        )
-
-        new_profile = DriverBehaviourProfile(
-            driver_id=dto.driver_id,
-            calibration_mode=dto.calibration_mode,
-            center_ear_median=dto.center_ear_median,
-            center_ear_mad_scaled=center_mad,
-            blink_duration_median_ms=dto.blink_duration_median_ms,
-            blink_duration_mad_ms=dto.blink_duration_mad_ms,
-            blink_rcr_median=dto.blink_rcr_median,
-            blink_rcr_mad=dto.blink_rcr_mad,
-            blink_freq_median_per_min=getattr(dto, "blink_freq_median_per_min", 16.0) or 16.0,
-            blink_freq_mad_per_min=getattr(dto, "blink_freq_mad_per_min", 4.5) or 4.5,
-            neutral_pitch_deg=dto.neutral_pitch_deg,
-            neutral_yaw_deg=dto.neutral_yaw_deg,
-            calibration_reliability=dto.calibration_reliability,
-            zone_baselines=baselines,
-            baseline_perclos_pct=getattr(dto, "baseline_perclos_pct", 3.5) or 3.5,
-            blink_amplitude_median=getattr(dto, "blink_amplitude_median", 0.14) or 0.14,
-            temporal_blinks_sampled=int(getattr(dto, "temporal_blinks_sampled", 0) or 0),
-            temporal_window_sec=float(getattr(dto, "temporal_window_sec", 120.0) or 120.0),
-            sensitivity_level=getattr(dto, "sensitivity_level", "STANDARD") or "STANDARD",
-            version=dto.version,
-        )
+        """Internal lock-held implementation of profile DTO loading."""
+        new_profile = dto_to_profile(dto)
         self._set_profile_locked(new_profile)
 
     def set_experiment_mode(self, mode: Union[ExperimentMode, str]) -> ExperimentMode:
@@ -1017,7 +934,7 @@ class SessionAIEngine:
             state=state,
             monitoring_status=monitoring_status,
             risk_score=risk_score,
-            pose_zone=PoseZoneEnum.OUT_OF_BOUNDS,
+            pose_zone=PoseZoneEnum.UNKNOWN,
             reason_codes=[reason],
             head_pose=HeadPoseDTO(pitch_deg=0.0, yaw_deg=0.0, roll_deg=0.0),
             eye_metrics=EyeMetricsDTO(
@@ -1060,7 +977,7 @@ class SessionAIEngine:
                 fixed_cutoff_ear=0.22,
                 fixed_alert_state="UNAVAILABLE",
                 fixed_false_alarm=False,
-                personalised_zone="OUT_OF_BOUNDS",
+                personalised_zone="UNKNOWN",
                 personalised_threshold=0.20,
                 is_mirror_check_suppressed=False,
             ),

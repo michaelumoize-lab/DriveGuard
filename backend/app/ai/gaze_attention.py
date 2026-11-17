@@ -162,9 +162,13 @@ class GazeAttentionTracker:
         else:
             step_dt = max(1.0, dt_ms)
 
-        # 1. Detect zone transitions
+        # 1. Detect zone transitions (exclude transitions where source or destination is UNKNOWN)
         if zone != self._current_zone:
-            if self._prev_ts_ms is not None:
+            if (
+                self._prev_ts_ms is not None
+                and self._current_zone != PoseZone.UNKNOWN
+                and zone != PoseZone.UNKNOWN
+            ):
                 self._transitions.append((timestamp_ms, self._current_zone, zone))
             self._current_zone = zone
             self._zone_enter_ts_ms = timestamp_ms
@@ -187,8 +191,8 @@ class GazeAttentionTracker:
         prcf_pct = (center_time_ms / total_time_ms * 100.0) if total_time_ms > 0 else 100.0
 
         # 4. Euro NCAP Off-Road Dwell Limit Check
-        # Non-center zones sustained beyond threshold constitute distraction
-        is_off_road = zone != PoseZone.CENTER
+        # Non-center zones sustained beyond threshold constitute distraction (UNKNOWN tracking loss is never off-road)
+        is_off_road = zone not in (PoseZone.CENTER, PoseZone.UNKNOWN)
         is_off_road_dwell_exceeded = is_off_road and (dwell_ms >= self.off_road_dwell_threshold_ms)
 
         # 5. Euro NCAP Blank Stare / Cognitive Tunneling Check
@@ -237,16 +241,23 @@ class GazeAttentionTracker:
         DG-07: Returns (None, "INSUFFICIENT_OBSERVATIONS") when fewer than 3 transitions have been observed.
         Returns (ht, "VALID") in [0.0, log2(N_zones)] when sufficient transitions exist.
         """
-        if len(self._transitions) < 3:
+        zone_indices = {z: i for i, z in enumerate(self.ZONES) if z != PoseZone.UNKNOWN}
+        valid_transitions = [
+            (ts, z_from, z_to)
+            for ts, z_from, z_to in self._transitions
+            if z_from != PoseZone.UNKNOWN
+            and z_to != PoseZone.UNKNOWN
+            and z_from in zone_indices
+            and z_to in zone_indices
+        ]
+        if len(valid_transitions) < 3:
             return None, "INSUFFICIENT_OBSERVATIONS"
 
-        zone_indices = {z: i for i, z in enumerate(self.ZONES)}
-        n_zones = len(self.ZONES)
+        n_zones = len(zone_indices)
         counts = np.zeros((n_zones, n_zones), dtype=np.float64)
 
-        for _, z_from, z_to in self._transitions:
-            if z_from in zone_indices and z_to in zone_indices:
-                counts[zone_indices[z_from], zone_indices[z_to]] += 1.0
+        for _, z_from, z_to in valid_transitions:
+            counts[zone_indices[z_from], zone_indices[z_to]] += 1.0
 
         # Row sums
         row_sums = counts.sum(axis=1, keepdims=True)

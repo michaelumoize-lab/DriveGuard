@@ -10,6 +10,7 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv*/
 venv/
 env/
 
@@ -54,4 +55,10 @@ Thumbs.db
 .idea/
 .agents/
 *.skills-lock.json
+
+# Diagnostic camera snapshots (Privacy by Default)
+snapshot_*.png
 skills-lock.json
+
+# Diagnostic camera snapshots (Privacy by Default)
+snapshot_*.png
