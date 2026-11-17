@@ -19,15 +19,7 @@ import cv2
 import numpy as np
 
 
-class PoseZone(str, Enum):
-    """Discrete driver gaze/head orientation zones for pose-conditioned calibration."""
-
-    CENTER = "CENTER"
-    LEFT_MIRROR = "LEFT_MIRROR"
-    RIGHT_MIRROR = "RIGHT_MIRROR"
-    DASHBOARD = "DASHBOARD"
-    OUT_OF_BOUNDS = "OUT_OF_BOUNDS"
-    UNKNOWN = "UNKNOWN"
+from backend.app.features.head_pose import PoseZone
 
 
 # MediaPipe Face Mesh 6-point eye contour indices: [p1(outer), p2(top1), p3(top2), p4(inner), p5(bot2), p6(bot1)]

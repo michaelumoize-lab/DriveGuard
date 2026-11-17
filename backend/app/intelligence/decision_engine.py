@@ -159,7 +159,13 @@ class DecisionEngine:
         is_prolonged_face_loss = is_face_lost and (metrics.face_lost_duration_ms >= self.face_loss_grace_ms)
 
         # Track sensor unreliability duration (optical / landmark degradation with face present)
-        if not is_face_lost and not confidence.is_reliable:
+        # Decoupled primary monitoring viability requires at least one primary channel (head pose or ocular)
+        is_primary_viable = (
+            confidence.head_pose_viable
+            or confidence.ocular_viable
+        )
+
+        if not is_face_lost and not is_primary_viable:
             if self._sensor_unreliable_start_ts_ms is None:
                 self._sensor_unreliable_start_ts_ms = ts_ms
             sensor_unreliable_duration_ms = ts_ms - self._sensor_unreliable_start_ts_ms
@@ -340,6 +346,22 @@ class DecisionEngine:
 
         # Tier 1: ATTENTION (Early Warning / Context)
         if candidate_state not in (DrowsinessState.CRITICAL_WARNING, DrowsinessState.DROWSINESS_WARNING):
+            # Rule: Suspected head slump during sustained downward posture when ocular monitoring is unobservable
+            if (
+                confidence.head_pose_viable
+                and not confidence.ocular_viable
+                and metrics.downward_dwell_ms > 2000.0
+            ):
+                candidate_state = DrowsinessState.ATTENTION
+                reasons.append(
+                    ExplainableReason(
+                        code=ReasonCode.SUSPECTED_HEAD_SLUMP,
+                        message=f"Sustained downward head slump ({metrics.downward_dwell_ms:.0f}ms) with eyes unobservable",
+                        metric_value=metrics.downward_dwell_ms,
+                        threshold=2000.0,
+                    )
+                )
+
             if metrics.active_closure_duration_ms >= self.extended_closure_threshold_ms:
                 candidate_state = DrowsinessState.ATTENTION
                 reasons.append(

@@ -14,7 +14,9 @@ from enum import Enum
 from typing import List, Optional
 
 from backend.app.camera.frame_quality import FrameQualityResult, QualityStatus
+from backend.app.features.blink_detector import BlinkState
 from backend.app.features.feature_extractor import DriverFeatures
+from backend.app.features.head_pose import PoseZone
 from backend.app.vision.face_landmarker import FaceLandmarkStatus
 
 
@@ -35,6 +37,30 @@ class ConfidenceAssessment:
     tier: ConfidenceTier
     is_reliable: bool
     reasons: List[str] = field(default_factory=list)
+    is_head_pose_available: Optional[bool] = None
+    is_ocular_available: Optional[bool] = None
+    is_yawn_available: Optional[bool] = None
+
+    @property
+    def head_pose_viable(self) -> bool:
+        """Explicit head-pose availability if evaluated; falls back to is_reliable for legacy mocks."""
+        if self.is_head_pose_available is not None:
+            return self.is_head_pose_available
+        return self.is_reliable
+
+    @property
+    def ocular_viable(self) -> bool:
+        """Explicit ocular availability if evaluated; falls back to is_reliable for legacy mocks."""
+        if self.is_ocular_available is not None:
+            return self.is_ocular_available
+        return self.is_reliable
+
+    @property
+    def yawn_viable(self) -> bool:
+        """Explicit yawn availability if evaluated; falls back to is_reliable for legacy mocks."""
+        if self.is_yawn_available is not None:
+            return self.is_yawn_available
+        return self.is_reliable
 
     @property
     def summary_text(self) -> str:
@@ -77,6 +103,9 @@ class SignalConfidenceEvaluator:
                 tier=ConfidenceTier.UNAVAILABLE,
                 is_reliable=False,
                 reasons=reasons,
+                is_head_pose_available=False,
+                is_ocular_available=False,
+                is_yawn_available=False,
             )
 
         if features.face_status == FaceLandmarkStatus.OCCLUDED_OR_MARGINAL:
@@ -90,6 +119,9 @@ class SignalConfidenceEvaluator:
                 tier=ConfidenceTier.UNAVAILABLE,
                 is_reliable=False,
                 reasons=reasons,
+                is_head_pose_available=False,
+                is_ocular_available=False,
+                is_yawn_available=False,
             )
 
         # 2. Geometric Validity Checks
@@ -127,11 +159,46 @@ class SignalConfidenceEvaluator:
 
         is_reliable = score >= self.min_reliable_confidence
 
+        # Channel availability evaluation (independent signal channels)
+        is_face_viable = (
+            features.has_face
+            and features.face_status in (
+                FaceLandmarkStatus.TRACKING,
+                FaceLandmarkStatus.OCCLUDED_OR_MARGINAL,
+            )
+        )
+        is_optical_viable = (
+            quality is None or quality.is_viable_for_inference
+        )
+        is_head_pose_available = (
+            is_face_viable
+            and is_optical_viable
+            and features.head_pose.is_valid
+            and features.head_pose.zone != PoseZone.UNKNOWN
+        )
+        blink_gap = getattr(features.blink, "sampling_gap_detected", False) or (
+            getattr(features.blink, "state", None) == BlinkState.UNCERTAIN_GAP
+        )
+        is_ocular_available = (
+            is_face_viable
+            and is_optical_viable
+            and features.ear.is_valid
+            and not blink_gap
+        )
+        is_yawn_available = (
+            is_face_viable
+            and is_optical_viable
+            and features.mar.is_valid
+        )
+
         return ConfidenceAssessment(
             overall_confidence=score,
             tier=tier,
             is_reliable=is_reliable,
             reasons=reasons,
+            is_head_pose_available=is_head_pose_available,
+            is_ocular_available=is_ocular_available,
+            is_yawn_available=is_yawn_available,
         )
 
     def reset(self) -> None:

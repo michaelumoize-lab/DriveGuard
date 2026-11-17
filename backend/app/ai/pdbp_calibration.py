@@ -15,15 +15,17 @@ Implements:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
 from backend.app.ai.blink_kinematics import BlinkEvent
 from backend.app.ai.geometry import PoseZone
+from backend.app.core.time_utils import validate_iso_timestamp
 
 
 def compute_median_and_scaled_mad(
@@ -105,32 +107,50 @@ class DriverBehaviourProfile:
     temporal_window_sec: float = 120.0
     sensitivity_level: str = "STANDARD"
     version: int = 1
+    calibrated_at: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.active_center_ear_median is None:
             self.active_center_ear_median = self.center_ear_median
 
-    def get_zone_baseline(self, zone: PoseZone) -> ZoneBaseline:
+    def get_zone_baseline(self, zone: Union[PoseZone, str]) -> ZoneBaseline:
         """
         Return the baseline for `zone`, falling back to a scaled CENTER baseline if not present.
+        Strictly validates that zone is either a canonical PoseZone enum member or a canonical
+        PoseZone string value.
         """
-        if zone.value in self.zone_baselines:
-            return self.zone_baselines[zone.value]
+        if isinstance(zone, PoseZone):
+            zone_enum = zone
+        elif isinstance(zone, str):
+            try:
+                zone_enum = PoseZone(zone)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid zone string: '{zone}'. Must be one of {[z.value for z in PoseZone]}."
+                )
+        else:
+            raise TypeError(
+                f"Zone must be a PoseZone enum or string, got {type(zone).__name__}: {zone!r}"
+            )
+
+        zone_key = zone_enum.value
+        if zone_key in self.zone_baselines:
+            return self.zone_baselines[zone_key]
 
         # Fallback scaling relative to primary CENTER baseline
         scale = 1.0
-        if zone in (PoseZone.LEFT_MIRROR, PoseZone.RIGHT_MIRROR):
+        if zone_enum in (PoseZone.LEFT_MIRROR, PoseZone.RIGHT_MIRROR):
             scale = 0.92
-        elif zone == PoseZone.DASHBOARD:
+        elif zone_enum == PoseZone.DASHBOARD:
             scale = 0.88
 
         return ZoneBaseline(
-            zone=zone.value,
+            zone=zone_key,
             ear_median=self.center_ear_median * scale,
             ear_mad_scaled=max(self.center_ear_mad_scaled, 0.015),
-            pitch_median_deg=self.neutral_pitch_deg + (-12.0 if zone == PoseZone.DASHBOARD else 0.0),
+            pitch_median_deg=self.neutral_pitch_deg + (-12.0 if zone_enum == PoseZone.DASHBOARD else 0.0),
             yaw_median_deg=self.neutral_yaw_deg
-            + (20.0 if zone == PoseZone.LEFT_MIRROR else (-20.0 if zone == PoseZone.RIGHT_MIRROR else 0.0)),
+            + (20.0 if zone_enum == PoseZone.LEFT_MIRROR else (-20.0 if zone_enum == PoseZone.RIGHT_MIRROR else 0.0)),
             sample_count=0,
         )
 
@@ -205,9 +225,11 @@ class DriverBehaviourProfile:
             "blink_amplitude_median",
             "temporal_blinks_sampled",
             "temporal_window_sec",
+            "sensitivity_level",
             "version",
         }
         clean_data = {k: v for k, v in data.items() if k in valid_profile_keys}
+        clean_data["calibrated_at"] = validate_iso_timestamp(data.get("calibrated_at"))
         return cls(**clean_data, zone_baselines=zones)
 
     @classmethod
@@ -1016,7 +1038,7 @@ class GuidedCalibrationSession:
                 ear_mad_scaled=max(center_zb.ear_mad_scaled, 0.015),
                 pitch_median_deg=center_zb.pitch_median_deg,
                 yaw_median_deg=center_zb.yaw_median_deg + 20.0,
-                sample_count=center_zb.sample_count,
+                sample_count=0,
                 ear_left_median=round(center_zb.ear_median * 0.95, 4),
                 ear_right_median=round(center_zb.ear_median * 0.89, 4),
                 blendshape_open_median=0.06,
@@ -1029,7 +1051,7 @@ class GuidedCalibrationSession:
                 ear_mad_scaled=max(center_zb.ear_mad_scaled, 0.015),
                 pitch_median_deg=center_zb.pitch_median_deg,
                 yaw_median_deg=center_zb.yaw_median_deg - 20.0,
-                sample_count=center_zb.sample_count,
+                sample_count=0,
                 ear_left_median=round(center_zb.ear_median * 0.89, 4),
                 ear_right_median=round(center_zb.ear_median * 0.95, 4),
                 blendshape_open_median=0.06,
@@ -1042,7 +1064,7 @@ class GuidedCalibrationSession:
                 ear_mad_scaled=max(center_zb.ear_mad_scaled, 0.015),
                 pitch_median_deg=center_zb.pitch_median_deg - 10.0,
                 yaw_median_deg=center_zb.yaw_median_deg,
-                sample_count=center_zb.sample_count,
+                sample_count=0,
                 ear_left_median=round(center_zb.ear_median * 0.88, 4),
                 ear_right_median=round(center_zb.ear_median * 0.88, 4),
                 blendshape_open_median=0.08,
@@ -1079,6 +1101,7 @@ class GuidedCalibrationSession:
                 1,
             ),
             version=1,
+            calibrated_at=datetime.now(timezone.utc).isoformat(),
         )
         self.is_completed = True
         return profile

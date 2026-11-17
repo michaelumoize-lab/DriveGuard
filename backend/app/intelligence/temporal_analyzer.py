@@ -52,6 +52,7 @@ class TemporalMetrics:
     face_lost_duration_ms: float
     is_eye_closed: Optional[bool] = None
     completed_blink: Optional[BlinkEvent] = None
+    downward_dwell_ms: float = 0.0
 
     @property
     def is_eye_verified_open(self) -> bool:
@@ -97,11 +98,13 @@ class TemporalAnalyzer:
         self._prev_ts_ms: Optional[float] = None
         self._closure_start_ts_ms: Optional[float] = None
         self._off_road_start_ts_ms: Optional[float] = None
+        self._downward_start_ts_ms: Optional[float] = None
         self._face_lost_start_ts_ms: Optional[float] = None
         self._last_processed_blink_end_ts: Optional[float] = None
         self._last_processed_yawn_end_ts: Optional[float] = None
         self._current_closure_duration_ms: float = 0.0
         self._current_off_road_duration_ms: float = 0.0
+        self._current_downward_dwell_ms: float = 0.0
         self._last_metrics: Optional[TemporalMetrics] = None
 
     @property
@@ -113,6 +116,16 @@ class TemporalAnalyzer:
     def current_off_road_duration_ms(self) -> float:
         """Active off-road gaze dwell in milliseconds."""
         return self._current_off_road_duration_ms
+
+    @property
+    def current_downward_dwell_ms(self) -> float:
+        """Active downward head posture dwell in milliseconds."""
+        return self._current_downward_dwell_ms
+
+    @property
+    def pitch_history(self) -> Tuple[Tuple[float, float], ...]:
+        """Snapshot of rolling pitch history tuples (ts_ms, rel_pitch_deg)."""
+        return tuple(self._pitch_history)
 
     def _make_default_metrics(self) -> TemporalMetrics:
         """Construct safe neutral metrics for uninitialized or invalid frame updates."""
@@ -137,6 +150,7 @@ class TemporalAnalyzer:
             perclos_is_reliable=False,
             has_face=False,
             face_lost_duration_ms=0.0,
+            downward_dwell_ms=0.0,
         )
 
     def update(self, features: DriverFeatures, is_reliable: bool = True) -> TemporalMetrics:
@@ -160,12 +174,12 @@ class TemporalAnalyzer:
         else:
             dt_ms = 0.0
 
-        # Detect sampling gap
-        is_sampling_gap = (self._prev_ts_ms is not None) and (dt_ms > self.max_sampling_gap_ms)
+        # Decouple actual camera sampling gap from ocular tracking gap
+        is_camera_sampling_gap = (self._prev_ts_ms is not None) and (dt_ms > self.max_sampling_gap_ms)
         blink_gap_signal = getattr(features.blink, "sampling_gap_detected", False) or (
             getattr(features.blink, "state", None) == BlinkState.UNCERTAIN_GAP
         )
-        gap_detected = is_sampling_gap or blink_gap_signal
+        is_ocular_gap = is_camera_sampling_gap or blink_gap_signal
 
         # ------------------------------------------------------------------
         # 1. Face Loss Tracking
@@ -212,10 +226,11 @@ class TemporalAnalyzer:
 
             is_currently_closed = is_eye_closed_val is True
 
-            if gap_detected:
-                # Sampling gap: unobserved camera time must never be counted as closure.
-                # If the driver is closed on the first post-gap observation, establish a new
-                # closure start at this frame without backdating or carrying previous duration.
+            if is_ocular_gap:
+                # Camera sampling gap or ocular tracking uncertainty: unobserved or unverified
+                # time must never be counted as closure. If the driver is closed on the first
+                # post-gap observation, establish a new closure start at this frame without
+                # backdating or carrying previous duration.
                 if is_currently_closed:
                     self._closure_start_ts_ms = ts_ms
                 else:
@@ -245,8 +260,9 @@ class TemporalAnalyzer:
             and zone not in (PoseZone.CENTER, PoseZone.UNKNOWN)
         )
 
-        if gap_detected:
-            # Sampling gap: unobserved camera time must never be counted as off-road gaze.
+        if is_camera_sampling_gap:
+            # Actual camera sampling gap: unobserved camera time must never be counted as off-road gaze.
+            # Ocular tracking gaps do NOT reset valid head-pose off-road dwell.
             if is_off_road:
                 self._off_road_start_ts_ms = ts_ms
             else:
@@ -272,13 +288,49 @@ class TemporalAnalyzer:
         )
 
         # ------------------------------------------------------------------
+        # 3b. Downward Head Posture Dwell Tracking
+        # ------------------------------------------------------------------
+        # Tracks continuous downward posture (DASHBOARD zone, rel_pitch <= -12°, |rel_yaw| < 14°).
+        # Camera sampling gaps reset/re-anchor downward dwell; ocular tracking gaps do NOT.
+        is_downward_posture = (
+            features.has_face
+            and features.head_pose.is_valid
+            and features.head_pose.zone == PoseZone.DASHBOARD
+            and features.head_pose.rel_pitch_deg <= -12.0
+            and abs(features.head_pose.rel_yaw_deg) < 14.0
+        )
+
+        if is_camera_sampling_gap:
+            # Actual camera sampling gap: unobserved camera time must never be credited.
+            # Ocular tracking gaps (e.g. UNCERTAIN_GAP) do NOT reset valid head-pose downward dwell.
+            if is_downward_posture:
+                self._downward_start_ts_ms = ts_ms
+            else:
+                self._downward_start_ts_ms = None
+            downward_dwell_ms = 0.0
+        else:
+            if is_downward_posture:
+                if self._downward_start_ts_ms is None:
+                    self._downward_start_ts_ms = ts_ms
+                downward_dwell_ms = ts_ms - self._downward_start_ts_ms
+            else:
+                self._downward_start_ts_ms = None
+                downward_dwell_ms = 0.0
+
+        self._current_downward_dwell_ms = downward_dwell_ms
+
+        # ------------------------------------------------------------------
         # 4. Nodding Microsleep Detection
         # ------------------------------------------------------------------
-        if gap_detected or not is_reliable:
+        # Pitch history is cleared on actual camera sampling gaps, face loss,
+        # or invalid/UNKNOWN head pose. Ocular tracking gaps (e.g. unmeasurable EAR)
+        # or overall confidence degradation do NOT clear valid head-pose pitch history.
+        is_pose_invalid = not features.has_face or not features.head_pose.is_valid or features.head_pose.zone == PoseZone.UNKNOWN
+        if is_camera_sampling_gap or is_pose_invalid:
             self._pitch_history.clear()
 
         is_nodding_microsleep = False
-        if is_reliable and features.has_face and features.head_pose.is_valid:
+        if features.has_face and features.head_pose.is_valid and features.head_pose.zone != PoseZone.UNKNOWN:
             rel_pitch = features.head_pose.rel_pitch_deg
             self._pitch_history.append((ts_ms, rel_pitch))
             # Expire pitch older than 2.5s
@@ -403,6 +455,7 @@ class TemporalAnalyzer:
             face_lost_duration_ms=face_lost_ms,
             is_eye_closed=is_eye_closed_val,
             completed_blink=new_completed_blink,
+            downward_dwell_ms=downward_dwell_ms,
         )
         self._last_metrics = metrics
         return metrics
@@ -415,9 +468,11 @@ class TemporalAnalyzer:
         self._prev_ts_ms = None
         self._closure_start_ts_ms = None
         self._off_road_start_ts_ms = None
+        self._downward_start_ts_ms = None
         self._face_lost_start_ts_ms = None
         self._last_processed_blink_end_ts = None
         self._last_processed_yawn_end_ts = None
         self._current_closure_duration_ms = 0.0
         self._current_off_road_duration_ms = 0.0
+        self._current_downward_dwell_ms = 0.0
         self._last_metrics = None

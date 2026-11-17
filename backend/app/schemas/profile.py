@@ -4,8 +4,10 @@ Pydantic Data Schemas for Driver Behaviour Profiles (PDBP).
 
 from __future__ import annotations
 
-from typing import Dict, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Any, Dict, Optional
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from backend.app.core.time_utils import validate_iso_timestamp
 
 
 class ZoneBaselineDTO(BaseModel):
@@ -16,7 +18,11 @@ class ZoneBaselineDTO(BaseModel):
     zone: str = Field(description="Spatial zone name (e.g. CENTER, LEFT_MIRROR, RIGHT_MIRROR, DASHBOARD)")
     ear_median: float = Field(description="Median open-eye EAR observed in this zone", ge=0.0, le=1.0)
     ear_mad_scaled: float = Field(description="Robust scaled Median Absolute Deviation of EAR", ge=0.0)
-    dynamic_closure_threshold: float = Field(description="Learned closure threshold (median - 2.5 * MAD)", ge=0.0, le=1.0)
+    dynamic_closure_threshold: float = Field(
+        description="Learned closure threshold (median - 2.3 * MAD, clipped to [0.12, 0.22])",
+        ge=0.0,
+        le=1.0,
+    )
     pitch_median_deg: float = Field(default=0.0, description="Median head pitch in degrees")
     yaw_median_deg: float = Field(default=0.0, description="Median head yaw in degrees")
     sample_count: int = Field(description="Number of valid calibration frames collected in this zone", ge=0)
@@ -33,14 +39,19 @@ class DriverProfileDTO(BaseModel):
 
     version: int = Field(default=1, description="Calibration format algorithm version")
     driver_id: str = Field(default="driver_default", description="Unique driver identifier")
-    calibrated_at: str = Field(description="ISO timestamp of calibration completion")
+    calibrated_at: Optional[str] = Field(
+        default=None, description="ISO timestamp of calibration completion"
+    )
     is_calibrated: bool = Field(default=False, description="Whether this profile contains learned driver baselines")
-    calibration_mode: str = Field(default="4ZONE", description="Calibration scope: 4ZONE, 1ZONE, or UNCALIBRATED_DEFAULT")
-    
+    calibration_mode: Optional[str] = Field(
+        default=None,
+        description="Calibration scope: 4ZONE, FOUR_ZONE, THREE_ZONE, CENTER_ONLY, or UNCALIBRATED_DEFAULT",
+    )
+
     # Zone Baselines
     zone_baselines: Dict[str, ZoneBaselineDTO] = Field(default_factory=dict, description="Baselines keyed by zone name")
     center_ear_median: float = Field(default=0.28, description="Center reference open EAR", ge=0.0, le=1.0)
-    
+
     # Temporal Kinematics Baselines
     blink_duration_median_ms: float = Field(default=235.0, description="Median alert blink duration in ms", ge=0.0)
     blink_duration_mad_ms: float = Field(default=40.0, description="Robust MAD of blink duration in ms", ge=0.0)
@@ -53,10 +64,59 @@ class DriverProfileDTO(BaseModel):
     temporal_blinks_sampled: int = Field(default=0, description="Number of natural blinks sampled during 2-min cadence stream", ge=0)
     temporal_window_sec: float = Field(default=120.0, description="Duration of temporal blink baseline window in seconds", ge=0.0)
     sensitivity_level: str = Field(default="STANDARD", description="Fatigue cascade sensitivity: STANDARD, HIGH, or RELAXED")
-    
+
     # Neutral Head Pose
     neutral_pitch_deg: float = Field(default=0.0, description="Learned neutral head pitch in degrees")
     neutral_yaw_deg: float = Field(default=0.0, description="Learned neutral head yaw in degrees")
-    
+
     # Quality & Reliability
     calibration_reliability: float = Field(default=1.0, description="Overall calibration quality reliability score in [0, 1]")
+
+    @field_validator("calibrated_at")
+    @classmethod
+    def validate_timestamp(cls, v: Any) -> Optional[str]:
+        return validate_iso_timestamp(v)
+
+    @model_validator(mode="after")
+    def resolve_calibration_mode(self) -> "DriverProfileDTO":
+        fields_set = self.model_fields_set
+        has_mode = "calibration_mode" in fields_set
+        has_cal = "is_calibrated" in fields_set
+
+        # 1. Reject explicit null
+        if has_mode and self.calibration_mode is None:
+            raise ValueError(
+                "calibration_mode cannot be null; must be omitted or a valid string mode"
+            )
+
+        # 2. Both fields omitted -> clean uncalibrated default
+        if not has_mode and not has_cal:
+            self.is_calibrated = False
+            self.calibration_mode = "UNCALIBRATED_DEFAULT"
+            return self
+
+        # 3. calibration_mode omitted from payload -> legacy migration
+        if not has_mode:
+            if self.is_calibrated:
+                # Preserves exact historical default "4ZONE"
+                self.calibration_mode = "4ZONE"
+            else:
+                self.calibration_mode = "UNCALIBRATED_DEFAULT"
+            return self
+
+        # 4. is_calibrated omitted from payload -> infer from explicit mode
+        if not has_cal:
+            self.is_calibrated = (self.calibration_mode != "UNCALIBRATED_DEFAULT")
+            return self
+
+        # 5. Both explicitly provided -> enforce strict consistency (no silent rewrites)
+        if self.is_calibrated and self.calibration_mode == "UNCALIBRATED_DEFAULT":
+            raise ValueError(
+                "Explicit contradiction in profile: is_calibrated=True cannot be paired with calibration_mode='UNCALIBRATED_DEFAULT'"
+            )
+        if not self.is_calibrated and self.calibration_mode != "UNCALIBRATED_DEFAULT":
+            raise ValueError(
+                f"Explicit contradiction in profile: is_calibrated=False cannot be paired with active calibration_mode='{self.calibration_mode}'"
+            )
+
+        return self

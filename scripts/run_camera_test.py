@@ -21,12 +21,13 @@ Controls:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 # Add project root to sys.path to allow running directly from anywhere
 project_root = Path(__file__).resolve().parent.parent
@@ -40,10 +41,12 @@ from backend.app.ai.blink_kinematics import (
     BlinkClassification as AIBlinkClassification,
     BlinkEvent as AIBlinkEvent,
 )
+from backend.app.ai.geometry import PoseZone
 from backend.app.ai.pdbp_calibration import (
     DriverBehaviourProfile,
     GuidedCalibrationSession,
 )
+from backend.app.ai.profile_adapter import dto_to_profile, profile_to_dto
 from backend.app.camera.camera_config import make_filename_safe, sanitize_source_identifier
 from backend.app.camera.camera_manager import create_camera, discover_local_devices
 from backend.app.camera.frame_quality import FrameQualityAnalyzer, FrameQualityResult, QualityStatus
@@ -53,6 +56,7 @@ from backend.app.intelligence import (
     DrowsinessEngine,
     DrowsinessState,
 )
+from backend.app.schemas.profile import DriverProfileDTO
 from backend.app.services.profile_store import profile_store
 from backend.app.vision.face_landmarker import (
     DriveGuardFaceLandmarker,
@@ -66,6 +70,95 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("driveguard.benchmark")
+
+
+def truncate_middle(text: str, max_chars: int = 32) -> str:
+    """Truncates text in the middle if it exceeds max_chars."""
+    if len(text) <= max_chars:
+        return text
+    half = max(1, (max_chars - 3) // 2)
+    return text[:half] + "..." + text[-half:]
+
+
+def put_fitted_text(
+    canvas: np.ndarray,
+    text: str,
+    x: int,
+    y: int,
+    font: int,
+    scale: float,
+    color: tuple,
+    max_w: int,
+    thickness: int = 1,
+) -> int:
+    """
+    Renders text guaranteed not to exceed max_w pixels.
+    If text exceeds max_w, dynamically truncates with ellipsis.
+    Returns rendered text width.
+    """
+    (tw, _), _ = cv2.getTextSize(text, font, scale, thickness)
+    if tw <= max_w:
+        cv2.putText(canvas, text, (x, y), font, scale, color, thickness, cv2.LINE_AA)
+        return tw
+
+    ellipsis_w, _ = cv2.getTextSize("...", font, scale, thickness)[0]
+    avail_w = max_w - ellipsis_w
+    if avail_w <= 10:
+        return 0
+
+    low, high = 1, len(text)
+    best_len = 1
+    while low <= high:
+        mid = (low + high) // 2
+        sub_w = cv2.getTextSize(text[:mid], font, scale, thickness)[0][0]
+        if sub_w <= avail_w:
+            best_len = mid
+            low = mid + 1
+        else:
+            high = mid - 1
+
+    truncated = text[:best_len] + "..."
+    cv2.putText(canvas, truncated, (x, y), font, scale, color, thickness, cv2.LINE_AA)
+    return cv2.getTextSize(truncated, font, scale, thickness)[0][0]
+
+
+def draw_pill(
+    canvas: np.ndarray,
+    text: str,
+    x: int,
+    y: int,
+    fg_color: tuple,
+    bg_color: tuple,
+    border_color: Optional[tuple] = None,
+    scale: float = 0.40,
+    thickness: int = 1,
+    pad_x: int = 7,
+    pad_y: int = 3,
+    align: str = "right",
+) -> Tuple[int, int, int, int]:
+    """
+    Renders a styled pill badge and returns its (x1, y1, x2, y2) bounds.
+    """
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    (tw, th), _ = cv2.getTextSize(text, font, scale, thickness)
+    pill_w = tw + pad_x * 2
+    pill_h = th + pad_y * 2
+
+    if align == "right":
+        x2 = x
+        x1 = x - pill_w
+    else:
+        x1 = x
+        x2 = x + pill_w
+
+    y1 = y - th - pad_y
+    y2 = y1 + pill_h
+
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), bg_color, -1)
+    if border_color is not None:
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), border_color, 1, cv2.LINE_AA)
+    cv2.putText(canvas, text, (x1 + pad_x, y), font, scale, fg_color, thickness, cv2.LINE_AA)
+    return x1, y1, x2, y2
 
 
 def draw_diagnostic_hud(
@@ -90,107 +183,145 @@ def draw_diagnostic_hud(
     Renders a semi-transparent diagnostic overlay with real-time performance indicators,
     optical quality metrics (Phase 3), facial landmark tracking (Phase 4),
     physiological feature extraction (Phase 5), and drowsiness intelligence state (Phase 6).
+    Guarantees responsive layout with zero text overlaps across all resolutions.
     """
     canvas = frame.copy()
     height, width = canvas.shape[:2]
-
-    # Create semi-transparent top banner (height 155 to accommodate Phase 6 intelligence)
-    banner_height = 155
-    overlay = canvas.copy()
-    cv2.rectangle(overlay, (0, 0), (width, banner_height), (15, 23, 42), -1)  # Slate-900
-    cv2.addWeighted(overlay, 0.75, canvas, 0.25, 0, canvas)
-
-    # Color indicator for FPS health
-    if ingestion_fps >= 25.0:
-        fps_color = (34, 197, 94)  # Emerald-500 (Green)
-        fps_text = "STABLE"
-    elif ingestion_fps >= 15.0:
-        fps_color = (234, 179, 8)  # Amber-500 (Yellow)
-        fps_text = "JITTER"
-    else:
-        fps_color = (239, 68, 68)  # Red-500 (Alert)
-        fps_text = "LOW FPS"
-
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    # Title
-    cv2.putText(
-        canvas,
-        "DriveGuard — Drowsiness Intelligence Engine (Phase 6)",
-        (16, 24),
-        font,
-        0.56,
-        (255, 255, 255),
-        2,
-        cv2.LINE_AA,
-    )
+    # 1. Top Panel (Banner Height 168px with Glassmorphic Slate-900 Overlay)
+    banner_height = 168
+    overlay = canvas.copy()
+    cv2.rectangle(overlay, (0, 0), (width, banner_height), (15, 23, 42), -1)  # Slate-900
+    cv2.addWeighted(overlay, 0.82, canvas, 0.18, 0, canvas)
+    # Bottom border line of top banner
+    cv2.line(canvas, (0, banner_height), (width, banner_height), (51, 65, 85), 1)
 
-    # Top-right status badges
-    fps_badge = f"[{fps_text} | {ingestion_fps:.1f} FPS]"
-    cv2.putText(canvas, fps_badge, (width - 230, 24), font, 0.50, fps_color, 2, cv2.LINE_AA)
+    # -------------------------------------------------------------
+    # ROW 1 (Y = 22): Title (Left) + System Status Badges (Right)
+    # -------------------------------------------------------------
+    y_row1 = 22
+    # Left: App Title & Subtitle
+    title_text = "DriveGuard AI" if width >= 700 else "DriveGuard"
+    (tw, th), _ = cv2.getTextSize(title_text, font, 0.54, 2)
+    cv2.putText(canvas, title_text, (16, y_row1), font, 0.54, (255, 255, 255), 2, cv2.LINE_AA)
 
-    # Optical Quality Badge
+    version_text = "Phase 7"
+    (vw, vh), _ = cv2.getTextSize(version_text, font, 0.38, 1)
+    vx = 16 + tw + 8
+    cv2.putText(canvas, version_text, (vx, y_row1), font, 0.38, (148, 163, 184), 1, cv2.LINE_AA)
+    title_reserved_x = vx + vw + 16
+
+    # Dynamic Right-to-Left Status Badges
+    cur_x = width - 16
+
+    # 1. FPS Badge
+    if ingestion_fps >= 25.0:
+        fps_color = (34, 197, 94)  # Emerald-500
+        fps_bg = (12, 35, 25)
+        fps_text = "[STABLE | " + f"{ingestion_fps:.1f} FPS]" if width >= 800 else f"[{ingestion_fps:.1f} FPS]"
+    elif ingestion_fps >= 15.0:
+        fps_color = (234, 179, 8)  # Amber-500
+        fps_bg = (35, 30, 12)
+        fps_text = "[JITTER | " + f"{ingestion_fps:.1f} FPS]" if width >= 800 else f"[{ingestion_fps:.1f} FPS]"
+    else:
+        fps_color = (239, 68, 68)  # Red-500
+        fps_bg = (40, 15, 15)
+        fps_text = "[LOW | " + f"{ingestion_fps:.1f} FPS]" if width >= 800 else f"[{ingestion_fps:.1f} FPS]"
+
+    bx1, _, _, _ = draw_pill(canvas, fps_text, cur_x, y_row1, fps_color, fps_bg, fps_color, 0.40, 1, 7, 3, "right")
+    cur_x = bx1 - 8
+
+    # 2. Optical Quality Badge
     if quality is not None:
         if quality.status == QualityStatus.EXCELLENT:
             qual_color = (34, 197, 94)
+            qual_bg = (12, 35, 25)
             qual_text = "[OPTICAL: OK]"
         elif quality.status in (QualityStatus.POOR_LIGHTING, QualityStatus.BLURRY):
             qual_color = (234, 179, 8)
+            qual_bg = (35, 30, 12)
             qual_text = f"[{quality.status.value}]"
         else:
             qual_color = (239, 68, 68)
+            qual_bg = (40, 15, 15)
             qual_text = "[DEGRADED]"
-        cv2.putText(canvas, qual_text, (width - 390, 24), font, 0.50, qual_color, 2, cv2.LINE_AA)
+        (qw, _), _ = cv2.getTextSize(qual_text, font, 0.40, 1)
+        if cur_x - (qw + 22) > title_reserved_x + 160:
+            bx1, _, _, _ = draw_pill(canvas, qual_text, cur_x, y_row1, qual_color, qual_bg, qual_color, 0.40, 1, 7, 3, "right")
+            cur_x = bx1 - 8
 
-    # Landmark Tracking Badge (Phase 4)
+    # 3. Landmark Tracking Badge (Phase 4)
     if landmark_result is not None:
         if landmark_result.status == FaceLandmarkStatus.TRACKING:
             lm_color = (34, 197, 94)
-            lm_text = f"[AI: TRACKING | {landmark_result.inference_latency_ms:.1f}ms]"
+            lm_bg = (12, 35, 25)
+            lm_text = f"[AI: TRACKING {landmark_result.inference_latency_ms:.0f}ms]" if width >= 720 else "[AI: OK]"
         elif landmark_result.status == FaceLandmarkStatus.FACE_LOST_GRACE:
             lm_color = (234, 179, 8)
-            lm_text = "[AI: FACE LOST (GRACE)]"
+            lm_bg = (35, 30, 12)
+            lm_text = "[AI: GRACE]"
         else:
             lm_color = (239, 68, 68)
+            lm_bg = (40, 15, 15)
             lm_text = f"[AI: {landmark_result.status.value}]"
-        cv2.putText(canvas, lm_text, (width - 660, 24), font, 0.50, lm_color, 2, cv2.LINE_AA)
+        (lw, _), _ = cv2.getTextSize(lm_text, font, 0.40, 1)
+        if cur_x - (lw + 22) > title_reserved_x + 90:
+            bx1, _, _, _ = draw_pill(canvas, lm_text, cur_x, y_row1, lm_color, lm_bg, lm_color, 0.40, 1, 7, 3, "right")
+            cur_x = bx1 - 8
 
-    # Drowsiness State Badge (Phase 6)
+    # 4. Drowsiness State Badge (Phase 6)
     if assessment is not None:
         state_color = assessment.status_color_bgr
         state_badge = f"[{assessment.state.value}]"
-        cv2.putText(canvas, state_badge, (width - 860, 24), font, 0.50, state_color, 2, cv2.LINE_AA)
-
-    # Profile Badge
-    if calibrated_profile_name:
-        prof_badge = f"[PROFILE: {calibrated_profile_name}]"
-        cv2.putText(canvas, prof_badge, (width - 1080, 24), font, 0.50, (56, 189, 248), 2, cv2.LINE_AA)
-    else:
-        cv2.putText(canvas, "[ADAPTIVE EAR]", (width - 1040, 24), font, 0.50, (148, 163, 184), 2, cv2.LINE_AA)
-
-    # Line 2: Telemetry Metrics
-    w, h = actual_res
-    telemetry_line_1 = (
-        f"Source: {source_id} | "
-        f"Resolution: {w}x{h} | "
-        f"Ingestion: {ingestion_fps:.1f} FPS | "
-        f"Display: {display_fps:.1f} FPS"
-    )
-    cv2.putText(canvas, telemetry_line_1, (16, 46), font, 0.42, (226, 232, 240), 1, cv2.LINE_AA)
-
-    # Line 3: Optical Quality & Landmark Latency
-    ai_info = f"AI Latency: {landmark_result.inference_latency_ms:.1f}ms" if landmark_result else "AI: N/A"
-    if quality is not None:
-        telemetry_line_2 = (
-            f"Luminance: {quality.mean_luminance:.1f} ({quality.lighting.value}) | "
-            f"Sharpness: {quality.blur_variance:.1f} ({quality.blur.value}) | "
-            f"Latency: {frame_age_ms:.1f}ms | {ai_info}"
+        state_bg = (
+            (6, 78, 59) if assessment.state == DrowsinessState.NORMAL
+            else ((15, 35, 55) if assessment.state == DrowsinessState.INSUFFICIENT_DATA
+            else (40, 15, 15))
         )
-    else:
-        telemetry_line_2 = f"Frame Latency: {frame_age_ms:.1f}ms | {ai_info}"
-    cv2.putText(canvas, telemetry_line_2, (16, 66), font, 0.42, (148, 163, 184), 1, cv2.LINE_AA)
+        (sw, _), _ = cv2.getTextSize(state_badge, font, 0.42, 1)
+        if cur_x - (sw + 22) >= title_reserved_x:
+            draw_pill(canvas, state_badge, cur_x, y_row1, state_color, state_bg, state_color, 0.42, 1, 8, 4, "right")
 
-    # Line 4: Physiological Features (Phase 5)
+    # -------------------------------------------------------------
+    # ROW 2 (Y = 47): Ocular Profile Status (Left) & Stream Info (Right)
+    # -------------------------------------------------------------
+    y_row2 = 47
+    if calibrated_profile_name:
+        prof_badge = f"[PROFILE: {calibrated_profile_name} — OCULAR ACTIVE]" if width >= 850 else f"[PROFILE: {calibrated_profile_name}]"
+        p_fg = (56, 189, 248)  # Sky-400
+        p_bg = (15, 35, 55)
+        p_border = (56, 189, 248)
+    else:
+        prof_badge = "[OCULAR MONITORING OFF — CALIBRATION REQUIRED (Press 'c')]" if width >= 800 else "[OCULAR OFF: CALIBRATE]"
+        p_fg = (234, 179, 8)  # Amber-500
+        p_bg = (35, 28, 10)
+        p_border = (234, 179, 8)
+
+    _, _, px2, _ = draw_pill(canvas, prof_badge, 16, y_row2, p_fg, p_bg, p_border, 0.40, 1, 7, 3, "left")
+    prof_end_x = px2 + 16
+
+    # Stream Telemetry on Right of Row 2
+    w_res, h_res = actual_res
+    avail_stream_w = width - 16 - prof_end_x
+    if avail_stream_w > 100:
+        clean_src = truncate_middle(str(source_id), 18 if width < 1000 else 28)
+        stream_str = f"Source: {clean_src} | {w_res}x{h_res} | Ingestion: {ingestion_fps:.1f}fps | Display: {display_fps:.1f}fps"
+        (stw, sth), _ = cv2.getTextSize(stream_str, font, 0.39, 1)
+        if stw > avail_stream_w:
+            stream_str = f"{w_res}x{h_res} | {ingestion_fps:.1f}fps | Latency: {frame_age_ms:.0f}ms"
+            (stw, sth), _ = cv2.getTextSize(stream_str, font, 0.39, 1)
+        if stw <= avail_stream_w:
+            sx = width - 16 - stw
+            cv2.putText(canvas, stream_str, (sx, y_row2), font, 0.39, (148, 163, 184), 1, cv2.LINE_AA)
+
+    # Subtle horizontal divider line
+    cv2.line(canvas, (16, 57), (width - 16, 57), (30, 41, 59), 1)
+
+    # -------------------------------------------------------------
+    # ROW 3 (Y = 76): Physiological Features (Phase 5)
+    # -------------------------------------------------------------
+    y_row3 = 76
     if driver_features is not None and driver_features.has_face:
         ear = driver_features.ear
         pose = driver_features.head_pose
@@ -201,81 +332,159 @@ def draw_diagnostic_hud(
         telemetry_line_3 = (
             f"EAR: {ear.compensated_ear:.2f} (thr:{ear.closure_threshold:.2f} L:{ear.left_ear:.2f} R:{ear.right_ear:.2f}) | "
             f"PERCLOS: {perclos.perclos_pct:.1f}% | "
+            f"Blinks: {blink.total_blink_count} | "
             f"MAR: {mar.mar:.2f} (Yawns: {mar.total_yawn_count}) | "
-            f"Pose: {pose.zone.value} (P:{pose.pitch_deg:+.0f}\xb0 Y:{pose.yaw_deg:+.0f}\xb0) | "
-            f"Blinks: {blink.total_blink_count}"
+            f"Pose: {pose.zone.value} (P:{pose.pitch_deg:+.0f}\xb0 Y:{pose.yaw_deg:+.0f}\xb0)"
         )
         features_color = (56, 189, 248)  # Sky-400
     elif driver_features is not None:
         telemetry_line_3 = f"Physiological Features: [NO FACE DETECTED — {driver_features.face_status.value}]"
-        features_color = (148, 163, 184)  # Slate-400
+        features_color = (148, 163, 184)
     else:
         telemetry_line_3 = "Physiological Features: N/A"
         features_color = (148, 163, 184)
-    cv2.putText(canvas, telemetry_line_3, (16, 88), font, 0.42, features_color, 1, cv2.LINE_AA)
 
-    # Line 5: Drowsiness Intelligence (Phase 6)
+    put_fitted_text(canvas, telemetry_line_3, 16, y_row3, font, 0.41, features_color, width - 32, 1)
+
+    # -------------------------------------------------------------
+    # ROW 4 (Y = 98): Drowsiness Intelligence (Phase 6)
+    # -------------------------------------------------------------
+    y_row4 = 98
     if assessment is not None:
         state_color = assessment.status_color_bgr
         reason_text = assessment.primary_reason_text
         intel_line = (
             f"Drowsiness: {assessment.state.value} (Sev {assessment.severity}) | "
-            f"Confidence: {assessment.confidence.overall_confidence:.2f} ({assessment.confidence.tier.value}) | "
+            f"Confidence: {assessment.confidence.overall_confidence:.2f} [{assessment.confidence.tier.value}] | "
             f"Reason: {reason_text}"
         )
-        cv2.putText(canvas, intel_line, (16, 110), font, 0.42, state_color, 1, cv2.LINE_AA)
+        put_fitted_text(canvas, intel_line, 16, y_row4, font, 0.41, state_color, width - 32, 1)
     else:
         intel_line = "Drowsiness Intelligence: N/A"
-        cv2.putText(canvas, intel_line, (16, 110), font, 0.42, (148, 163, 184), 1, cv2.LINE_AA)
+        put_fitted_text(canvas, intel_line, 16, y_row4, font, 0.41, (148, 163, 184), width - 32, 1)
 
-    # Line 6: Controls
+    # -------------------------------------------------------------
+    # ROW 5 (Y = 120): Optical Quality & Diagnostics
+    # -------------------------------------------------------------
+    y_row5 = 120
+    ai_info = f"AI Latency: {landmark_result.inference_latency_ms:.1f}ms" if landmark_result else "AI: N/A"
     dropped = buffer_stats.get("total_dropped", 0)
+    if quality is not None:
+        telemetry_line_2 = (
+            f"Luminance: {quality.mean_luminance:.1f} ({quality.lighting.value}) | "
+            f"Sharpness: {quality.blur_variance:.1f} ({quality.blur.value}) | "
+            f"Frame Latency: {frame_age_ms:.1f}ms | {ai_info} | Dropped: {dropped}"
+        )
+    else:
+        telemetry_line_2 = f"Frame Latency: {frame_age_ms:.1f}ms | {ai_info} | Dropped: {dropped}"
+
+    put_fitted_text(canvas, telemetry_line_2, 16, y_row5, font, 0.40, (148, 163, 184), width - 32, 1)
+
+    # -------------------------------------------------------------
+    # ROW 6 (Y = 144): Controls Guide
+    # -------------------------------------------------------------
+    y_row6 = 144
     mesh_str = "ON" if draw_mesh else "OFF"
     eyes_str = "ON" if draw_eyes else "OFF"
     controls_line = (
-        f"Dropped: {dropped} | "
-        f"'q'/ESC: exit | 'c': 4-zone calib | 'm': mirror | 'w': wireframe ({mesh_str}) | 'e': eyes ({eyes_str}) | 's': snapshot"
+        f"Controls: [q] Exit  [c] 4-Zone Calibrate  [m] Mirror  [w] Wireframe:{mesh_str}  [e] Eyes:{eyes_str}  [s] Snapshot"
     )
-    cv2.putText(canvas, controls_line, (16, 132), font, 0.40, (100, 116, 139), 1, cv2.LINE_AA)
+    put_fitted_text(canvas, controls_line, 16, y_row6, font, 0.39, (100, 116, 139), width - 32, 1)
 
-    # Active Calibration Banner (Phase 7 Guided Calibration)
+    # -------------------------------------------------------------
+    # BOTTOM CALIBRATION BOX (Phase 7 Guided Calibration)
+    # -------------------------------------------------------------
     if calibration_info is not None:
         step_num, total_steps, progress_ratio, instruction, is_aligned, feedback = calibration_info
-        box_y = height - 110
-        box_h = 95
-        sub = canvas.copy()
-        cv2.rectangle(sub, (20, box_y), (width - 20, box_y + box_h), (15, 23, 42), -1)
-        cv2.addWeighted(sub, 0.85, canvas, 0.15, 0, canvas)
+        if step_num == 1:
+            instruction = (
+                "Sit naturally, look straight ahead. Keep eyes fully open (do not squint or droop). Blink normally."
+            )
 
+        box_h = 104
+        box_y = height - 118
         b_color = (34, 197, 94) if is_aligned else (234, 179, 8)
-        cv2.rectangle(canvas, (20, box_y), (width - 20, box_y + box_h), b_color, 2)
 
-        cv2.putText(canvas, instruction, (36, box_y + 26), font, 0.52, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(canvas, feedback, (36, box_y + 58), font, 0.48, b_color, 2, cv2.LINE_AA)
+        # Background overlay
+        sub = canvas.copy()
+        cv2.rectangle(sub, (16, box_y), (width - 16, box_y + box_h), (15, 23, 42), -1)
+        cv2.addWeighted(sub, 0.90, canvas, 0.10, 0, canvas)
+        cv2.rectangle(canvas, (16, box_y), (width - 16, box_y + box_h), b_color, 2)
 
-        bar_x = width - 360
-        bar_y = box_y + 42
-        bar_w = 300
-        bar_h = 18
+        # Line 1: Step Pill + Target Zone (Left) & Dedicated Progress Bar (Right)
+        step_y = box_y + 24
+        step_pill_text = f"STEP {step_num}/{total_steps}"
+        step_bg = (6, 78, 59) if is_aligned else (35, 28, 10)
+        _, _, bx2, _ = draw_pill(canvas, step_pill_text, 28, step_y, (255, 255, 255), step_bg, b_color, 0.42, 1, 8, 3, "left")
+
+        # Determine target zone title
+        zone_titles = {
+            1: "CENTER ZONE POSTURE",
+            2: "LEFT MIRROR GLANCE (~20 deg)",
+            3: "RIGHT MIRROR GLANCE (~20 deg)",
+            4: "DASHBOARD / INSTRUMENT CLUSTER (~10 deg)",
+        }
+        zone_title = zone_titles.get(step_num, "CALIBRATION ZONE")
+        cv2.putText(canvas, zone_title, (bx2 + 10, step_y), font, 0.48, (255, 255, 255), 2, cv2.LINE_AA)
+
+        # Progress Bar & Percentage on the right
+        bar_w = min(220, max(100, int(width * 0.22)))
+        bar_x = (width - 28) - bar_w - 55
+        bar_y = box_y + 11
+        bar_h = 16
         cv2.rectangle(canvas, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (51, 65, 85), -1)
         fill_w = int(bar_w * max(0.0, min(1.0, progress_ratio)))
         if fill_w > 0:
-            cv2.rectangle(canvas, (bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h), (34, 197, 94), -1)
+            cv2.rectangle(canvas, (bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h), b_color, -1)
         cv2.rectangle(canvas, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (148, 163, 184), 1)
-        cv2.putText(canvas, f"{int(progress_ratio * 100)}%", (bar_x + bar_w + 10, bar_y + 14), font, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+
+        pct_x = bar_x + bar_w + 8
+        pct_y = bar_y + 13
+        cv2.putText(canvas, f"{int(progress_ratio * 100)}%", (pct_x, pct_y), font, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+
+        # Line 2: Full-Width Instruction Text
+        inst_y = box_y + 54
+        put_fitted_text(canvas, instruction, 28, inst_y, font, 0.46, (255, 255, 255), width - 56, 1)
+
+        # Line 3: Live Feedback Status (Left) & Cancel Hint (Right)
+        feed_y = box_y + 84
+        feed_prefix = "[ALIGNED] " if is_aligned else "[ALIGNING] "
+        feed_str = f"{feed_prefix}{feedback}"
+        cancel_hint = "Press 'c' or ESC to cancel"
+        (cw, ch), _ = cv2.getTextSize(cancel_hint, font, 0.38, 1)
+        avail_feed_w = (width - 28 - cw - 16) - 28
+        put_fitted_text(canvas, feed_str, 28, feed_y, font, 0.44, b_color, avail_feed_w, 1)
+
+        cx = width - 28 - cw
+        cv2.putText(canvas, cancel_hint, (cx, feed_y), font, 0.38, (148, 163, 184), 1, cv2.LINE_AA)
 
     elif calibration_banner:
-        box_y = height - 75
-        box_h = 55
+        box_y = height - 76
+        box_h = 56
         sub = canvas.copy()
-        cv2.rectangle(sub, (20, box_y), (width - 20, box_y + box_h), (6, 78, 59), -1)
+        is_failure = "FAILED" in calibration_banner
+        bg_color = (30, 27, 75) if is_failure else (6, 78, 59)
+        border_color = (239, 68, 68) if is_failure else (34, 197, 94)
+        cv2.rectangle(sub, (16, box_y), (width - 16, box_y + box_h), bg_color, -1)
         cv2.addWeighted(sub, 0.85, canvas, 0.15, 0, canvas)
-        cv2.rectangle(canvas, (20, box_y), (width - 20, box_y + box_h), (34, 197, 94), 2)
-        cv2.putText(canvas, calibration_banner, (36, box_y + 35), font, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.rectangle(canvas, (16, box_y), (width - 16, box_y + box_h), border_color, 2)
+
+        # Auto-scale font if message is long
+        (tw, th), _ = cv2.getTextSize(calibration_banner, font, 0.52, 2)
+        b_scale = 0.52
+        b_thick = 2
+        if tw > width - 64:
+            b_scale = max(0.35, 0.52 * ((width - 64) / max(1, tw)))
+            b_thick = 2 if b_scale > 0.45 else 1
+            (tw, th), _ = cv2.getTextSize(calibration_banner, font, b_scale, b_thick)
+
+        bx = max(24, (width - tw) // 2)
+        by = box_y + (box_h + th) // 2
+        cv2.putText(canvas, calibration_banner, (bx, by), font, b_scale, (255, 255, 255), b_thick, cv2.LINE_AA)
 
     # Subtle status border around the full viewport
     border_color = assessment.status_color_bgr if assessment else (34, 197, 94)
-    cv2.rectangle(canvas, (0, 0), (width - 1, height - 1), border_color, 4)
+    cv2.rectangle(canvas, (0, 0), (width - 1, height - 1), border_color, 3)
 
     return canvas
 
@@ -326,14 +535,20 @@ def run_benchmark(
             h = actual_res[1] if actual_res[1] > 0 else target_height
             cv2.resizeWindow(window_name, w, h)
 
-        # Profile loading & FeatureExtractor initialization
+        # Profile loading & FeatureExtractor initialization (Phase 7 Task 2)
         profile_loaded: Optional[DriverBehaviourProfile] = None
         calibrated_label: Optional[str] = None
         if profile_arg:
             p_path = Path(profile_arg)
             if p_path.is_file():
                 try:
-                    profile_loaded = DriverBehaviourProfile.load_json(p_path)
+                    with open(p_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict) and "schema_version" in data and "zone_baselines" in data:
+                        dto = DriverProfileDTO.from_dict(data)
+                        profile_loaded = dto_to_profile(dto)
+                    else:
+                        profile_loaded = DriverBehaviourProfile.load_json(p_path)
                     calibrated_label = profile_loaded.driver_id
                     logger.info("Loaded driver profile from file: %s (driver_id: %s)", p_path, calibrated_label)
                 except Exception as e:
@@ -341,35 +556,33 @@ def run_benchmark(
             if profile_loaded is None:
                 profile_dto = profile_store.get_profile(profile_arg)
                 if profile_dto is not None:
-                    calibrated_label = profile_dto.driver_id
-                    profile_loaded = DriverBehaviourProfile(
-                        driver_id=profile_dto.driver_id,
-                        calibration_mode=profile_dto.calibration_mode,
-                        center_ear_median=profile_dto.center_ear_median,
-                        center_ear_mad_scaled=profile_dto.zone_baselines.get("CENTER", {}).ear_mad_scaled if "CENTER" in profile_dto.zone_baselines else 0.015,
-                        blink_duration_median_ms=profile_dto.blink_duration_median_ms,
-                        blink_duration_mad_ms=profile_dto.blink_duration_mad_ms,
-                        blink_rcr_median=profile_dto.blink_rcr_median,
-                        blink_rcr_mad=profile_dto.blink_rcr_mad,
-                        blink_freq_median_per_min=profile_dto.blink_freq_median_per_min,
-                        blink_freq_mad_per_min=profile_dto.blink_freq_mad_per_min,
-                        neutral_pitch_deg=profile_dto.neutral_pitch_deg,
-                        neutral_yaw_deg=profile_dto.neutral_yaw_deg,
-                        calibration_reliability=0.90,
-                    )
-                    logger.info("Loaded driver profile '%s' from profile store.", profile_arg)
+                    try:
+                        profile_loaded = dto_to_profile(profile_dto)
+                        calibrated_label = profile_dto.driver_id
+                        logger.info("Loaded driver profile '%s' from profile store via adapter.", profile_arg)
+                    except Exception as e:
+                        logger.warning("Failed to convert profile DTO '%s': %s", profile_arg, e)
+
+        # Initialize feature extractor with profile (evaluates mathematical feasibility)
+        feature_extractor = DriverFeatureExtractor(profile=profile_loaded)
+        if profile_loaded is not None:
+            if not feature_extractor.is_profile_feasible:
+                logger.warning(
+                    "Loaded profile '%s' is mathematically infeasible. Ocular classification remains disabled.",
+                    calibrated_label,
+                )
+                calibrated_label = None
+            else:
+                logger.info(
+                    "Profile '%s' active: Center c=%.3f, r=%.3f (span=%.3f)",
+                    calibrated_label,
+                    feature_extractor.active_closure_threshold,
+                    feature_extractor.active_reopening_threshold,
+                    feature_extractor.active_reopening_threshold - feature_extractor.active_closure_threshold,
+                )
 
         quality_analyzer = FrameQualityAnalyzer()
         landmarker = DriveGuardFaceLandmarker()
-
-        if profile_loaded is not None:
-            feature_extractor = DriverFeatureExtractor(
-                open_ear_baseline=profile_loaded.center_ear_median,
-                neutral_pitch_deg=profile_loaded.neutral_pitch_deg,
-                neutral_yaw_deg=profile_loaded.neutral_yaw_deg,
-            )
-        else:
-            feature_extractor = DriverFeatureExtractor()
 
         drowsiness_engine = DrowsinessEngine()
 
@@ -479,6 +692,12 @@ def run_benchmark(
                             classification=ai_cls,
                             is_binocular=fb.is_binocular,
                         )
+                    # Decouple calibration data collection from ocular classification
+                    is_closed_for_calib = (
+                        latest_features.ear.is_closed
+                        if feature_extractor.is_profile_feasible
+                        else False
+                    )
                     completed_profile = calibration_session.ingest_frame(
                         timestamp_ms=packet.timestamp_ms,
                         face_detected=latest_landmark.has_face,
@@ -486,28 +705,53 @@ def run_benchmark(
                         ear_value=latest_features.ear.compensated_ear,
                         pitch_deg=latest_features.head_pose.pitch_deg,
                         yaw_deg=latest_features.head_pose.yaw_deg,
-                        is_eye_currently_closed=latest_features.ear.is_closed,
+                        is_eye_currently_closed=is_closed_for_calib,
                         completed_blink=adapted_blink,
                         left_ear=latest_features.ear.left_ear,
                         right_ear=latest_features.ear.right_ear,
                         landmark_confidence=latest_landmark.presence_confidence,
                     )
                     if completed_profile is not None:
-                        out_dir = Path("backend/data/profiles")
-                        out_dir.mkdir(parents=True, exist_ok=True)
-                        saved_path = out_dir / f"{completed_profile.driver_id}_profile.json"
-                        completed_profile.save_json(saved_path)
-                        logger.info("Calibration complete! Saved profile to %s", saved_path)
-
-                        feature_extractor.set_calibrated_baseline(completed_profile.center_ear_median)
-                        feature_extractor.neutral_pitch_deg = completed_profile.neutral_pitch_deg
-                        feature_extractor.neutral_yaw_deg = completed_profile.neutral_yaw_deg
-                        calibrated_label = completed_profile.driver_id
-                        calibration_banner_text = (
-                            f"CALIBRATION COMPLETE: '{completed_profile.driver_id}' saved! "
-                            f"EAR base: {completed_profile.center_ear_median:.3f}"
-                        )
-                        calibration_banner_until = loop_now + 4.0
+                        # Validate mathematical feasibility via feature_extractor._evaluate_profile_feasibility
+                        is_feasible = feature_extractor._evaluate_profile_feasibility(completed_profile)
+                        if not is_feasible:
+                            logger.warning(
+                                "Completed calibration profile for '%s' is mathematically infeasible. Calibration rejected.",
+                                completed_profile.driver_id,
+                            )
+                            calibration_banner_text = (
+                                f"CALIBRATION FAILED: Infeasible EAR baseline ({completed_profile.center_ear_median:.3f})"
+                            )
+                            calibration_banner_until = loop_now + 5.0
+                        else:
+                            # Convert to DTO, persist atomically via profile_store, and hot-reload pipeline
+                            try:
+                                dto = profile_to_dto(completed_profile)
+                                profile_store.save_profile(dto)
+                                feature_extractor.set_profile(completed_profile)
+                                calibrated_label = completed_profile.driver_id
+                                c_ctr = feature_extractor.active_closure_threshold
+                                r_ctr = feature_extractor.active_reopening_threshold
+                                calibration_banner_text = (
+                                    f"CALIBRATION COMPLETE: '{completed_profile.driver_id}' active! "
+                                    f"Thresholds: Center c={c_ctr:.3f}/r={r_ctr:.3f}"
+                                )
+                                calibration_banner_until = loop_now + 5.0
+                                logger.info(
+                                    "Calibration successfully completed, persisted, and hot-reloaded for driver '%s'.",
+                                    completed_profile.driver_id,
+                                )
+                            except Exception as save_err:
+                                logger.error("Failed to persist calibrated profile: %s", save_err)
+                                calibration_banner_text = f"CALIBRATION FAILED: Persistence error ({save_err})"
+                                calibration_banner_until = loop_now + 5.0
+                        calibration_session = None
+                    elif not calibration_session.is_running:
+                        # Session ended without a completed profile (rejected or timed out)
+                        reason = getattr(calibration_session, "rejection_reason", "Session terminated")
+                        logger.warning("Calibration ended without completed profile: %s", reason)
+                        calibration_banner_text = f"CALIBRATION FAILED: {reason}"
+                        calibration_banner_until = loop_now + 5.0
                         calibration_session = None
 
             # Evaluate Drowsiness Intelligence Engine (Phase 6)
@@ -528,8 +772,17 @@ def run_benchmark(
                 calibration_banner_text = None
 
             if not headless:
-                hud_frame = draw_diagnostic_hud(
+                # 1. Render facial landmarks directly onto raw video frame
+                rendered_frame = landmarker.draw_landmarks(
                     frame=packet.frame,
+                    result=latest_landmark,
+                    draw_mesh=draw_mesh,
+                    draw_eyes=draw_eyes,
+                    draw_irises=True,
+                )
+                # 2. Render diagnostic HUD cleanly on top of landmarks with zero overlap
+                hud_frame = draw_diagnostic_hud(
+                    frame=rendered_frame,
                     source_id=packet.source_id,
                     actual_res=camera.get_actual_resolution(),
                     ingestion_fps=camera.get_actual_fps(),
@@ -545,13 +798,6 @@ def run_benchmark(
                     calibration_info=calib_info,
                     calibration_banner=calibration_banner_text,
                     calibrated_profile_name=calibrated_label,
-                )
-                hud_frame = landmarker.draw_landmarks(
-                    frame=hud_frame,
-                    result=latest_landmark,
-                    draw_mesh=draw_mesh,
-                    draw_eyes=draw_eyes,
-                    draw_irises=True,
                 )
                 cv2.imshow(window_name, hud_frame)
 
@@ -570,6 +816,8 @@ def run_benchmark(
                         logger.info("Started interactive 4-zone guided calibration for driver '%s'.", driver_id)
                     else:
                         calibration_session = None
+                        calibration_banner_text = "CALIBRATION FAILED: Cancelled by user"
+                        calibration_banner_until = loop_now + 5.0
                         logger.info("Cancelled ongoing calibration.")
                 elif key in (ord("m"), ord("M")):
                     if hasattr(camera, "toggle_flip_horizontal"):
