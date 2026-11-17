@@ -106,6 +106,14 @@ class BlinkKinematicsDetector:
     Stateful detector tracking eyelid kinetics with sub-frame crossing interpolation.
     """
 
+    # Single-frame upward EAR jitter tolerance inside CLOSING before treating upward
+    # movement as a genuine stall/rebound.
+    CLOSING_NOISE_TOLERANCE: float = 0.002
+
+    # Minimum elapsed time (ms) without downward EAR progress in CLOSING before a
+    # plateau is treated as stalled.
+    CLOSING_STALL_MS: float = 50.0
+
     def __init__(
         self,
         closure_threshold: float = 0.205,
@@ -155,10 +163,15 @@ class BlinkKinematicsDetector:
 
         # Active in-flight blink tracking
         self._blink_start_ts: Optional[float] = None
+        self._closing_entry_ts: Optional[float] = None
         self._closure_start_ts: Optional[float] = None
+        self._closing_onset_ear: float = 1.0
+        self._closing_min_ear: float = 1.0
+        self._closing_last_progress_ts: Optional[float] = None
         self._min_ear: float = 1.0
         self._min_ear_ts: Optional[float] = None
         self._open_ear_before: float = 0.30
+        self._last_open_ear: Optional[float] = None
         self._was_left_closed: bool = False
         self._was_right_closed: bool = False
         self._is_left_censored: bool = False
@@ -175,6 +188,42 @@ class BlinkKinematicsDetector:
         """
         self.closure_threshold = float(closure_threshold)
         self.reopen_threshold = float(reopen_threshold)
+        if self._last_open_ear is not None and self._last_open_ear < self.reopen_threshold:
+            self._last_open_ear = None
+        if self._state == BlinkState.CLOSING and self._prev_ear is not None and self._prev_ear >= self.reopen_threshold:
+            self._state = BlinkState.OPEN
+            self._blink_start_ts = None
+            self._closing_entry_ts = None
+            self._closure_start_ts = None
+            self._closing_onset_ear = 1.0
+            self._closing_min_ear = 1.0
+            self._closing_last_progress_ts = None
+
+    def _is_hover_before_fast_step(
+        self,
+        t_curr: float,
+        ear_curr: float,
+    ) -> bool:
+        """
+        Determine whether movement in CLOSING prior to self._prev_ts was slow
+        preliminary micro-drift followed by a distinctly faster downward step on
+        [self._prev_ts, t_curr].
+        """
+        if self._blink_start_ts is None or self._prev_ts is None or self._prev_ear is None:
+            return False
+        pre_dt_ms = self._prev_ts - self._blink_start_ts
+        step_dt_ms = t_curr - self._prev_ts
+        if pre_dt_ms < 60.0 or step_dt_ms <= 1e-6:
+            return False
+        pre_drop = max(0.0, self._closing_onset_ear - self._prev_ear)
+        step_drop = max(0.0, self._prev_ear - ear_curr)
+        v_pre_per_s = (pre_drop / pre_dt_ms) * 1000.0
+        v_step_per_s = (step_drop / step_dt_ms) * 1000.0
+        if v_step_per_s > 6.0 * v_pre_per_s:
+            return True
+        if v_pre_per_s < 0.15 and v_step_per_s > 2.5 * v_pre_per_s:
+            return True
+        return False
 
     def _interpolate_crossing(
         self,
@@ -292,6 +341,8 @@ class BlinkKinematicsDetector:
                 self._handle_sampling_gap()
                 self._prev_ts = timestamp_ms
                 self._prev_ear = ear_val
+                if ear_val >= self.reopen_threshold:
+                    self._last_open_ear = ear_val
                 return BlinkSnapshot(
                     state=BlinkState.UNCERTAIN_GAP,
                     is_eye_closed=False,
@@ -363,23 +414,37 @@ class BlinkKinematicsDetector:
                     t_cross_close = self._interpolate_crossing(
                         self._prev_ts, self._prev_ear, timestamp_ms, ear_val, self.closure_threshold
                     )
-                    t_cross_open = self._interpolate_crossing(
-                        self._prev_ts, self._prev_ear, timestamp_ms, ear_val, self.reopen_threshold
-                    )
+                    if self._prev_ear >= self.reopen_threshold:
+                        t_cross_open = self._interpolate_crossing(
+                            self._prev_ts, self._prev_ear, timestamp_ms, ear_val, self.reopen_threshold
+                        )
+                        self._open_ear_before = self._prev_ear
+                    else:
+                        t_cross_open = self._prev_ts
+                        self._open_ear_before = (
+                            self._last_open_ear if self._last_open_ear is not None else self._prev_ear
+                        )
                     self._blink_start_ts = t_cross_open
+                    self._closing_entry_ts = None
                     self._closure_start_ts = t_cross_close
-                    self._open_ear_before = self._prev_ear
+                    self._closing_onset_ear = self.reopen_threshold
+                    self._closing_min_ear = ear_val
+                    self._closing_last_progress_ts = timestamp_ms
                     self._min_ear = ear_val
                     self._min_ear_ts = timestamp_ms
                     self._is_left_censored = False
                     self._state = BlinkState.CLOSED
-                elif ear_val < self._prev_ear and ear_val < self.reopen_threshold:
-                    # Starting to close through reopen threshold
+                elif self._prev_ear >= self.reopen_threshold and ear_val < self.reopen_threshold:
+                    # Starting to close downward through reopen_threshold from open state
                     t_cross_open = self._interpolate_crossing(
                         self._prev_ts, self._prev_ear, timestamp_ms, ear_val, self.reopen_threshold
                     )
-                    self._blink_start_ts = t_cross_open
                     self._open_ear_before = self._prev_ear
+                    self._blink_start_ts = t_cross_open
+                    self._closing_entry_ts = t_cross_open
+                    self._closing_onset_ear = self.reopen_threshold
+                    self._closing_min_ear = ear_val
+                    self._closing_last_progress_ts = timestamp_ms
                     self._is_left_censored = False
                     self._state = BlinkState.CLOSING
 
@@ -388,20 +453,72 @@ class BlinkKinematicsDetector:
                     t_cross_close = self._interpolate_crossing(
                         self._prev_ts, self._prev_ear, timestamp_ms, ear_val, self.closure_threshold
                     )
+                    if (
+                        self._blink_start_ts is None
+                        or self._closing_last_progress_ts is None
+                        or self._is_hover_before_fast_step(timestamp_ms, ear_val)
+                    ):
+                        # Candidate was stalled/rebounded or exhibited slow preliminary micro-drift
+                        # followed by a distinct faster closure step: anchor to start of closure step.
+                        self._blink_start_ts = self._prev_ts
+
+                    self._closing_entry_ts = None
                     self._closure_start_ts = t_cross_close
                     self._min_ear = ear_val
                     self._min_ear_ts = timestamp_ms
                     self._state = BlinkState.CLOSED
                 elif ear_val >= self.reopen_threshold:
-                    # Incomplete false closure, aborted
+                    # Incomplete false closure, aborted back to open range
                     self._state = BlinkState.OPEN
                     self._blink_start_ts = None
+                    self._closing_entry_ts = None
                     self._closure_start_ts = None
-                elif self._blink_start_ts is not None and (timestamp_ms - self._blink_start_ts) > 1000.0:
+                    self._closing_onset_ear = 1.0
+                    self._closing_min_ear = 1.0
+                    self._closing_last_progress_ts = None
+                    self._min_ear = 1.0
+                    self._min_ear_ts = None
+                    self._was_left_closed = False
+                    self._was_right_closed = False
+                elif self._closing_entry_ts is not None and (timestamp_ms - self._closing_entry_ts) > 1000.0:
                     # Trapped in closing timeout (e.g. drooping eyelids)
                     self._state = BlinkState.OPEN
                     self._blink_start_ts = None
+                    self._closing_entry_ts = None
                     self._closure_start_ts = None
+                    self._closing_onset_ear = 1.0
+                    self._closing_min_ear = 1.0
+                    self._closing_last_progress_ts = None
+                    self._min_ear = 1.0
+                    self._min_ear_ts = None
+                    self._last_open_ear = None
+                    self._was_left_closed = False
+                    self._was_right_closed = False
+                else:
+                    # Still in intermediate [closure_threshold, reopen_threshold) band:
+                    # evaluate recoverable progressive descent vs. FPS-independent stall/rebound.
+                    if self._closing_last_progress_ts is None:
+                        # Candidate was previously stalled/rebounded; check if a new genuine downward
+                        # descent has started from self._prev_ts.
+                        if ear_val < self._prev_ear - 1e-4:
+                            self._blink_start_ts = self._prev_ts
+                            self._closing_onset_ear = self._prev_ear
+                            self._closing_min_ear = ear_val
+                            self._closing_last_progress_ts = timestamp_ms
+                        else:
+                            self._closing_min_ear = ear_val
+                    elif ear_val < self._closing_min_ear - 1e-4:
+                        if self._is_hover_before_fast_step(timestamp_ms, ear_val):
+                            self._blink_start_ts = self._prev_ts
+                            self._closing_onset_ear = self._prev_ear
+                        self._closing_min_ear = ear_val
+                        self._closing_last_progress_ts = timestamp_ms
+                    else:
+                        stalled_by_rebound = ear_val > self._closing_min_ear + self.CLOSING_NOISE_TOLERANCE
+                        stalled_by_time = (timestamp_ms - self._closing_last_progress_ts) >= self.CLOSING_STALL_MS
+                        if stalled_by_rebound or stalled_by_time:
+                            self._closing_last_progress_ts = None
+                            self._closing_min_ear = ear_val
 
             elif self._state in (BlinkState.CLOSED, BlinkState.PROLONGED_CLOSURE):
                 if ear_val < self._min_ear:
@@ -428,7 +545,11 @@ class BlinkKinematicsDetector:
                         self._state = BlinkState.OPEN
                         self._is_left_censored = False
                         self._blink_start_ts = None
+                        self._closing_entry_ts = None
                         self._closure_start_ts = None
+                        self._closing_onset_ear = 1.0
+                        self._closing_min_ear = 1.0
+                        self._closing_last_progress_ts = None
                         self._min_ear = 1.0
                         self._min_ear_ts = None
                         self._was_left_closed = False
@@ -519,17 +640,31 @@ class BlinkKinematicsDetector:
                         # Reset state to open
                         self._state = BlinkState.OPEN
                         self._blink_start_ts = None
+                        self._closing_entry_ts = None
                         self._closure_start_ts = None
+                        self._closing_onset_ear = 1.0
+                        self._closing_min_ear = 1.0
+                        self._closing_last_progress_ts = None
                         self._min_ear = 1.0
                         self._min_ear_ts = None
                         self._was_left_closed = False
                         self._was_right_closed = False
 
                 elif ear_val < self.closure_threshold:
-                    # Dropped back into closed
-                    self._closure_start_ts = timestamp_ms
+                    # Dropped back into closed before reaching reopen_threshold
+                    if ear_val < self._min_ear:
+                        self._min_ear = ear_val
+                        self._min_ear_ts = timestamp_ms
+                    self._closure_start_ts = self._interpolate_crossing(
+                        self._prev_ts, self._prev_ear, timestamp_ms, ear_val, self.closure_threshold
+                    )
                     self._state = BlinkState.CLOSED
 
+        if is_above_reopen:
+            self._last_open_ear = ear_val
+        elif self._state == BlinkState.OPEN:
+            # Do not retain stale open EAR when in OPEN below reopen_threshold
+            self._last_open_ear = None
         self._prev_ts = timestamp_ms
         self._prev_ear = ear_val
 
@@ -552,9 +687,14 @@ class BlinkKinematicsDetector:
         """Cancel in-flight blink on face loss to avoid false prolonged closure."""
         self._state = BlinkState.UNCERTAIN_GAP
         self._blink_start_ts = None
+        self._closing_entry_ts = None
         self._closure_start_ts = None
+        self._closing_onset_ear = 1.0
+        self._closing_min_ear = 1.0
+        self._closing_last_progress_ts = None
         self._min_ear = 1.0
         self._min_ear_ts = None
+        self._last_open_ear = None
         self._was_left_closed = False
         self._was_right_closed = False
         self._prev_ts = None
@@ -565,9 +705,14 @@ class BlinkKinematicsDetector:
         """Cancel in-flight blink if camera or frame pipeline suffered a sampling drop."""
         self._state = BlinkState.UNCERTAIN_GAP
         self._blink_start_ts = None
+        self._closing_entry_ts = None
         self._closure_start_ts = None
+        self._closing_onset_ear = 1.0
+        self._closing_min_ear = 1.0
+        self._closing_last_progress_ts = None
         self._min_ear = 1.0
         self._min_ear_ts = None
+        self._last_open_ear = None
         self._was_left_closed = False
         self._was_right_closed = False
         self._prev_ts = None
@@ -580,9 +725,14 @@ class BlinkKinematicsDetector:
         self._prev_ts = None
         self._prev_ear = None
         self._blink_start_ts = None
+        self._closing_entry_ts = None
         self._closure_start_ts = None
+        self._closing_onset_ear = 1.0
+        self._closing_min_ear = 1.0
+        self._closing_last_progress_ts = None
         self._min_ear = 1.0
         self._min_ear_ts = None
+        self._last_open_ear = None
         self._was_left_closed = False
         self._was_right_closed = False
         self._is_left_censored = False

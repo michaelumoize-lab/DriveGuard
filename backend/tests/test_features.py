@@ -1822,6 +1822,572 @@ def test_blink_downstream_temporal_analyzer_and_decision_engine_integration() ->
     assert res.state == DrowsinessState.DROWSINESS_WARNING
 
 
+def test_blink_1_genuine_slow_closure_preserves_prolonged_onset() -> None:
+    """
+    Test 1 — Genuine slow closure:
+    Verifies that a genuine slow closure crossing the intermediate hysteresis region over
+    3 frames (1000->1033->1066->1100->1133 ms) retains its exact initial reopen_threshold
+    crossing onset (1029.33 ms) and is classified as PROLONGED when reopening at 1395 ms.
+    """
+    detector = BlinkKinematicsDetector(
+        closure_threshold=0.205,
+        reopen_threshold=0.240,
+        prolonged_duration_ms=350.0,
+        microsleep_duration_ms=800.0,
+    )
+
+    seq = [
+        (1000.0, 0.280),
+        (1033.0, 0.235),  # Enters CLOSING; t_cross_open = 1000 + 33 * (0.040 / 0.045) = 1029.333 ms
+        (1066.0, 0.220),  # Progressive descent in CLOSING
+        (1100.0, 0.208),  # Progressive descent in CLOSING
+        (1133.0, 0.150),  # Crosses closure_threshold (0.205) -> CLOSED
+        (1183.0, 0.120),  # Nadir
+        (1233.0, 0.140),
+        (1283.0, 0.160),
+        (1333.0, 0.180),
+        (1375.0, 0.220),  # REOPENING
+        (1415.0, 0.260),  # Crosses reopen_threshold (0.240) at exactly t_end = 1395.0 ms
+    ]
+    snap = None
+    for ts, ear_val in seq:
+        snap = detector.update(timestamp_ms=ts, left_ear=ear_val, right_ear=ear_val, ear=ear_val)
+
+    assert snap is not None and snap.completed_blink is not None
+    assert snap.completed_blink.start_ts_ms == pytest.approx(1029.333, abs=0.05)
+    assert snap.completed_blink.end_ts_ms == pytest.approx(1395.0, abs=0.05)
+    assert snap.completed_blink.duration_ms == pytest.approx(365.667, abs=0.05)
+    assert snap.completed_blink.classification == BlinkClassification.PROLONGED
+    assert snap.prolonged_blink_count == 1
+
+
+def test_blink_2_small_ear_noise_does_not_cancel_progressive_closure() -> None:
+    """
+    Test 2 — Small EAR noise:
+    Simulates a genuine progressive closure with a small upward EAR fluctuation of +0.0005
+    in CLOSING and verifies that a single noisy frame does not cancel or truncate the blink.
+    """
+    detector = BlinkKinematicsDetector(
+        closure_threshold=0.205,
+        reopen_threshold=0.240,
+        prolonged_duration_ms=350.0,
+    )
+
+    seq = [
+        (1000.0, 0.280),
+        (1033.0, 0.220),   # Enters CLOSING; t_cross_open = 1000 + 33 * (0.040 / 0.060) = 1022.0 ms
+        (1066.0, 0.2205),  # Small upward fluctuation of +0.0005 within noise tolerance
+        (1100.0, 0.120),   # Crosses closure_threshold -> CLOSED
+        (1133.0, 0.090),   # Nadir
+        (1166.0, 0.220),   # REOPENING
+        (1200.0, 0.260),   # Reopens across 0.240 at t_end = 1183.0 ms
+    ]
+    snap = None
+    for ts, ear_val in seq:
+        snap = detector.update(timestamp_ms=ts, left_ear=ear_val, right_ear=ear_val, ear=ear_val)
+        if ts == 1066.0:
+            assert snap.state == BlinkState.CLOSING
+
+    assert snap is not None and snap.completed_blink is not None
+    assert snap.completed_blink.start_ts_ms == pytest.approx(1022.0, abs=0.05)
+    assert snap.completed_blink.end_ts_ms == pytest.approx(1183.0, abs=0.05)
+    assert snap.completed_blink.duration_ms == pytest.approx(161.0, abs=0.05)
+    assert snap.completed_blink.classification == BlinkClassification.NORMAL
+
+
+def test_blink_3_intermediate_hovering_excluded_from_normal_blink() -> None:
+    """
+    Test 3 — Intermediate hovering:
+    Simulates 200-250 ms of intermediate EAR hovering (both fluctuating/plateau and
+    monotonic micro-drift) before a normal blink and verifies that preliminary hovering
+    time is excluded from the resulting blink duration.
+    """
+    detector = BlinkKinematicsDetector(
+        closure_threshold=0.205,
+        reopen_threshold=0.240,
+        min_blink_duration_ms=40.0,
+        prolonged_duration_ms=350.0,
+    )
+
+    # Control: normal blink without intermediate hovering retains exact expected duration
+    detector.update(timestamp_ms=1000.0, left_ear=0.30, right_ear=0.30, ear=0.30)
+    detector.update(timestamp_ms=1033.0, left_ear=0.10, right_ear=0.10, ear=0.10)
+    detector.update(timestamp_ms=1066.0, left_ear=0.08, right_ear=0.08, ear=0.08)
+    detector.update(timestamp_ms=1100.0, left_ear=0.16, right_ear=0.16, ear=0.16)
+    s_clean = detector.update(timestamp_ms=1133.0, left_ear=0.22, right_ear=0.22, ear=0.22)
+    assert s_clean.state == BlinkState.REOPENING
+    s_clean_end = detector.update(timestamp_ms=1166.0, left_ear=0.30, right_ear=0.30, ear=0.30)
+    assert s_clean_end.completed_blink is not None
+    assert s_clean_end.completed_blink.classification == BlinkClassification.NORMAL
+    assert s_clean_end.completed_blink.duration_ms == pytest.approx(131.35, abs=0.1)
+    assert s_clean_end.prolonged_blink_count == 0
+
+    # Subcase A: 233 ms of fluctuating/plateau hovering in [0.205, 0.240) before a normal blink
+    detector.reset()
+    hover_fluctuating = [
+        (2000.0, 0.300),  # Open baseline
+        (2033.0, 0.225),  # Enters CLOSING
+        (2066.0, 0.225),  # Plateau in intermediate zone
+        (2100.0, 0.232),  # Rebound still below reopen_threshold
+        (2133.0, 0.218),  # Dips slightly in intermediate zone
+        (2166.0, 0.220),  # Rebound
+        (2200.0, 0.220),  # Plateau
+        (2233.0, 0.220),  # 233 ms hovering elapsed; remains in CLOSING (stalled)
+        (2266.0, 0.100),  # Genuine closure begins on [2233, 2266]
+        (2300.0, 0.080),  # Nadir
+        (2333.0, 0.160),  # Still closed
+        (2366.0, 0.220),  # Reopening
+        (2400.0, 0.300),  # Reopened above 0.240 at t_end = 2366 + 34 * (0.02 / 0.08) = 2374.5 ms
+    ]
+    s_hover_a = None
+    for ts, ear_val in hover_fluctuating:
+        s_hover_a = detector.update(timestamp_ms=ts, left_ear=ear_val, right_ear=ear_val, ear=ear_val)
+        if ts == 2233.0:
+            assert s_hover_a.state == BlinkState.CLOSING
+
+    assert s_hover_a is not None and s_hover_a.completed_blink is not None
+    assert s_hover_a.completed_blink.classification == BlinkClassification.NORMAL
+    assert s_hover_a.completed_blink.start_ts_ms == pytest.approx(2233.0, abs=0.05)
+    assert s_hover_a.completed_blink.end_ts_ms == pytest.approx(2374.5, abs=0.05)
+    assert s_hover_a.completed_blink.duration_ms == pytest.approx(141.5, abs=0.05)
+    assert s_hover_a.completed_blink.open_ear_before == pytest.approx(0.30, abs=1e-4)
+    assert s_hover_a.prolonged_blink_count == 0
+
+    # Subcase B: 200 ms of monotonic micro-drift in [0.205, 0.240) before a normal blink
+    detector.reset()
+    hover_drift = [
+        (3000.0, 0.300),  # Open baseline
+        (3033.0, 0.236),  # Enters CLOSING
+        (3066.0, 0.232),  # Micro-drift
+        (3100.0, 0.228),  # Micro-drift
+        (3133.0, 0.224),  # Micro-drift
+        (3166.0, 0.220),  # Micro-drift (> 110 ms in CLOSING -> stalled)
+        (3200.0, 0.216),  # Micro-drift
+        (3233.0, 0.212),  # 200 ms of intermediate drift
+        (3266.0, 0.100),  # Genuine closure drop across 0.205 on [3233, 3266]
+        (3300.0, 0.080),  # Nadir
+        (3333.0, 0.160),  # Closed
+        (3366.0, 0.220),  # Reopening
+        (3400.0, 0.300),  # Reopened above 0.240 at t_end = 3374.5 ms
+    ]
+    s_hover_b = None
+    for ts, ear_val in hover_drift:
+        s_hover_b = detector.update(timestamp_ms=ts, left_ear=ear_val, right_ear=ear_val, ear=ear_val)
+
+    assert s_hover_b is not None and s_hover_b.completed_blink is not None
+    assert s_hover_b.completed_blink.classification == BlinkClassification.NORMAL
+    assert s_hover_b.completed_blink.start_ts_ms == pytest.approx(3233.0, abs=0.05)
+    assert s_hover_b.completed_blink.duration_ms == pytest.approx(141.5, abs=0.05)
+    assert s_hover_b.prolonged_blink_count == 0
+
+
+def test_blink_4_aborted_partial_closure_does_not_contaminate_next_blink() -> None:
+    """
+    Test 4 — Aborted partial closure:
+    Simulates an intermediate closure that returns to the open-eye range, and verifies
+    that the aborted candidate does not contaminate the next genuine blink. Also verifies
+    that stale _last_open_ear is cleared on threshold updates and prolonged squinting.
+    """
+    detector = BlinkKinematicsDetector(
+        closure_threshold=0.205,
+        reopen_threshold=0.240,
+        prolonged_duration_ms=350.0,
+    )
+
+    # Aborted partial closure dipping into [0.205, 0.240) and returning to OPEN
+    detector.update(timestamp_ms=1000.0, left_ear=0.30, right_ear=0.30, ear=0.30)
+    s_closing = detector.update(timestamp_ms=1033.0, left_ear=0.215, right_ear=0.215, ear=0.215)
+    assert s_closing.state == BlinkState.CLOSING
+    s_abort = detector.update(timestamp_ms=1066.0, left_ear=0.28, right_ear=0.28, ear=0.28)
+    assert s_abort.state == BlinkState.OPEN
+    assert s_abort.completed_blink is None
+
+    # Continuous open frames before next genuine blink
+    detector.update(timestamp_ms=1166.0, left_ear=0.30, right_ear=0.30, ear=0.30)
+    detector.update(timestamp_ms=1266.0, left_ear=0.30, right_ear=0.30, ear=0.30)
+    detector.update(timestamp_ms=1366.0, left_ear=0.30, right_ear=0.30, ear=0.30)
+    detector.update(timestamp_ms=1400.0, left_ear=0.10, right_ear=0.10, ear=0.10)
+    detector.update(timestamp_ms=1433.0, left_ear=0.08, right_ear=0.08, ear=0.08)
+    detector.update(timestamp_ms=1466.0, left_ear=0.18, right_ear=0.18, ear=0.18)
+    s_done = detector.update(timestamp_ms=1500.0, left_ear=0.30, right_ear=0.30, ear=0.30)
+
+    assert s_done.completed_blink is not None
+    assert s_done.completed_blink.classification == BlinkClassification.NORMAL
+    # t_start = 1366 + 34 * (0.30 - 0.24) / (0.30 - 0.10) = 1376.2 ms
+    # t_end = 1466 + 34 * (0.24 - 0.18) / (0.30 - 0.18) = 1483.0 ms -> duration = 106.8 ms
+    assert s_done.completed_blink.duration_ms == pytest.approx(106.8, abs=0.1)
+    assert s_done.prolonged_blink_count == 0
+
+
+def test_blink_5_shallow_threshold_crossing_stability() -> None:
+    """
+    Test 5 — Shallow threshold crossing:
+    Simulates EAR stepping 0.210 -> 0.202 -> 0.100 across closure_threshold (0.205)
+    both after hovering and during progressive closure, verifying that the transition
+    does not produce unstable back-projected timestamps or divide-by-zero behaviour.
+    """
+    detector = BlinkKinematicsDetector(
+        closure_threshold=0.205,
+        reopen_threshold=0.240,
+        prolonged_duration_ms=350.0,
+    )
+
+    # Shallow crossing after 200 ms hover: must anchor to t=1233.0 ms without back-projecting 144 ms into hover
+    seq_after_hover = [
+        (1000.0, 0.300),
+        (1033.0, 0.220),
+        (1100.0, 0.220),
+        (1166.0, 0.215),
+        (1233.0, 0.210),  # Stalled hover in CLOSING
+        (1266.0, 0.202),  # Shallow crossing of 0.205 (drop = 0.008)
+        (1300.0, 0.100),  # Nadir
+        (1333.0, 0.220),  # Reopening
+        (1366.0, 0.300),  # Reopened at t_end = 1341.25 ms
+    ]
+    snap = None
+    for ts, ear_val in seq_after_hover:
+        snap = detector.update(timestamp_ms=ts, left_ear=ear_val, right_ear=ear_val, ear=ear_val)
+
+    assert snap is not None and snap.completed_blink is not None
+    assert snap.completed_blink.start_ts_ms == pytest.approx(1233.0, abs=0.05)
+    assert snap.completed_blink.end_ts_ms == pytest.approx(1341.25, abs=0.05)
+    assert snap.completed_blink.duration_ms == pytest.approx(108.25, abs=0.05)
+    assert snap.completed_blink.classification == BlinkClassification.NORMAL
+
+
+def test_blink_6_irregular_frame_intervals_timestamp_based() -> None:
+    """
+    Test 6 — Irregular frame intervals:
+    Verifies that nonuniform frame intervals during both pre-closure hovering and
+    genuine progressive closure rely on timestamps rather than assumed FPS.
+    """
+    detector = BlinkKinematicsDetector(
+        closure_threshold=0.205,
+        reopen_threshold=0.240,
+        prolonged_duration_ms=350.0,
+        max_sampling_gap_ms=250.0,
+    )
+
+    # Case A: Irregular 150 ms and 90 ms intervals during pre-closure hovering do not inflate blink
+    irregular_hover_seq = [
+        (1000.0, 0.260),
+        (1150.0, 0.230),  # 150 ms irregular interval into CLOSING
+        (1240.0, 0.220),  # 90 ms irregular interval still in CLOSING (> 110 ms -> stalled)
+        (1273.0, 0.100),  # 33 ms step into genuine closure
+        (1306.0, 0.080),  # Nadir
+        (1340.0, 0.160),  # Closed
+        (1373.0, 0.220),  # Reopening
+        (1406.0, 0.300),  # Reopened at t_end = 1381.25 ms
+    ]
+    s_irr = None
+    for ts, ear_val in irregular_hover_seq:
+        s_irr = detector.update(timestamp_ms=ts, left_ear=ear_val, right_ear=ear_val, ear=ear_val)
+
+    assert s_irr is not None and s_irr.completed_blink is not None
+    assert s_irr.completed_blink.start_ts_ms == pytest.approx(1240.0, abs=0.05)
+    assert s_irr.completed_blink.duration_ms == pytest.approx(141.25, abs=0.05)
+    assert s_irr.completed_blink.classification == BlinkClassification.NORMAL
+
+    # Case B: Genuine gradual closure with nonuniform 20-50 ms FPS intervals preserves onset
+    detector.reset()
+    irregular_progressive_seq = [
+        (2000.0, 0.280),
+        (2045.0, 0.232),  # 45 ms step into CLOSING; t_cross_open = 2000 + 45 * (0.040 / 0.048) = 2037.5 ms
+        (2090.0, 0.212),  # 45 ms step in CLOSING (elapsed 52.5 ms <= 110 ms)
+        (2115.0, 0.140),  # 25 ms step into CLOSED
+        (2160.0, 0.090),
+        (2210.0, 0.220),  # REOPENING
+        (2250.0, 0.300),  # Reopened at t_end = 2210 + 40 * (0.020 / 0.080) = 2220.0 ms
+    ]
+    s_prog = None
+    for ts, ear_val in irregular_progressive_seq:
+        s_prog = detector.update(timestamp_ms=ts, left_ear=ear_val, right_ear=ear_val, ear=ear_val)
+
+    assert s_prog is not None and s_prog.completed_blink is not None
+    assert s_prog.completed_blink.start_ts_ms == pytest.approx(2037.5, abs=0.05)
+    assert s_prog.completed_blink.end_ts_ms == pytest.approx(2220.0, abs=0.05)
+    assert s_prog.completed_blink.duration_ms == pytest.approx(182.5, abs=0.05)
+    assert s_prog.completed_blink.classification == BlinkClassification.NORMAL
+
+
+def test_blink_7_genuine_prolonged_closure_and_distinct_durations() -> None:
+    """
+    Test 7 — Genuine prolonged closure & REOPENING -> CLOSED interpolation:
+    Verifies that an actual prolonged closure produces a PROLONGED event, that
+    current_closure_duration_ms (from closure_threshold crossing) and completed_blink.duration_ms
+    (from reopen_threshold to reopen_threshold) remain distinct measurements, and that
+    REOPENING -> CLOSED interpolates the re-closure crossing timestamp.
+    """
+    detector = BlinkKinematicsDetector(
+        closure_threshold=0.205,
+        reopen_threshold=0.240,
+        prolonged_duration_ms=350.0,
+        microsleep_duration_ms=800.0,
+    )
+
+    detector.update(timestamp_ms=1000.0, left_ear=0.30, right_ear=0.30, ear=0.30)
+    # Enters CLOSING at t=1033 (t_cross_open = 1000 + 33 * (0.06 / 0.08) = 1024.75 ms)
+    detector.update(timestamp_ms=1033.0, left_ear=0.22, right_ear=0.22, ear=0.22)
+    # Enters CLOSED at t=1066 (t_cross_close = 1033 + 33 * (0.015 / 0.10) = 1037.95 ms)
+    s_closed = detector.update(timestamp_ms=1066.0, left_ear=0.12, right_ear=0.12, ear=0.12)
+    assert s_closed.state == BlinkState.CLOSED
+    assert s_closed.current_closure_duration_ms == pytest.approx(1066.0 - 1037.95, abs=0.05)
+
+    # Sustain closure for > 350 ms past t_cross_close (at t=1400 ms, closure_duration = 362.05 ms)
+    for ts in (1150.0, 1250.0, 1350.0, 1400.0):
+        s_sustained = detector.update(timestamp_ms=ts, left_ear=0.10, right_ear=0.10, ear=0.10)
+    assert s_sustained.state == BlinkState.PROLONGED_CLOSURE
+    assert s_sustained.current_closure_duration_ms == pytest.approx(1400.0 - 1037.95, abs=0.05)
+
+    # Reopen at t=1450 (t_end = 1400 + 50 * (0.240 - 0.10) / (0.30 - 0.10) = 1435.0 ms)
+    s_done = detector.update(timestamp_ms=1450.0, left_ear=0.30, right_ear=0.30, ear=0.30)
+    assert s_done.completed_blink is not None
+    assert s_done.completed_blink.classification == BlinkClassification.PROLONGED
+    # Full waveform duration (1435.0 - 1024.75 = 410.25 ms) is distinct from closure_duration_ms
+    assert s_done.completed_blink.duration_ms == pytest.approx(410.25, abs=0.05)
+    assert s_done.completed_blink.duration_ms > s_sustained.current_closure_duration_ms
+
+    # Verify REOPENING -> CLOSED interpolates closure_threshold crossing
+    detector.reset()
+    detector.update(timestamp_ms=2000.0, left_ear=0.30, right_ear=0.30, ear=0.30)
+    detector.update(timestamp_ms=2033.0, left_ear=0.12, right_ear=0.12, ear=0.12)
+    s_reopening = detector.update(timestamp_ms=2066.0, left_ear=0.225, right_ear=0.225, ear=0.225)
+    assert s_reopening.state == BlinkState.REOPENING
+    # Drops from 0.225 at t=2066 to 0.125 at t=2106 across closure_threshold=0.205:
+    # t_cross_close = 2066 + 40 * (0.225 - 0.205) / (0.225 - 0.125) = 2074.0 ms
+    s_reclosed = detector.update(timestamp_ms=2106.0, left_ear=0.125, right_ear=0.125, ear=0.125)
+    assert s_reclosed.state == BlinkState.CLOSED
+    assert s_reclosed.current_closure_duration_ms == pytest.approx(2106.0 - 2074.0, abs=0.05)
+
+
+def test_blink_phase2_1_slow_progressive_closures_80_to_200ms() -> None:
+    """
+    Test A — Slow progressive closures:
+    Tests 80, 100, 110, 120, 150, and 200 ms intermediate-band [0.205, 0.240) traversal
+    and verifies that genuine progressive closures preserve their exact initial onset
+    with zero discontinuity between 110 ms and 120 ms.
+    """
+    for band_ms in (80.0, 100.0, 110.0, 120.0, 150.0, 200.0):
+        detector = BlinkKinematicsDetector(
+            closure_threshold=0.205,
+            reopen_threshold=0.240,
+            prolonged_duration_ms=350.0,
+        )
+        # Constant downward velocity v = 0.035 / band_ms (EAR/ms)
+        # Crosses reopen_threshold (0.240) at exactly t = 1020.0 ms,
+        # and crosses closure_threshold (0.205) at exactly t = 1020.0 + band_ms.
+        v_per_ms = 0.035 / band_ms
+        t_open_cross = 1020.0
+        ear_at_1000 = 0.240 + v_per_ms * 20.0
+        detector.update(timestamp_ms=1000.0, left_ear=ear_at_1000, right_ear=ear_at_1000, ear=ear_at_1000)
+
+        t = 1030.0
+        t_close_cross = t_open_cross + band_ms
+        while t <= t_close_cross + 25.0:
+            ear_t = max(0.120, 0.240 - v_per_ms * (t - t_open_cross))
+            detector.update(timestamp_ms=t, left_ear=ear_t, right_ear=ear_t, ear=ear_t)
+            t += 25.0
+
+        # Sustain closed to nadir 0.120, then reopen across 0.240 at exactly t_end = 1020.0 + 365.0 = 1385.0 ms
+        while t < 1365.0:
+            detector.update(timestamp_ms=t, left_ear=0.120, right_ear=0.120, ear=0.120)
+            t += 40.0
+        detector.update(timestamp_ms=1365.0, left_ear=0.220, right_ear=0.220, ear=0.220)
+        snap = detector.update(timestamp_ms=1405.0, left_ear=0.260, right_ear=0.260, ear=0.260)
+
+        assert snap.completed_blink is not None, f"Failed for band_ms={band_ms}"
+        assert snap.completed_blink.start_ts_ms == pytest.approx(1020.0, abs=0.05), f"Truncated onset at band_ms={band_ms}"
+        assert snap.completed_blink.end_ts_ms == pytest.approx(1385.0, abs=0.05)
+        assert snap.completed_blink.duration_ms == pytest.approx(365.0, abs=0.05)
+        assert snap.completed_blink.classification == BlinkClassification.PROLONGED
+
+
+def test_blink_phase2_1_counterexample_a_and_b() -> None:
+    """
+    Tests B & C — Exact Counterexample A (140.6 ms slow closure) and Counterexample B
+    (preliminary rebound followed by genuine gradual closure) from the independent review.
+    """
+    # Test B — Counterexample A
+    det_a = BlinkKinematicsDetector(
+        closure_threshold=0.205,
+        reopen_threshold=0.240,
+        prolonged_duration_ms=350.0,
+    )
+    seq_a = [
+        (1000.0, 0.250),
+        (1033.0, 0.238),
+        (1066.0, 0.230),
+        (1100.0, 0.222),
+        (1133.0, 0.214),
+        (1166.0, 0.206),
+        (1200.0, 0.190),
+        (1300.0, 0.140),
+        (1400.0, 0.260),
+    ]
+    snap_a = None
+    for ts, ear_val in seq_a:
+        snap_a = det_a.update(timestamp_ms=ts, left_ear=ear_val, right_ear=ear_val, ear=ear_val)
+
+    assert snap_a is not None and snap_a.completed_blink is not None
+    # t_start = 1000 + 33 * (0.250 - 0.240) / (0.250 - 0.238) = 1027.5 ms
+    # t_end = 1300 + 100 * (0.240 - 0.140) / (0.260 - 0.140) = 1383.333 ms -> duration = 355.833 ms
+    assert snap_a.completed_blink.start_ts_ms == pytest.approx(1027.5, abs=0.05)
+    assert snap_a.completed_blink.end_ts_ms == pytest.approx(1383.333, abs=0.05)
+    assert snap_a.completed_blink.duration_ms == pytest.approx(355.833, abs=0.05)
+    assert snap_a.completed_blink.classification == BlinkClassification.PROLONGED
+
+    # Test C — Counterexample B
+    det_b = BlinkKinematicsDetector(
+        closure_threshold=0.205,
+        reopen_threshold=0.240,
+        prolonged_duration_ms=350.0,
+    )
+    seq_b = [
+        (1000.0, 0.300),
+        (1033.0, 0.230),
+        (1066.0, 0.234),  # Rebound (+0.004 > 0.002) stalls preliminary dip
+        (1100.0, 0.222),  # Recovery: new genuine descent anchored to 1066.0 ms
+        (1133.0, 0.209),  # Continues steady descent
+        (1166.0, 0.150),  # Crosses closure_threshold
+        (1300.0, 0.120),
+        (1440.0, 0.260),  # t_end = 1300 + 140 * (0.120 / 0.140) = 1420.0 ms
+    ]
+    snap_b = None
+    for ts, ear_val in seq_b:
+        snap_b = det_b.update(timestamp_ms=ts, left_ear=ear_val, right_ear=ear_val, ear=ear_val)
+
+    assert snap_b is not None and snap_b.completed_blink is not None
+    assert snap_b.completed_blink.start_ts_ms == pytest.approx(1066.0, abs=0.05)
+    assert snap_b.completed_blink.end_ts_ms == pytest.approx(1420.0, abs=0.05)
+    assert snap_b.completed_blink.duration_ms == pytest.approx(354.0, abs=0.05)
+    assert snap_b.completed_blink.classification == BlinkClassification.PROLONGED
+
+
+def test_blink_phase2_1_gradual_acceleration_and_variable_fps() -> None:
+    """
+    Tests E & F — Gradual natural acceleration during closure, and equivalent waveforms
+    sampled at 15, 25, 30, and 60 FPS.
+    """
+    # Test E — Gradual acceleration (starts slowly, naturally accelerates into closure)
+    det_acc = BlinkKinematicsDetector(
+        closure_threshold=0.205,
+        reopen_threshold=0.240,
+        prolonged_duration_ms=350.0,
+    )
+    seq_acc = [
+        (1000.0, 0.260),
+        (1033.0, 0.236),  # t_cross_open = 1000 + 33 * (0.020 / 0.024) = 1027.5 ms
+        (1066.0, 0.228),  # Slow initial descent (-0.008)
+        (1100.0, 0.212),  # Accelerating (-0.016)
+        (1133.0, 0.160),  # Accelerating across 0.205 (-0.052)
+        (1166.0, 0.100),  # Nadir
+        (1200.0, 0.220),  # Reopening
+        (1240.0, 0.260),  # t_end = 1200 + 40 * (0.020 / 0.040) = 1220.0 ms
+    ]
+    snap_acc = None
+    for ts, ear_val in seq_acc:
+        snap_acc = det_acc.update(timestamp_ms=ts, left_ear=ear_val, right_ear=ear_val, ear=ear_val)
+
+    assert snap_acc is not None and snap_acc.completed_blink is not None
+    assert snap_acc.completed_blink.start_ts_ms == pytest.approx(1027.5, abs=0.05)
+    assert snap_acc.completed_blink.end_ts_ms == pytest.approx(1220.0, abs=0.05)
+    assert snap_acc.completed_blink.duration_ms == pytest.approx(192.5, abs=0.05)
+    assert snap_acc.completed_blink.classification == BlinkClassification.NORMAL
+
+    # Test F — Equivalent slow progressive waveform sampled at 15, 25, 30, and 60 FPS
+    # Continuous piecewise-linear waveform:
+    # t in [1000, 1160]: EAR descends linearly from 0.260 to 0.180 (crosses 0.240 at t=1040.0 ms, 0.205 at t=1110.0 ms)
+    # t in [1160, 1300]: EAR stays at 0.120
+    # t in [1300, 1440]: EAR rises linearly from 0.120 to 0.260 (crosses 0.240 at t=1420.0 ms)
+    # Exact analytical duration = 1420.0 - 1040.0 = 380.0 ms (PROLONGED)
+    def eval_ear(t_ms: float) -> float:
+        if t_ms <= 1000.0:
+            return 0.260
+        if t_ms <= 1160.0:
+            return 0.260 - (0.080 / 160.0) * (t_ms - 1000.0)
+        if t_ms <= 1300.0:
+            return 0.120
+        if t_ms <= 1480.0:
+            return 0.120 + (0.140 / 140.0) * (t_ms - 1300.0)
+        return 0.300
+
+    for fps in (15, 25, 30, 60):
+        det_fps = BlinkKinematicsDetector(
+            closure_threshold=0.205,
+            reopen_threshold=0.240,
+            prolonged_duration_ms=350.0,
+        )
+        dt = 1000.0 / fps
+        t = 1000.0
+        completed = None
+        while t <= 1500.0:
+            e_val = eval_ear(t)
+            s = det_fps.update(timestamp_ms=t, left_ear=e_val, right_ear=e_val, ear=e_val)
+            if s.completed_blink is not None:
+                completed = s.completed_blink
+            t += dt
+
+        assert completed is not None, f"No blink completed at {fps} FPS"
+        assert completed.start_ts_ms == pytest.approx(1040.0, abs=0.5), f"Onset mismatch at {fps} FPS"
+        assert completed.end_ts_ms == pytest.approx(1420.0, abs=0.5), f"End mismatch at {fps} FPS"
+        assert completed.duration_ms == pytest.approx(380.0, abs=1.0), f"Duration mismatch at {fps} FPS"
+        assert completed.classification == BlinkClassification.PROLONGED
+
+
+def test_blink_phase2_1_timeout_reentry_prevention() -> None:
+    """
+    Test G — Timeout re-entry:
+    Verifies that after reaching the 1000 ms CLOSING timeout while remaining below
+    reopen_threshold, subsequent small EAR fluctuations below reopen_threshold do NOT
+    repeatedly re-enter CLOSING, and that reopening properly allows a new blink to be detected.
+    """
+    detector = BlinkKinematicsDetector(
+        closure_threshold=0.205,
+        reopen_threshold=0.240,
+        prolonged_duration_ms=350.0,
+    )
+
+    # 1. Enter CLOSING at t=1033 ms (t_cross_open = 1024.75 ms)
+    detector.update(timestamp_ms=1000.0, left_ear=0.300, right_ear=0.300, ear=0.300)
+    s_enter = detector.update(timestamp_ms=1033.0, left_ear=0.220, right_ear=0.220, ear=0.220)
+    assert s_enter.state == BlinkState.CLOSING
+
+    # 2 & 3. Remain below reopen_threshold until exceeding 1000 ms timeout (t=2050 ms)
+    t = 1100.0
+    s_timeout = None
+    while t <= 2050.0:
+        s_timeout = detector.update(timestamp_ms=t, left_ear=0.220, right_ear=0.220, ear=0.220)
+        t += 50.0
+    assert s_timeout is not None
+    assert s_timeout.state == BlinkState.OPEN
+
+    # 4 & 5. Experience small downward/upward EAR fluctuations below reopen_threshold:
+    # confirm no repeated CLOSING re-entry occurs!
+    for ts, ear_val in (
+        (2100.0, 0.218),
+        (2150.0, 0.215),
+        (2200.0, 0.222),
+        (2250.0, 0.216),
+    ):
+        s_fluct = detector.update(timestamp_ms=ts, left_ear=ear_val, right_ear=ear_val, ear=ear_val)
+        assert s_fluct.state == BlinkState.OPEN
+
+    # 6. Reopen properly above reopen_threshold and confirm a new blink is detected cleanly
+    s_reopen = detector.update(timestamp_ms=2300.0, left_ear=0.300, right_ear=0.300, ear=0.300)
+    assert s_reopen.state == BlinkState.OPEN
+
+    s_new_closing = detector.update(timestamp_ms=2333.0, left_ear=0.220, right_ear=0.220, ear=0.220)
+    assert s_new_closing.state == BlinkState.CLOSING
+    detector.update(timestamp_ms=2366.0, left_ear=0.100, right_ear=0.100, ear=0.100)
+    detector.update(timestamp_ms=2400.0, left_ear=0.080, right_ear=0.080, ear=0.080)
+    detector.update(timestamp_ms=2433.0, left_ear=0.220, right_ear=0.220, ear=0.220)
+    s_completed = detector.update(timestamp_ms=2466.0, left_ear=0.300, right_ear=0.300, ear=0.300)
+
+    assert s_completed.completed_blink is not None
+    assert s_completed.completed_blink.classification == BlinkClassification.NORMAL
+    assert s_completed.completed_blink.start_ts_ms == pytest.approx(2324.75, abs=0.05)
+
+
 # ==============================================================================
 # 5. PERCLOS Accumulator Tests
 # ==============================================================================
