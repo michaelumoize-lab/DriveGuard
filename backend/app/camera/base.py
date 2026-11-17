@@ -62,6 +62,11 @@ class FramePacket:
         return self.timestamp_ns / 1_000_000_000.0
 
     @property
+    def timestamp_ms(self) -> float:
+        """Capture timestamp in milliseconds."""
+        return self.timestamp_ns / 1_000_000.0
+
+    @property
     def age_ms(self) -> float:
         """
         Elapsed time in milliseconds between optical capture and current moment.
