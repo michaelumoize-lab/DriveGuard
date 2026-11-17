@@ -67,6 +67,43 @@ class CascadeStageResult:
     fused_closure_score: float
     winning_authority: str
     stage_latency_ms: float
+    cnn_execution_mode: str = "UNAVAILABLE"
+    onnx_inference_executed: bool = False
+    cnn_inference_duration_ms: Optional[float] = None
+
+
+@dataclass
+class EyeCropPrediction:
+    """Prediction result for a single eye crop with execution mode provenance."""
+
+    open_prob: float
+    closed_prob: float
+    reliability: float
+    execution_mode: str = "UNAVAILABLE"
+    onnx_executed: bool = False
+    duration_ms: float = 0.0
+
+    def __iter__(self):
+        yield self.open_prob
+        yield self.closed_prob
+        yield self.reliability
+
+
+@dataclass
+class VerifierPrediction:
+    """Binocular eye verifier prediction aggregating both eyes with execution mode provenance."""
+
+    open_prob: float
+    closed_prob: float
+    reliability: float
+    execution_mode: str = "UNAVAILABLE"
+    onnx_executed: bool = False
+    duration_ms: float = 0.0
+
+    def __iter__(self):
+        yield self.open_prob
+        yield self.closed_prob
+        yield self.reliability
 
 
 DEFAULT_EYE_ONNX_PATH = Path(__file__).resolve().parents[2] / "weights" / "mobilenetv3_eye.onnx"
@@ -84,10 +121,13 @@ class MobileNetV3EyeVerifier:
         self.onnx_session = None
         self.input_name: Optional[str] = None
         self.is_pretrained_onnx: bool = False
+        self.model_path: Optional[str] = None
+        self.model_sha256: Optional[str] = None
 
         resolved_path = Path(onnx_model_path) if onnx_model_path is not None else DEFAULT_EYE_ONNX_PATH
         if resolved_path.is_file():
             try:
+                import hashlib
                 import onnxruntime as ort
 
                 self.onnx_session = ort.InferenceSession(
@@ -95,20 +135,44 @@ class MobileNetV3EyeVerifier:
                 )
                 self.input_name = self.onnx_session.get_inputs()[0].name
                 self.is_pretrained_onnx = True
+                self.model_path = str(resolved_path)
+                with open(resolved_path, "rb") as f:
+                    self.model_sha256 = hashlib.sha256(f.read()).hexdigest()
             except Exception:
                 self.onnx_session = None
+                self.is_pretrained_onnx = False
+                self.model_path = None
+                self.model_sha256 = None
 
-    def predict_eye_crop(self, crop_quality: Optional[EyeCropQuality]) -> Tuple[float, float, float]:
+    def get_diagnostics(self) -> Dict[str, Any]:
+        """Return provenance diagnostics for the Stage 2 eye verifier."""
+        return {
+            "is_pretrained_onnx": self.is_pretrained_onnx,
+            "execution_mode": "MOBILENET_ONNX" if self.is_pretrained_onnx else "ANALYTICAL_FALLBACK",
+            "model_path": self.model_path,
+            "model_sha256": self.model_sha256,
+            "session_active": self.onnx_session is not None,
+        }
+
+    def predict_eye_crop(self, crop_quality: Optional[EyeCropQuality]) -> EyeCropPrediction:
         """
         Predict (open_probability, closed_probability, cnn_reliability) for a single eye crop.
         """
         if crop_quality is None or crop_quality.crop_rgb is None or crop_quality.overall_reliability < 0.15:
-            return 0.5, 0.5, 0.0
+            return EyeCropPrediction(
+                open_prob=0.5,
+                closed_prob=0.5,
+                reliability=0.0,
+                execution_mode="UNAVAILABLE",
+                onnx_executed=False,
+                duration_ms=0.0,
+            )
 
         crop = crop_quality.crop_rgb
         if crop.shape[0] != 64 or crop.shape[1] != 64:
             crop = cv2.resize(crop, (64, 64), interpolation=cv2.INTER_AREA)
 
+        t_start = time.perf_counter()
         if self.onnx_session is not None and self.input_name is not None:
             # Convert RGB webcam crop to 3-channel luminance to bridge the IR (MRL dataset) <-> RGB (webcam) domain gap
             gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
@@ -122,6 +186,9 @@ class MobileNetV3EyeVerifier:
             probs = exp_logits / np.sum(exp_logits)
             open_prob = float(probs[0])
             closed_prob = float(probs[1])
+            duration_ms = (time.perf_counter() - t_start) * 1000.0
+            execution_mode = "MOBILENET_ONNX"
+            onnx_executed = True
         else:
             # Prototype stage fallback: analyze dark iris/pupil visibility & vertical vs horizontal Sobel energy
             gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
@@ -143,29 +210,66 @@ class MobileNetV3EyeVerifier:
             open_score = float(np.clip(1.6 * contrast + 0.65 * (hv_ratio - 0.35), 0.02, 0.98))
             open_prob = open_score
             closed_prob = 1.0 - open_prob
+            duration_ms = (time.perf_counter() - t_start) * 1000.0
+            execution_mode = "ANALYTICAL_FALLBACK"
+            onnx_executed = False
 
         # Classifier certainty margin in [0, 1]
         margin = abs(closed_prob - open_prob)
         cnn_reliability = float(np.clip(crop_quality.overall_reliability * (0.55 + 0.45 * margin), 0.0, 1.0))
-        return open_prob, closed_prob, cnn_reliability
+        return EyeCropPrediction(
+            open_prob=open_prob,
+            closed_prob=closed_prob,
+            reliability=cnn_reliability,
+            execution_mode=execution_mode,
+            onnx_executed=onnx_executed,
+            duration_ms=duration_ms,
+        )
 
     def predict_binocular(
         self,
         left_crop: Optional[EyeCropQuality],
         right_crop: Optional[EyeCropQuality],
-    ) -> Tuple[float, float, float]:
+    ) -> VerifierPrediction:
         """Combine predictions across left and right eye crops weighted by crop quality."""
-        l_open, l_closed, l_rel = self.predict_eye_crop(left_crop)
-        r_open, r_closed, r_rel = self.predict_eye_crop(right_crop)
+        t_binoc_start = time.perf_counter()
+        l_pred = self.predict_eye_crop(left_crop)
+        r_pred = self.predict_eye_crop(right_crop)
 
-        total_rel = l_rel + r_rel
+        total_rel = l_pred.reliability + r_pred.reliability
         if total_rel < 1e-5:
-            return 0.5, 0.5, 0.0
+            return VerifierPrediction(
+                open_prob=0.5,
+                closed_prob=0.5,
+                reliability=0.0,
+                execution_mode="UNAVAILABLE",
+                onnx_executed=False,
+                duration_ms=(time.perf_counter() - t_binoc_start) * 1000.0,
+            )
 
-        closed_prob = (l_closed * l_rel + r_closed * r_rel) / total_rel
+        closed_prob = (l_pred.closed_prob * l_pred.reliability + r_pred.closed_prob * r_pred.reliability) / total_rel
         open_prob = 1.0 - closed_prob
-        combined_rel = max(l_rel, r_rel) * 0.7 + min(l_rel, r_rel) * 0.3
-        return float(open_prob), float(closed_prob), float(combined_rel)
+        combined_rel = max(l_pred.reliability, r_pred.reliability) * 0.7 + min(l_pred.reliability, r_pred.reliability) * 0.3
+
+        if l_pred.onnx_executed or r_pred.onnx_executed:
+            exec_mode = "MOBILENET_ONNX"
+            onnx_exec = True
+        elif l_pred.execution_mode == "ANALYTICAL_FALLBACK" or r_pred.execution_mode == "ANALYTICAL_FALLBACK":
+            exec_mode = "ANALYTICAL_FALLBACK"
+            onnx_exec = False
+        else:
+            exec_mode = "UNAVAILABLE"
+            onnx_exec = False
+
+        duration_ms = (time.perf_counter() - t_binoc_start) * 1000.0
+        return VerifierPrediction(
+            open_prob=float(open_prob),
+            closed_prob=float(closed_prob),
+            reliability=float(combined_rel),
+            execution_mode=exec_mode,
+            onnx_executed=onnx_exec,
+            duration_ms=duration_ms,
+        )
 
 
 class ConfidenceGatedEyeCascade:
@@ -197,6 +301,17 @@ class ConfidenceGatedEyeCascade:
             return 0.0
         return self.cnn_invocations / self.total_frames
 
+    def get_diagnostics(self) -> Dict[str, Any]:
+        """Return runtime cascade diagnostics including verifier provenance."""
+        return {
+            "mode": self.mode.value,
+            "total_frames": self.total_frames,
+            "cnn_invocations": self.cnn_invocations,
+            "cnn_trigger_rate": round(self.cnn_trigger_rate, 4),
+            "disagreement_events_count": len(self.disagreement_events),
+            "verifier": self.verifier.get_diagnostics(),
+        }
+
     def evaluate(
         self,
         geom: FrameGeometryFeatures,
@@ -224,6 +339,9 @@ class ConfidenceGatedEyeCascade:
                 fused_closure_score=0.0,
                 winning_authority="NONE",
                 stage_latency_ms=(time.perf_counter() - t0) * 1000.0,
+                cnn_execution_mode="UNAVAILABLE",
+                onnx_inference_executed=False,
+                cnn_inference_duration_ms=None,
             )
 
         # 1. Compute continuous geometric eye-closure score in [0, 1]
@@ -282,13 +400,19 @@ class ConfidenceGatedEyeCascade:
                 fused_closure_score=geom_closure_score,
                 winning_authority="GEOMETRIC",
                 stage_latency_ms=(time.perf_counter() - t0) * 1000.0,
+                cnn_execution_mode="UNAVAILABLE",
+                onnx_inference_executed=False,
+                cnn_inference_duration_ms=None,
             )
 
         # 3. Run Stage 2 Classifier & Reliability-Weighted Arbitration
         self.cnn_invocations += 1
-        open_prob, closed_prob, cnn_rel = self.verifier.predict_binocular(
+        verif_pred = self.verifier.predict_binocular(
             geom.left_eye_crop, geom.right_eye_crop
         )
+        open_prob = verif_pred.open_prob
+        closed_prob = verif_pred.closed_prob
+        cnn_rel = verif_pred.reliability
 
         g_rel = max(0.05, geom.geometric_reliability)
         c_rel = max(0.05, cnn_rel)
@@ -336,4 +460,7 @@ class ConfidenceGatedEyeCascade:
             fused_closure_score=float(np.clip(fused_closure, 0.0, 1.0)),
             winning_authority=authority,
             stage_latency_ms=(time.perf_counter() - t0) * 1000.0,
+            cnn_execution_mode=verif_pred.execution_mode,
+            onnx_inference_executed=verif_pred.onnx_executed,
+            cnn_inference_duration_ms=verif_pred.duration_ms,
         )

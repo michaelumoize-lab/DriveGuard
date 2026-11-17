@@ -113,12 +113,13 @@ class TestSessionIsolation(unittest.IsolatedAsyncioTestCase):
         # Darken / occlude eye band (rows 180 to 260 across center) to simulate prolonged eye closure
         img_closed[180:260, 220:420] = 0
 
-        # Feed 35 frames: A stays open, B has prolonged eye closure
+        # Feed 35 frames: A stays natural with periodic blinks, B has prolonged eye closure
         last_dto_a = None
         last_dto_b = None
         for idx in range(35):
             now_ms = (time.perf_counter() * 1000.0) + (idx * 40.0)
-            last_dto_a = engine_a.process_frame(img_open, now_ms)
+            frame_open_a = generate_benchmark_frame(idx + 20)
+            last_dto_a = engine_a.process_frame(frame_open_a, now_ms)
             last_dto_b = engine_b.process_frame(img_closed, now_ms)
 
         # Session A must remain NORMAL

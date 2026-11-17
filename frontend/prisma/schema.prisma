@@ -128,7 +128,7 @@ model UserProfile {
 }
 
 // ==========================================
-// 3. CALIBRATED AI DRIVER BASELINE
+// 3. CALIBRATED AI DRIVER BASELINE (DG-03)
 // ==========================================
 model DriverProfile {
   id                     String    @id @default(cuid())
@@ -142,6 +142,13 @@ model DriverProfile {
   blinkDurationMadMs     Float     @default(45.0)
   blinkRcrMedian         Float     @default(1.15)
   blinkRcrMad            Float     @default(0.20)
+  blinkFreqMedianPerMin  Float     @default(16.0)
+  blinkFreqMadPerMin     Float     @default(4.5)
+  baselinePerclosPct     Float     @default(3.5)
+  blinkAmplitudeMedian   Float     @default(0.14)
+  temporalBlinksSampled  Int       @default(0)
+  temporalWindowSec      Float     @default(120.0)
+  sensitivityLevel       String    @default("STANDARD")
   neutralPitchDeg        Float     @default(0.0)
   neutralYawDeg          Float     @default(0.0)
   calibrationReliability Float     @default(0.50)

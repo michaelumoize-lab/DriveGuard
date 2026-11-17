@@ -1,0 +1,34 @@
+# Render Blueprint Specification for DriveGuard Backend
+# Documentation: https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: driveguard-backend
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health/liveness
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DEBUG
+        value: "false"
+      - key: HOST
+        value: 0.0.0.0
+      - key: PYTHONPATH
+        value: .
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: AUTH_TOKEN_ISSUER
+        value: driveguard-frontend
+      - key: AUTH_TOKEN_AUDIENCE
+        value: driveguard-backend
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false

@@ -1,5 +1,5 @@
-# DriveGuard Local Desktop AI Engine Runtime Requirements (Python 3.11)
-# Optimized for local-first execution on Windows/macOS/Linux with native GUI display.
+# DriveGuard AI Engine & WebRTC Runtime (Python 3.11)
+# Supports local desktop execution, ESP32 hardware serial, and LiveKit cloud WebRTC streaming.
 
 numpy>=1.26.0
 scipy>=1.12.0
@@ -17,3 +17,7 @@ websockets>=12.0
 pyserial>=3.5
 sqlalchemy>=2.0.0
 pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pyjwt>=2.8.0
+livekit>=1.0.0
+livekit-api>=1.0.0

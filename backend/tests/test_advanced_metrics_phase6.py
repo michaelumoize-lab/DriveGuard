@@ -320,7 +320,15 @@ class TestAdvancedMetricsPhase6(unittest.TestCase):
         engine = SessionAIEngine(landmarker=mock_lm)
 
         frame = np.full((120, 160, 3), 100, dtype=np.uint8)
-        dto = engine.process_frame(frame, timestamp_ms=1000.0)
+        # Drive 4 pose transitions so gaze entropy transitions from INSUFFICIENT_OBSERVATIONS to numeric
+        mock_lm.yaw = -25.0  # LEFT_MIRROR
+        engine.process_frame(frame, timestamp_ms=1100.0)
+        mock_lm.yaw = 0.0    # CENTER_FORWARD
+        engine.process_frame(frame, timestamp_ms=1200.0)
+        mock_lm.yaw = 25.0   # RIGHT_MIRROR
+        engine.process_frame(frame, timestamp_ms=1300.0)
+        mock_lm.yaw = 0.0    # CENTER_FORWARD
+        dto = engine.process_frame(frame, timestamp_ms=1400.0)
 
         self.assertIsNotNone(dto)
         self.assertIsNotNone(dto.eye_metrics.gaze_entropy)

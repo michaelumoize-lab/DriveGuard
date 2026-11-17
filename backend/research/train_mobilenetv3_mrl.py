@@ -33,7 +33,7 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import matplotlib
@@ -155,31 +155,82 @@ def split_subject_disjoint(
     samples: List[MRLEyeSample],
     train_ratio: float = 0.75,
     val_ratio: float = 0.12,
+    seed: int = 42,
 ) -> Tuple[List[MRLEyeSample], List[MRLEyeSample], List[MRLEyeSample]]:
     """
-    Partition samples by Subject ID so no participant appears in both training and test sets.
+    Partition samples by Subject ID so no participant appears in more than one partition.
+    Strictly guarantees disjoint subject sets with deterministic splitting.
     """
     subjects = sorted({s.subject_id for s in samples})
+    rng = random.Random(seed)
+
     if len(subjects) < 3:
-        rng = random.Random(42)
+        # Fallback for datasets without sufficient individual subject identifiers
         shuffled = list(samples)
         rng.shuffle(shuffled)
-        n_train = int(len(shuffled) * train_ratio)
-        n_val = int(len(shuffled) * val_ratio)
+        n_train = max(1, int(len(shuffled) * train_ratio))
+        n_val = max(1, int(len(shuffled) * val_ratio))
         return shuffled[:n_train], shuffled[n_train : n_train + n_val], shuffled[n_train + n_val :]
 
-    n_train_subj = max(1, int(len(subjects) * train_ratio))
-    n_val_subj = max(1, int(len(subjects) * val_ratio))
+    shuffled_subjects = list(subjects)
+    rng.shuffle(shuffled_subjects)
 
-    train_subjs = set(subjects[:n_train_subj])
-    val_subjs = set(subjects[n_train_subj : n_train_subj + n_val_subj])
-    test_subjs = set(subjects[n_train_subj + n_val_subj :])
+    n_total = len(shuffled_subjects)
+    n_train_subj = max(1, int(n_total * train_ratio))
+    n_val_subj = max(1, int(n_total * val_ratio))
+
+    # Guarantee at least 1 subject per split when n_total >= 3
+    if n_train_subj + n_val_subj >= n_total:
+        if n_train_subj > 1:
+            n_train_subj -= 1
+        elif n_val_subj > 1:
+            n_val_subj -= 1
+
+    train_subjs = set(shuffled_subjects[:n_train_subj])
+    val_subjs = set(shuffled_subjects[n_train_subj : n_train_subj + n_val_subj])
+    test_subjs = set(shuffled_subjects[n_train_subj + n_val_subj :])
+
+    # Assert strict disjointness across all partitions
+    assert len(train_subjs.intersection(val_subjs)) == 0, "Train and Val subjects must be disjoint"
+    assert len(train_subjs.intersection(test_subjs)) == 0, "Train and Test subjects must be disjoint"
+    assert len(val_subjs.intersection(test_subjs)) == 0, "Val and Test subjects must be disjoint"
+    assert len(train_subjs) > 0 and len(val_subjs) > 0 and len(test_subjs) > 0, "All partitions must have subjects"
 
     train_split = [s for s in samples if s.subject_id in train_subjs]
     val_split = [s for s in samples if s.subject_id in val_subjs]
     test_split = [s for s in samples if s.subject_id in test_subjs]
 
     return train_split, val_split, test_split
+
+
+def get_split_statistics(
+    train_split: List[MRLEyeSample],
+    val_split: List[MRLEyeSample],
+    test_split: List[MRLEyeSample],
+) -> Dict[str, Dict[str, Any]]:
+    """Compute subject counts, sample counts, and class distributions per partition."""
+    def stats_for_partition(partition: List[MRLEyeSample]) -> Dict[str, Any]:
+        subjs = {s.subject_id for s in partition}
+        n_samples = len(partition)
+        n_open = sum(1 for s in partition if s.label_closed == 0)
+        n_closed = sum(1 for s in partition if s.label_closed == 1)
+        open_pct = round((n_open / max(1, n_samples)) * 100.0, 1)
+        closed_pct = round((n_closed / max(1, n_samples)) * 100.0, 1)
+        return {
+            "num_subjects": len(subjs),
+            "num_samples": n_samples,
+            "open_count": n_open,
+            "closed_count": n_closed,
+            "open_pct": open_pct,
+            "closed_pct": closed_pct,
+            "subjects": sorted(subjs),
+        }
+
+    return {
+        "train": stats_for_partition(train_split),
+        "validation": stats_for_partition(val_split),
+        "test": stats_for_partition(test_split),
+    }
 
 
 def create_synthetic_mrl_smoke_dataset(root_dir: Path, num_samples: int = 240) -> Path:
@@ -212,10 +263,15 @@ def create_synthetic_mrl_smoke_dataset(root_dir: Path, num_samples: int = 240) -
     return synth_dir
 
 
-def compute_roc_auc(y_true: List[int], y_prob_closed: List[float]) -> float:
-    """Compute exact ROC-AUC score in pure NumPy without requiring scikit-learn."""
+def compute_roc_auc(y_true: List[int], y_prob_closed: List[float]) -> Optional[float]:
+    """
+    Compute exact ROC-AUC score in pure NumPy without requiring scikit-learn.
+    Returns None if the evaluation set contains only one class or no samples,
+    as ROC-AUC is mathematically undefined under single-class conditions.
+    Never returns fabricated 1.0 when discrimination cannot be evaluated.
+    """
     if not y_true or len(set(y_true)) < 2:
-        return 1.0
+        return None
     y_arr = np.asarray(y_true, dtype=np.int32)
     p_arr = np.asarray(y_prob_closed, dtype=np.float64)
     pos = y_arr == 1
@@ -223,7 +279,7 @@ def compute_roc_auc(y_true: List[int], y_prob_closed: List[float]) -> float:
     n_pos = int(np.sum(pos))
     n_neg = int(np.sum(neg))
     if n_pos == 0 or n_neg == 0:
-        return 1.0
+        return None
     # Rank-based Mann-Whitney U statistic (equivalent to area under ROC curve)
     order = np.argsort(p_arr)
     ranks = np.empty_like(order, dtype=np.float64)
@@ -312,9 +368,13 @@ def run_training_pipeline(
         raise RuntimeError(f"Found only {len(all_samples)} valid eye images in {data_dir}.")
 
     train_items, val_items, test_items = split_subject_disjoint(all_samples)
-    print(
-        f"Subject-Disjoint Split: Train={len(train_items)}, Val={len(val_items)}, Unseen Test={len(test_items)}"
-    )
+    split_stats = get_split_statistics(train_items, val_items, test_items)
+    print("\n--- Subject-Disjoint Partition Statistics ---")
+    for partition_name, pstats in split_stats.items():
+        print(
+            f"  {partition_name.capitalize()}: {pstats['num_subjects']} subjects, {pstats['num_samples']} samples "
+            f"(Open: {pstats['open_count']} [{pstats['open_pct']}%], Closed: {pstats['closed_count']} [{pstats['closed_pct']}%])"
+        )
 
     train_loader = DataLoader(
         MRLEyeTorchDataset(train_items, is_train=True), batch_size=batch_size, shuffle=True
@@ -347,7 +407,7 @@ def run_training_pipeline(
         "val_auc": [],
     }
 
-    def evaluate_loader(loader) -> Tuple[float, float, float, List[int], List[int]]:
+    def evaluate_loader(loader) -> Tuple[float, float, Optional[float], List[int], List[int]]:
         model.eval()
         total_loss = 0.0
         correct = 0
@@ -369,10 +429,11 @@ def run_training_pipeline(
                 all_probs_closed.extend(probs[:, 1].cpu().tolist())
                 all_targets.extend(y.cpu().tolist())
         auc = compute_roc_auc(all_targets, all_probs_closed)
+        auc_pct = (auc * 100.0) if auc is not None else None
         return (
             total_loss / max(1, total),
             (correct / max(1, total)) * 100.0,
-            auc * 100.0,
+            auc_pct,
             all_preds,
             all_targets,
         )
@@ -406,9 +467,10 @@ def run_training_pipeline(
         history["train_loss"].append(tr_loss)
         history["val_loss"].append(val_loss)
         history["val_acc"].append(val_acc)
-        history["val_auc"].append(val_auc)
+        history["val_auc"].append(val_auc if val_auc is not None else 0.0)
+        auc_display = f"{val_auc:.2f}%" if val_auc is not None else "N/A (Single Class)"
         print(
-            f"  Warmup Epoch {epoch}/{epochs_warmup} | Train Loss: {tr_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}% | Val AUC: {val_auc:.2f}%"
+            f"  Warmup Epoch {epoch}/{epochs_warmup} | Train Loss: {tr_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}% | Val AUC: {auc_display}"
         )
 
     # --- Phase 2: Unfreeze Backbone Layers & Fine-Tune with Smaller Learning Rate ---
@@ -449,15 +511,17 @@ def run_training_pipeline(
         history["train_loss"].append(tr_loss)
         history["val_loss"].append(val_loss)
         history["val_acc"].append(val_acc)
-        history["val_auc"].append(val_auc)
-        if val_auc >= best_val_auc:
-            best_val_auc = val_auc
+        history["val_auc"].append(val_auc if val_auc is not None else 0.0)
+        val_metric = val_auc if val_auc is not None else val_acc
+        if val_metric >= best_val_auc:
+            best_val_auc = val_metric
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             no_improve_count = 0
         else:
             no_improve_count += 1
+        auc_display = f"{val_auc:.2f}%" if val_auc is not None else "N/A (Single Class)"
         print(
-            f"  Fine-Tune Epoch {epoch}/{epochs_finetune} | Train Loss: {tr_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}% | Val AUC: {val_auc:.2f}%"
+            f"  Fine-Tune Epoch {epoch}/{epochs_finetune} | Train Loss: {tr_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}% | Val AUC: {auc_display}"
         )
         if no_improve_count >= patience:
             print(f"  Early stopping triggered after {epoch} fine-tuning epochs.")
@@ -468,6 +532,7 @@ def run_training_pipeline(
 
     # --- Evaluate on Held-Out Unseen Test Subjects ---
     test_loss, test_acc, test_auc, preds, targets = evaluate_loader(test_loader)
+    test_auc_str = f"{test_auc:.2f}%" if test_auc is not None else "N/A" 
     tp = sum(1 for p, t in zip(preds, targets) if p == 1 and t == 1)
     fp = sum(1 for p, t in zip(preds, targets) if p == 1 and t == 0)
     tn = sum(1 for p, t in zip(preds, targets) if p == 0 and t == 0)
@@ -546,7 +611,7 @@ def run_training_pipeline(
     ax2.plot(epochs_range, history["val_acc"], marker="o", color="#059669", label="Validation Accuracy (%)")
     ax2.plot(epochs_range, history["val_auc"], marker="^", color="#2563EB", label="Validation ROC-AUC (%)")
     ax2.axvline(epochs_warmup + 0.5, color="#DC2626", ls="--", label="Unfreeze Later Layers")
-    ax2.set_title(f"Unseen-Subject Validation (Test AUC = {test_auc:.2f}%, F1 = {f1:.1f}%)")
+    ax2.set_title(f"Unseen-Subject Validation (Test AUC = {test_auc_str}, F1 = {f1:.1f}%)")
     ax2.set_xlabel("Epoch")
     ax2.set_ylabel("Score (%)")
     ax2.legend()

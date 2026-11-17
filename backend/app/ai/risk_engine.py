@@ -56,7 +56,7 @@ class DeviationScores:
     is_mirror_check_context: bool
     z_blink_avr: float = 0.0
     cv_ibi: float = 0.0
-    gaze_entropy_ht: float = 1.20
+    gaze_entropy_ht: Optional[float] = None
     au4_brow_strain: float = 0.0
     is_visual_distraction: bool = False
     is_cognitive_tunneling: bool = False
@@ -196,7 +196,7 @@ class PersonalisedAdaptiveRiskEngine:
                         is_mirror_check_context=False,
                         z_blink_avr=0.0,
                         cv_ibi=0.0,
-                        gaze_entropy_ht=1.20,
+                        gaze_entropy_ht=None,
                         au4_brow_strain=0.0,
                         is_visual_distraction=False,
                         is_cognitive_tunneling=False,
@@ -218,15 +218,22 @@ class PersonalisedAdaptiveRiskEngine:
         if zone in (PoseZone.LEFT_MIRROR, PoseZone.RIGHT_MIRROR, PoseZone.DASHBOARD):
             if self._non_center_zone_since_ms is None:
                 self._non_center_zone_since_ms = ts
-            glance_dur_ms = ts - self._non_center_zone_since_ms
-            # A brief glance (<= 3.0s) is normal driving mirror/instrument checking context
-            is_mirror_check = glance_dur_ms <= 3000.0
+            elapsed_away_ms = ts - self._non_center_zone_since_ms
+            if elapsed_away_ms <= 3000.0:
+                is_mirror_check = True
         else:
             self._non_center_zone_since_ms = None
 
-        # Track rolling 5-second normalized EAR relative to the active zone.
-        # If geometric reliability is degraded and the cascade invoked Stage 2, use the arbitrated closure score
-        # so landmark glare jitter does not corrupt the 5-second openness average.
+        if geom.pitch_deg - self.profile.neutral_pitch_deg <= -8.0:
+            if self._downward_pitch_since_ms is None:
+                self._downward_pitch_since_ms = ts
+        else:
+            self._downward_pitch_since_ms = None
+        is_head_nodding = (
+            self._downward_pitch_since_ms is not None
+            and (ts - self._downward_pitch_since_ms) >= 1500.0
+        )
+
         if cascade.cnn_invoked and geom.geometric_reliability < 0.65:
             effective_ear = zone_base.ear_median * (1.0 - 0.50 * cascade.fused_closure_score)
         else:
@@ -289,8 +296,12 @@ class PersonalisedAdaptiveRiskEngine:
         au4_brow_strain = geom.blendshape_brow_down or 0.0
         is_brow_strained = (au4_brow_strain >= 0.40) and (z_ear >= 1.0)
 
-        # Euro NCAP 2026 Gaze Attention & Distraction
-        ht_val = gaze.transition_entropy_ht if gaze is not None else 1.20
+        # Euro NCAP 2026 Gaze Attention & Distraction (Head-Pose Proxy)
+        ht_val = (
+            gaze.transition_entropy_ht
+            if (gaze is not None and gaze.transition_entropy_ht is not None)
+            else None
+        )
         is_visual_distraction = gaze.is_off_road_dwell_exceeded if gaze is not None else False
         is_blank_stare = gaze.is_blank_stare_detected if gaze is not None else False
 
@@ -318,75 +329,69 @@ class PersonalisedAdaptiveRiskEngine:
             linear_center = 1.30
             warn_threshold = 0.50
         elif sensitivity in ("RELAXED", "HIGHWAY"):
-            dynamic_perclos_cutoff = max(16.0, base_perclos * 3.0)
-            microsleep_cutoff_ms = max(1350.0, 4.0 * self.profile.blink_duration_median_ms)
-            linear_center = 1.65
+            dynamic_perclos_cutoff = max(20.0, base_perclos * 3.5)
+            microsleep_cutoff_ms = max(1800.0, 5.0 * self.profile.blink_duration_median_ms)
+            linear_center = 1.90
             warn_threshold = 0.65
-        else:
-            # STANDARD (Recommended)
-            dynamic_perclos_cutoff = max(14.0, base_perclos * 2.5)
-            microsleep_cutoff_ms = max(1100.0, 3.5 * self.profile.blink_duration_median_ms)
-            linear_center = 1.45
-            warn_threshold = 0.56
+        else:  # STANDARD
+            dynamic_perclos_cutoff = max(15.0, base_perclos * 2.5)
+            microsleep_cutoff_ms = max(1200.0, 3.5 * self.profile.blink_duration_median_ms)
+            linear_center = 1.60
+            warn_threshold = 0.58
 
-        # Repeated abnormal blink clusters (multiple prolonged blinks or sluggish RCR)
-        is_abnormal_cluster = kinematics.abnormal_blink_cluster_detected
-
-        # --- 4. Head Nodding & Yawning Supporting Indicators ---
-        rel_pitch = geom.pitch_deg - self.profile.neutral_pitch_deg
-        is_head_nodding = False
-        if rel_pitch <= -14.0 and not is_mirror_check:
-            if self._downward_pitch_since_ms is None:
-                self._downward_pitch_since_ms = ts
-            elif (ts - self._downward_pitch_since_ms) >= 1600.0:
-                is_head_nodding = True
-        else:
-            self._downward_pitch_since_ms = None
-
-        # --- 5. Combined Fatigue-Risk Score R_t in [0, 1] ---
-        # Weighted combination of robust deviations
-        linear_risk = (
-            0.28 * min(z_perclos, 4.5)
-            + 0.22 * min(z_blink_dur, 4.5)
-            + 0.16 * min(z_blink_rcr, 4.0)
-            + 0.14 * min(z_ear, 4.0)
-            + 0.12 * min(z_blink_avr, 4.0)
-            + 0.05 * min(z_blink_freq, 3.0)
-            + 0.10 * min(max(0.0, (cv_ibi - 0.45) / 0.35), 3.0)
-            + (0.35 if is_head_nodding else 0.0)
-            + (0.24 if is_abnormal_cluster else 0.0)
-            + (0.20 if is_brow_strained else 0.0)
-            + (0.35 if is_visual_distraction else 0.0)
-            + (0.28 if is_blank_stare else 0.0)
-            + (0.20 if (kinematics.is_yawning or kinematics.yawn_count_5min >= 2) else 0.0)
+        # --- 4. Context-Adaptive Multi-Feature Logistic Fusion ---
+        z_linear = (
+            0.32 * z_ear
+            + 0.24 * z_blink_dur
+            + 0.16 * z_blink_rcr
+            + 0.20 * z_perclos
+            + 0.08 * z_blink_freq
+            + 0.05 * z_blink_avr
+            + 0.05 * min(3.0, cv_ibi * 2.0)
         )
-        # Logistic mapping centered at linear_center (governed by sensitivity preset)
-        risk_score = float(1.0 / (1.0 + np.exp(-1.85 * (linear_risk - linear_center))))
+        if is_brow_strained:
+            z_linear += 0.35
 
-        # Safety-critical microsleep override: continuous eye closure >= microsleep_cutoff_ms
-        # Observation gap periods must never fabricate or trigger a microsleep event
+        # DG-07: Low transition entropy only contributes when >= 3 transitions observed
+        if (
+            gaze is not None
+            and gaze.transition_entropy_ht is not None
+            and gaze.recent_zone_transitions_count >= 3
+            and gaze.transition_entropy_ht < 0.35
+        ):
+            z_linear += 0.40
+
+        risk_score = float(1.0 / (1.0 + np.exp(-1.4 * (z_linear - linear_center))))
+
+        # --- 5. Non-Linear Rule Overrides ---
         is_microsleep = (
-            kinematics.is_eye_closed
-            and kinematics.blink_state != BlinkState.UNCERTAIN_GAP
-            and kinematics.current_closure_duration_ms >= microsleep_cutoff_ms
-            and abs(geom.yaw_deg - self.profile.neutral_yaw_deg) < 28.0
+            kinematics.current_closure_duration_ms >= microsleep_cutoff_ms
+            or kinematics.blink_state == BlinkState.PROLONGED_CLOSURE
         )
         if is_microsleep:
             risk_score = max(risk_score, 0.95)
-        elif kinematics.is_eye_closed and kinematics.current_closure_duration_ms >= 550.0:
-            risk_score = max(risk_score, 0.64)
 
-        # --- 6. Explainable Reason Generation ---
+        if kinematics.perclos_reliable and (kinematics.perclos_60s_pct >= (dynamic_perclos_cutoff * 1.3)):
+            risk_score = max(risk_score, 0.88)
+
+        if is_head_nodding and z_ear >= 1.5:
+            risk_score = max(risk_score, 0.85)
+
+        # Distraction elevation: sustained off-road gaze elevates risk directly
+        if is_visual_distraction:
+            risk_score = max(risk_score, 0.70)
+        if is_blank_stare:
+            risk_score = max(risk_score, 0.68)
+
+        # Mirror check context safety ceiling
+        if is_mirror_check and not is_microsleep and not is_visual_distraction:
+            risk_score = min(risk_score, 0.45)
+
+        # --- 6. Explainable Rationale Reason Codes ---
         reasons: List[str] = []
         if is_microsleep:
+            reasons.append("MICROSLEEP_PROLONGED_CLOSURE")
             reasons.append("PROLONGED_EYE_CLOSURE_MICROSLEEP")
-        if is_abnormal_cluster:
-            reasons.append("REPEATED_ABNORMAL_BLINK_CLUSTER")
-        if kinematics.completed_blink and kinematics.completed_blink.classification in (
-            BlinkClassification.PROLONGED,
-            BlinkClassification.MICROSLEEP_CANDIDATE,
-        ):
-            reasons.append("PROLONGED_BLINK_DETECTED")
         personal_dur_cutoff_ms = max(
             310.0, self.profile.blink_duration_median_ms + 2.2 * effective_dur_mad
         )
@@ -411,7 +416,12 @@ class PersonalisedAdaptiveRiskEngine:
             reasons.append("VISUAL_DISTRACTION_OFF_ROAD_DWELL")
         if is_blank_stare:
             reasons.append("COGNITIVE_TUNNELING_BLANK_STARE")
-        if gaze is not None and gaze.transition_entropy_ht < 0.35 and gaze.recent_zone_transitions_count >= 1:
+        if (
+            gaze is not None
+            and gaze.transition_entropy_ht is not None
+            and gaze.recent_zone_transitions_count >= 3
+            and gaze.transition_entropy_ht < 0.35
+        ):
             reasons.append("LOW_GAZE_TRANSITION_ENTROPY")
         if kinematics.perclos_reliable and (z_perclos >= 1.8 or kinematics.perclos_60s_pct >= dynamic_perclos_cutoff):
             reasons.append("INCREASED_PERCLOS")
@@ -500,7 +510,7 @@ class PersonalisedAdaptiveRiskEngine:
             is_mirror_check_context=is_mirror_check,
             z_blink_avr=round(z_blink_avr, 2),
             cv_ibi=round(cv_ibi, 3),
-            gaze_entropy_ht=round(ht_val, 3),
+            gaze_entropy_ht=round(ht_val, 3) if ht_val is not None else None,
             au4_brow_strain=round(au4_brow_strain, 3),
             is_visual_distraction=is_visual_distraction,
             is_cognitive_tunneling=is_blank_stare,

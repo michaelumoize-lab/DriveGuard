@@ -2,6 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "@/lib/get-session";
 import { prisma } from "@/lib/prisma";
 
+function sanitizeNum(val: unknown, fallback: number, min?: number, max?: number): number {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return fallback;
+  if (min !== undefined && n < min) return min;
+  if (max !== undefined && n > max) return max;
+  return n;
+}
+
+
 export async function POST(req: NextRequest) {
   try {
     const session = await getServerSession();
@@ -42,17 +51,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Session not found or forbidden" }, { status: 404 });
     }
 
-    const resolvedDuration = Number(durationSeconds ?? durationSec ?? 0);
-    const resolvedMaxPerclos = Number(maxPerclosPct ?? maxPerclos ?? 0);
-    const resolvedNormalFrames = Number(normalFramesCount ?? totalFrames ?? 0);
-    const resolvedCriticalAlerts = Number(criticalAlertsCount ?? criticalAlerts ?? 0);
-    const resolvedAvgFps = Number(averageFps || 0);
-    const resolvedAvgLatency = Number(averageLatencyMs || 0);
-    const resolvedAvgPerclos = Number(averagePerclosPct || 0);
-    const resolvedTotalBlinks = Number(totalBlinks || 0);
-    const resolvedAvgBlinkRate = Number(averageBlinkRate || 0);
-    const resolvedWarningAlerts = Number(warningAlertsCount || 0);
-    const resolvedMirrorSuppressions = Number(mirrorSuppressions || 0);
+    const resolvedDuration = Math.max(0, sanitizeNum(durationSeconds ?? durationSec, 0));
+    const resolvedMaxPerclos = sanitizeNum(maxPerclosPct ?? maxPerclos, 0, 0, 100);
+    const resolvedNormalFrames = Math.max(0, Math.round(sanitizeNum(normalFramesCount ?? totalFrames, 0)));
+    const resolvedCriticalAlerts = Math.max(0, Math.round(sanitizeNum(criticalAlertsCount ?? criticalAlerts, 0)));
+    const resolvedAvgFps = Math.max(0, sanitizeNum(averageFps, 0));
+    const resolvedAvgLatency = Math.max(0, sanitizeNum(averageLatencyMs, 0));
+    const resolvedAvgPerclos = sanitizeNum(averagePerclosPct, 0, 0, 100);
+    const resolvedTotalBlinks = Math.max(0, Math.round(sanitizeNum(totalBlinks, 0)));
+    const resolvedAvgBlinkRate = Math.max(0, sanitizeNum(averageBlinkRate, 0));
+    const resolvedWarningAlerts = Math.max(0, Math.round(sanitizeNum(warningAlertsCount, 0)));
+    const resolvedMirrorSuppressions = Math.max(0, Math.round(sanitizeNum(mirrorSuppressions, 0)));
 
     const updated = await prisma.drivingSession.update({
       where: { sessionCode },
