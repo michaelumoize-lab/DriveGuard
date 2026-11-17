@@ -310,7 +310,7 @@ class DriveGuardFaceLandmarker:
                     pitch_deg=0.0,
                     yaw_deg=0.0,
                     roll_deg=0.0,
-                    pose_zone=PoseZone.OUT_OF_BOUNDS,
+                    pose_zone=PoseZone.UNKNOWN,
                     geometric_reliability=0.0,
                 ),
                 None,

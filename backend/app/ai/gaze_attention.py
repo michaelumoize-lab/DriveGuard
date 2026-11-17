@@ -55,6 +55,7 @@ class GazeAttentionTracker:
         PoseZone.RIGHT_MIRROR,
         PoseZone.DASHBOARD,
         PoseZone.OUT_OF_BOUNDS,
+        PoseZone.UNKNOWN,
     )
 
     def __init__(
@@ -134,8 +135,8 @@ class GazeAttentionTracker:
         prcf_pct = (center_time_ms / total_time_ms * 100.0) if total_time_ms > 0 else 100.0
 
         # 4. Euro NCAP Off-Road Dwell Limit Check
-        # Non-center zones sustained beyond threshold constitute distraction
-        is_off_road = zone != PoseZone.CENTER
+        # Non-center zones sustained beyond threshold constitute distraction (UNKNOWN tracking loss is never off-road)
+        is_off_road = zone not in (PoseZone.CENTER, PoseZone.UNKNOWN)
         is_off_road_dwell_exceeded = is_off_road and (dwell_ms >= self.off_road_dwell_threshold_ms)
 
         # 5. Euro NCAP Blank Stare / Cognitive Tunneling Check

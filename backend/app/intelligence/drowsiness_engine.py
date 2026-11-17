@@ -33,6 +33,13 @@ class DrowsinessAssessment:
     temporal_metrics: TemporalMetrics
     confidence: ConfidenceAssessment
     is_mirror_check_context: bool
+    alert_active: bool = False
+    unresolved_alert_state: Optional[DrowsinessState] = None
+    historical_reason: Optional[ExplainableReason] = None
+
+    @property
+    def is_alert_active(self) -> bool:
+        return self.alert_active
 
     @property
     def primary_reason(self) -> Optional[ExplainableReason]:
@@ -77,8 +84,9 @@ class DrowsinessEngine:
         recovery_attention_ms: float = 1000.0,
         face_loss_grace_ms: float = 1000.0,
         sensor_unreliable_grace_ms: float = 1000.0,
+        max_sampling_gap_ms: float = 250.0,
     ) -> None:
-        self.temporal_analyzer = TemporalAnalyzer()
+        self.temporal_analyzer = TemporalAnalyzer(max_sampling_gap_ms=max_sampling_gap_ms)
         self.confidence_evaluator = SignalConfidenceEvaluator()
         self.decision_engine = DecisionEngine(
             sustained_closure_threshold_ms=sustained_closure_threshold_ms,
@@ -92,6 +100,7 @@ class DrowsinessEngine:
             recovery_attention_ms=recovery_attention_ms,
             face_loss_grace_ms=face_loss_grace_ms,
             sensor_unreliable_grace_ms=sensor_unreliable_grace_ms,
+            max_sampling_gap_ms=max_sampling_gap_ms,
         )
 
     def evaluate(
@@ -122,6 +131,9 @@ class DrowsinessEngine:
             temporal_metrics=temporal_res,
             confidence=confidence_res,
             is_mirror_check_context=decision_res.is_mirror_check_context,
+            alert_active=decision_res.alert_active,
+            unresolved_alert_state=decision_res.unresolved_alert_state,
+            historical_reason=decision_res.historical_reason,
         )
 
     def reset(self) -> None:

@@ -5,7 +5,7 @@
 
 export type AlertState = "NORMAL" | "WARNING" | "CRITICAL" | "MONITORING_UNAVAILABLE";
 
-export type PoseZone = "CENTER" | "LEFT_MIRROR" | "RIGHT_MIRROR" | "DASHBOARD" | "OUT_OF_BOUNDS";
+export type PoseZone = "CENTER" | "LEFT_MIRROR" | "RIGHT_MIRROR" | "DASHBOARD" | "OUT_OF_BOUNDS" | "UNKNOWN";
 
 export type ExperimentMode =
   | "EXPERIMENT_A_GEOMETRIC_ONLY"

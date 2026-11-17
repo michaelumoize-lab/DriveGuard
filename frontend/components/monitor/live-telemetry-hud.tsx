@@ -291,6 +291,8 @@ export function LiveTelemetryHUD({
         return { label: "Right Mirror", hint: "Side Check", status: "caution" };
       case "DASHBOARD":
         return { label: "Dashboard", hint: "Cluster Check", status: "caution" };
+      case "UNKNOWN":
+        return { label: "Tracking Unavailable", hint: "Face tracking lost", status: "caution" };
       default:
         return { label: zone, hint: "Averted Gaze", status: "critical" };
     }

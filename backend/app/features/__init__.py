@@ -29,11 +29,17 @@ from backend.app.features.ear import (
 )
 from backend.app.features.head_pose import (
     CANONICAL_3D_FACE_POINTS,
+    MANDIBLE_SOLVEPNP_INDICES,
+    RIGID_SOLVEPNP_INDICES,
     SOLVEPNP_LANDMARK_INDICES,
     HeadPoseResult,
     PoseZone,
+    build_neutral_matrix,
     classify_pose_zone,
     estimate_head_pose,
+    extract_euler_yxz,
+    is_valid_rotation_matrix,
+    validate_pnp_solution,
 )
 from backend.app.features.mar import (
     DEFAULT_MAR_OPEN_THRESHOLD,
@@ -64,11 +70,17 @@ __all__ = [
     "extract_eye_aspect_ratio",
     # Head Pose
     "CANONICAL_3D_FACE_POINTS",
+    "MANDIBLE_SOLVEPNP_INDICES",
+    "RIGID_SOLVEPNP_INDICES",
     "SOLVEPNP_LANDMARK_INDICES",
     "HeadPoseResult",
     "PoseZone",
+    "build_neutral_matrix",
     "classify_pose_zone",
     "estimate_head_pose",
+    "extract_euler_yxz",
+    "is_valid_rotation_matrix",
+    "validate_pnp_solution",
     # MAR
     "DEFAULT_MAR_OPEN_THRESHOLD",
     "DEFAULT_MIN_YAWN_DURATION_MS",

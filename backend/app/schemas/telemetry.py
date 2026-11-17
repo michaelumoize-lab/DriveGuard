@@ -22,6 +22,7 @@ class PoseZoneEnum(str, Enum):
     RIGHT_MIRROR = "RIGHT_MIRROR"
     DASHBOARD = "DASHBOARD"
     OUT_OF_BOUNDS = "OUT_OF_BOUNDS"
+    UNKNOWN = "UNKNOWN"
 
 
 class HeadPoseDTO(BaseModel):

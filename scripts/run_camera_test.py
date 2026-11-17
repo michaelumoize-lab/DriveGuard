@@ -436,7 +436,10 @@ def run_benchmark(
                 total_face_hits += 1
 
             # Check mirror status from camera adapter
-            is_mirrored = getattr(camera, "is_flip_horizontal", False)
+            if hasattr(camera, "is_flip_horizontal"):
+                is_mirrored = camera.is_flip_horizontal() if callable(camera.is_flip_horizontal) else bool(camera.is_flip_horizontal)
+            else:
+                is_mirrored = False
 
             # Extract physiological driver features (Phase 5)
             f_w = actual_res[0] if actual_res[0] > 0 else packet.frame.shape[1]

@@ -4,17 +4,17 @@ DriveGuard — Temporal Blink Kinematics & Sub-Frame Event Detector (Phase 5).
 1. What it does:
    Detects blink events, tracks eyelid closing/reopening waveforms using a formal
    state machine, applies sub-frame linear crossing interpolation, and calculates
-   vital kinematics (closing velocity, reopening velocity, and RCR).
+   kinematics (closing velocity, reopening velocity, and RCR).
 
 2. Why it exists:
    Blink duration and velocity are critical physiological indicators of drowsiness:
-   - Alert blinks: Snappy, short (100–250 ms), with high reopening-to-closing ratio (RCR >= 0.85).
-   - Drowsy blinks: Sluggish eyelid reopening (prolonged duration > 350 ms, low RCR < 0.60).
+   - Alert blinks: Snappy, short (100–250 ms), with high reopening-to-closing ratio.
+   - Drowsy blinks: Sluggish eyelid reopening (prolonged duration > 350 ms, low RCR).
    - Microsleeps: Unbroken closure >= 800 ms.
    Sub-frame interpolation prevents quantisation error from discrete frame rates.
 
 3. What data it receives:
-   - Left, right, and compensated EAR measurements.
+   - Left, right, and uncompensated perspective-weighted EAR measurements.
    - Millisecond frame timestamp.
    - Face tracking state (`has_face`).
 
@@ -24,17 +24,21 @@ DriveGuard — Temporal Blink Kinematics & Sub-Frame Event Detector (Phase 5).
 
 5. Modules that depend on it:
    - `backend.app.features.feature_extractor`
-   - Downstream Decision Engine (Phase 6)
+   - Downstream Decision Engine & Temporal Analyzer (Phase 6)
 
 6. Failure behavior:
-   - Face loss or sampling gap (> 250 ms) invalidates in-flight blinks to `UNCERTAIN_GAP`
-     to avoid fabricating artificial multi-second closures.
+   - Face loss or sampling gap (> 250 ms) invalidates in-flight blinks to `UNCERTAIN_GAP`.
+   - On tracking recovery with closed eyes, begins tracking from the recovery timestamp
+     with left-censoring: contributes to sustained-closure monitoring but emits no fabricated
+     completed blink upon reopening.
+   - Non-monotonic timestamps, duplicate timestamps, and NaN/Inf values are rejected safely.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import math
 from typing import Optional, Tuple
 
 
@@ -50,7 +54,7 @@ class BlinkState(str, Enum):
 
 class BlinkClassification(str, Enum):
     """Deterministic classification of observed blinks and closures."""
-    NORMAL = "NORMAL"                         # 70ms <= duration <= 350ms
+    NORMAL = "NORMAL"                         # 40ms <= duration <= 350ms
     PROLONGED = "PROLONGED"                   # 350ms < duration < 800ms
     MICROSLEEP_CANDIDATE = "MICROSLEEP"       # Unbroken closure >= 800ms
     UNCERTAIN = "UNCERTAIN"                   # Incomplete or contaminated by gap
@@ -60,6 +64,7 @@ class BlinkClassification(str, Enum):
 class BlinkEvent:
     """
     Completed blink event with kinematic measurements.
+    Preserves exact positional order of fields 0 through 11 for backward compatibility.
     """
     start_ts_ms: float
     min_ts_ms: float
@@ -73,6 +78,7 @@ class BlinkEvent:
     rcr: float  # Reopening-to-Closing Velocity Ratio (v_reopen / v_close)
     classification: BlinkClassification
     is_binocular: bool
+    is_kinematics_reliable: bool = True
 
 
 @dataclass(frozen=True)
@@ -89,6 +95,11 @@ class BlinkSnapshot:
     total_blink_count: int
     prolonged_blink_count: int
 
+    @property
+    def sampling_gap_detected(self) -> bool:
+        """Whether a sampling gap or tracking uncertainty was flagged on this frame."""
+        return self.state == BlinkState.UNCERTAIN_GAP
+
 
 class BlinkKinematicsDetector:
     """
@@ -100,16 +111,41 @@ class BlinkKinematicsDetector:
         closure_threshold: float = 0.205,
         reopen_threshold: float = 0.240,
         min_blink_duration_ms: float = 40.0,
-        prolonged_duration_ms: float = 300.0,
+        prolonged_duration_ms: float = 350.0,
         microsleep_duration_ms: float = 800.0,
         min_amplitude: float = 0.04,
         max_sampling_gap_ms: float = 250.0,
     ) -> None:
+        """
+        Initialize the blink kinematics detector.
+        
+        Note on provisional thresholds:
+        - min_blink_duration_ms (default 40.0 ms): A provisional filter against sub-frame
+          landmark flutter. Configurable and subject to real-world calibration.
+        - min_amplitude (default 0.04): A provisional excursion floor between open EAR baseline
+          and closed nadir. Configurable and subject to real-world calibration.
+        """
+        try:
+            val_prolonged = float(prolonged_duration_ms)
+            val_microsleep = float(microsleep_duration_ms)
+        except (TypeError, ValueError) as err:
+            raise ValueError(f"Invalid duration thresholds: {err}") from err
+
+        if not (math.isfinite(val_prolonged) and val_prolonged > 0.0):
+            raise ValueError(
+                f"prolonged_duration_ms must be a finite positive number, got {prolonged_duration_ms}"
+            )
+        if not (math.isfinite(val_microsleep) and val_microsleep > val_prolonged):
+            raise ValueError(
+                f"microsleep_duration_ms ({microsleep_duration_ms}) must be finite and strictly "
+                f"greater than prolonged_duration_ms ({prolonged_duration_ms})"
+            )
+
         self.closure_threshold = closure_threshold
         self.reopen_threshold = reopen_threshold
         self.min_blink_duration_ms = min_blink_duration_ms
-        self.prolonged_duration_ms = prolonged_duration_ms
-        self.microsleep_duration_ms = microsleep_duration_ms
+        self.prolonged_duration_ms = val_prolonged
+        self.microsleep_duration_ms = val_microsleep
         self.min_amplitude = min_amplitude
         self.max_sampling_gap_ms = max_sampling_gap_ms
 
@@ -125,6 +161,7 @@ class BlinkKinematicsDetector:
         self._open_ear_before: float = 0.30
         self._was_left_closed: bool = False
         self._was_right_closed: bool = False
+        self._is_left_censored: bool = False
 
         # Totals and historical metrics
         self._total_blinks: int = 0
@@ -162,17 +199,55 @@ class BlinkKinematicsDetector:
         self,
         left_ear: float,
         right_ear: float,
-        compensated_ear: float,
-        timestamp_ms: float,
+        ear: Optional[float] = None,
+        timestamp_ms: float = 0.0,
         has_face: bool = True,
+        compensated_ear: Optional[float] = None,
     ) -> BlinkSnapshot:
         """
         Process a new frame measurement and update blink kinematics state machine.
+        
+        Args:
+            left_ear: Left eye aspect ratio.
+            right_ear: Right eye aspect ratio.
+            ear: Uncompensated, perspective-weighted EAR measurement.
+            timestamp_ms: Monotonic frame timestamp in milliseconds.
+            has_face: Whether face tracking and eye geometry are valid.
+            compensated_ear: Legacy keyword alias for `ear` (backward compatibility).
         """
-        completed_blink: Optional[BlinkEvent] = None
-        current_closure_duration_ms = 0.0
+        # Resolve uncompensated EAR with backward-compatible keyword alias
+        ear_val = ear if ear is not None else (compensated_ear if compensated_ear is not None else 0.0)
 
-        # 1. Face Loss or Sampling Gap Handling
+        # 1. Input Validation: Guard against NaN, Inf, and negative values
+        if (
+            math.isnan(ear_val)
+            or math.isinf(ear_val)
+            or ear_val < 0.0
+            or math.isnan(timestamp_ms)
+            or math.isinf(timestamp_ms)
+            or timestamp_ms < 0.0
+            or (left_ear is not None and (math.isnan(left_ear) or math.isinf(left_ear)))
+            or (right_ear is not None and (math.isnan(right_ear) or math.isinf(right_ear)))
+        ):
+            # Degenerate input: do not corrupt internal state
+            is_currently_closed = self._state in (BlinkState.CLOSED, BlinkState.PROLONGED_CLOSURE)
+            cur_dur = (
+                timestamp_ms - self._closure_start_ts
+                if (self._closure_start_ts is not None and is_currently_closed)
+                else 0.0
+            )
+            return BlinkSnapshot(
+                state=self._state,
+                is_eye_closed=is_currently_closed,
+                current_closure_duration_ms=cur_dur,
+                completed_blink=None,
+                recent_blink_duration_ms=self._recent_duration_ms,
+                recent_blink_rcr=self._recent_rcr,
+                total_blink_count=self._total_blinks,
+                prolonged_blink_count=self._prolonged_blinks,
+            )
+
+        # 2. Face Loss Handling
         if not has_face:
             self._handle_face_lost()
             return BlinkSnapshot(
@@ -186,60 +261,138 @@ class BlinkKinematicsDetector:
                 prolonged_blink_count=self._prolonged_blinks,
             )
 
+        # 3. Timestamp Monotonicity & Sampling Gap Handling
         if self._prev_ts is not None:
             gap_ms = timestamp_ms - self._prev_ts
-            if gap_ms > self.max_sampling_gap_ms:
-                # Large sampling gap detected: invalidate in-flight waveform
-                self._handle_sampling_gap()
+            if gap_ms <= 0.0:
+                # Duplicate or backwards timestamp: ignore without mutating state
+                is_currently_closed = self._state in (BlinkState.CLOSED, BlinkState.PROLONGED_CLOSURE)
+                cur_dur = (
+                    timestamp_ms - self._closure_start_ts
+                    if (self._closure_start_ts is not None and is_currently_closed)
+                    else 0.0
+                )
+                return BlinkSnapshot(
+                    state=self._state,
+                    is_eye_closed=is_currently_closed,
+                    current_closure_duration_ms=cur_dur,
+                    completed_blink=None,
+                    recent_blink_duration_ms=self._recent_duration_ms,
+                    recent_blink_rcr=self._recent_rcr,
+                    total_blink_count=self._total_blinks,
+                    prolonged_blink_count=self._prolonged_blinks,
+                )
 
-        # 2. State Machine Evaluation
-        is_below_closed = compensated_ear < self.closure_threshold
-        is_above_reopen = compensated_ear >= self.reopen_threshold
+            if gap_ms > self.max_sampling_gap_ms:
+                # Large sampling gap detected: invalidate in-flight waveform and record left-censored state
+                self._handle_sampling_gap()
+                self._prev_ts = timestamp_ms
+                self._prev_ear = ear_val
+                return BlinkSnapshot(
+                    state=BlinkState.UNCERTAIN_GAP,
+                    is_eye_closed=False,
+                    current_closure_duration_ms=0.0,
+                    completed_blink=None,
+                    recent_blink_duration_ms=self._recent_duration_ms,
+                    recent_blink_rcr=self._recent_rcr,
+                    total_blink_count=self._total_blinks,
+                    prolonged_blink_count=self._prolonged_blinks,
+                )
+
+        completed_blink: Optional[BlinkEvent] = None
+        current_closure_duration_ms = 0.0
+
+        # Threshold comparisons
+        is_below_closed = ear_val < self.closure_threshold
+        is_above_reopen = ear_val >= self.reopen_threshold
 
         # Track whether individual eyes reached closure during this in-flight event
+        l_val = left_ear if left_ear is not None else ear_val
+        r_val = right_ear if right_ear is not None else ear_val
         if is_below_closed or self._state in (BlinkState.CLOSING, BlinkState.CLOSED, BlinkState.PROLONGED_CLOSURE):
-            if left_ear < self.closure_threshold:
+            if l_val < self.closure_threshold:
                 self._was_left_closed = True
-            if right_ear < self.closure_threshold:
+            if r_val < self.closure_threshold:
                 self._was_right_closed = True
 
-        if self._prev_ear is not None and self._prev_ts is not None:
+        # 4. State Machine Evaluation
+        if self._state == BlinkState.UNCERTAIN_GAP:
+            # Recovery from tracking loss or sampling gap
+            if is_below_closed:
+                # Discovered eye already closed or closure underway:
+                # Track closure from recovery timestamp without backdating or fabricating duration
+                self._state = BlinkState.CLOSED
+                self._closure_start_ts = timestamp_ms
+                self._blink_start_ts = None
+                self._is_left_censored = True
+                self._min_ear = ear_val
+                self._min_ear_ts = timestamp_ms
+                if l_val < self.closure_threshold:
+                    self._was_left_closed = True
+                if r_val < self.closure_threshold:
+                    self._was_right_closed = True
+            elif is_above_reopen:
+                self._state = BlinkState.OPEN
+                self._is_left_censored = False
+                self._closure_start_ts = None
+                self._blink_start_ts = None
+            else:
+                # Hysteresis zone: safely transition to OPEN to prevent deadlock
+                self._state = BlinkState.OPEN
+                self._is_left_censored = False
+                self._closure_start_ts = None
+                self._blink_start_ts = None
+
+        elif self._prev_ear is not None and self._prev_ts is not None:
             if self._state == BlinkState.OPEN:
                 if is_below_closed:
                     # Direct drop below closed threshold in a single frame step
-                    t_cross = self._interpolate_crossing(
-                        self._prev_ts, self._prev_ear, timestamp_ms, compensated_ear, self.closure_threshold
+                    t_cross_close = self._interpolate_crossing(
+                        self._prev_ts, self._prev_ear, timestamp_ms, ear_val, self.closure_threshold
                     )
-                    # The closing phase began at self._prev_ts (prior open frame)
-                    self._blink_start_ts = self._prev_ts
-                    self._closure_start_ts = t_cross
+                    t_cross_open = self._interpolate_crossing(
+                        self._prev_ts, self._prev_ear, timestamp_ms, ear_val, self.reopen_threshold
+                    )
+                    self._blink_start_ts = t_cross_open
+                    self._closure_start_ts = t_cross_close
                     self._open_ear_before = self._prev_ear
-                    self._min_ear = compensated_ear
+                    self._min_ear = ear_val
                     self._min_ear_ts = timestamp_ms
+                    self._is_left_censored = False
                     self._state = BlinkState.CLOSED
-                elif compensated_ear < self._prev_ear and compensated_ear < self.reopen_threshold:
-                    # Starting to close
-                    self._blink_start_ts = self._prev_ts
+                elif ear_val < self._prev_ear and ear_val < self.reopen_threshold:
+                    # Starting to close through reopen threshold
+                    t_cross_open = self._interpolate_crossing(
+                        self._prev_ts, self._prev_ear, timestamp_ms, ear_val, self.reopen_threshold
+                    )
+                    self._blink_start_ts = t_cross_open
                     self._open_ear_before = self._prev_ear
+                    self._is_left_censored = False
                     self._state = BlinkState.CLOSING
 
             elif self._state == BlinkState.CLOSING:
                 if is_below_closed:
-                    t_cross = self._interpolate_crossing(
-                        self._prev_ts, self._prev_ear, timestamp_ms, compensated_ear, self.closure_threshold
+                    t_cross_close = self._interpolate_crossing(
+                        self._prev_ts, self._prev_ear, timestamp_ms, ear_val, self.closure_threshold
                     )
-                    self._closure_start_ts = t_cross
-                    self._min_ear = compensated_ear
+                    self._closure_start_ts = t_cross_close
+                    self._min_ear = ear_val
                     self._min_ear_ts = timestamp_ms
                     self._state = BlinkState.CLOSED
-                elif compensated_ear >= self.reopen_threshold:
+                elif ear_val >= self.reopen_threshold:
                     # Incomplete false closure, aborted
                     self._state = BlinkState.OPEN
                     self._blink_start_ts = None
+                    self._closure_start_ts = None
+                elif self._blink_start_ts is not None and (timestamp_ms - self._blink_start_ts) > 1000.0:
+                    # Trapped in closing timeout (e.g. drooping eyelids)
+                    self._state = BlinkState.OPEN
+                    self._blink_start_ts = None
+                    self._closure_start_ts = None
 
             elif self._state in (BlinkState.CLOSED, BlinkState.PROLONGED_CLOSURE):
-                if compensated_ear < self._min_ear:
-                    self._min_ear = compensated_ear
+                if ear_val < self._min_ear:
+                    self._min_ear = ear_val
                     self._min_ear_ts = timestamp_ms
 
                 if self._closure_start_ts is not None:
@@ -250,82 +403,121 @@ class BlinkKinematicsDetector:
                     self._state = BlinkState.PROLONGED_CLOSURE
 
                 # Check if reopening started
-                if compensated_ear > self.closure_threshold:
+                if ear_val > self.closure_threshold:
                     self._state = BlinkState.REOPENING
 
             if self._state == BlinkState.REOPENING:
                 if is_above_reopen:
-                    # Blink completed!
-                    t_end = self._interpolate_crossing(
-                        self._prev_ts, self._prev_ear, timestamp_ms, compensated_ear, self.reopen_threshold
-                    )
-                    start_ts = self._blink_start_ts if self._blink_start_ts is not None else self._prev_ts
-                    min_ts = self._min_ear_ts or (start_ts + (t_end - start_ts) * 0.5)
-
-                    duration_ms = max(1.0, t_end - start_ts)
-                    amplitude = max(0.01, self._open_ear_before - self._min_ear)
-
-                    # Compute kinematics
-                    close_dt_sec = max(0.001, (min_ts - start_ts) / 1000.0)
-                    reopen_dt_sec = max(0.001, (t_end - min_ts) / 1000.0)
-                    v_close = amplitude / close_dt_sec
-                    v_reopen = amplitude / reopen_dt_sec
-                    rcr = v_reopen / max(1e-6, v_close)
-
-                    # Classify duration & filter noise using UTA-RLDD minimum amplitude (0.04)
-                    if duration_ms < self.min_blink_duration_ms or amplitude < self.min_amplitude:
-                        classification = BlinkClassification.UNCERTAIN
-                    elif duration_ms <= self.prolonged_duration_ms:
-                        classification = BlinkClassification.NORMAL
-                        self._total_blinks += 1
-                    elif duration_ms < self.microsleep_duration_ms:
-                        classification = BlinkClassification.PROLONGED
-                        self._prolonged_blinks += 1
-                        self._total_blinks += 1
+                    # Eyelid has reopened above reopen_threshold
+                    if self._is_left_censored:
+                        # Left-censored event: onset was unobserved in gap.
+                        # Do NOT emit a completed blink with fabricated duration.
+                        self._state = BlinkState.OPEN
+                        self._is_left_censored = False
+                        self._blink_start_ts = None
+                        self._closure_start_ts = None
+                        self._min_ear = 1.0
+                        self._min_ear_ts = None
+                        self._was_left_closed = False
+                        self._was_right_closed = False
                     else:
-                        classification = BlinkClassification.MICROSLEEP_CANDIDATE
-                        self._prolonged_blinks += 1
-                        self._total_blinks += 1
+                        t_end = self._interpolate_crossing(
+                            self._prev_ts, self._prev_ear, timestamp_ms, ear_val, self.reopen_threshold
+                        )
+                        start_ts = (
+                            self._blink_start_ts
+                            if self._blink_start_ts is not None
+                            else (self._closure_start_ts if self._closure_start_ts is not None else self._prev_ts)
+                        )
+                        min_ts = self._min_ear_ts or (start_ts + (t_end - start_ts) * 0.5)
 
-                    is_binocular = self._was_left_closed and self._was_right_closed
+                        measured_duration_ms = t_end - start_ts
+                        if measured_duration_ms <= 0.0:
+                            # Non-positive interval: invalid timing, abort without creating a completed blink
+                            classification = BlinkClassification.UNCERTAIN
+                            completed_blink = None
+                        else:
+                            duration_ms = measured_duration_ms
+                            amplitude = max(0.0, self._open_ear_before - self._min_ear)
 
-                    completed_blink = BlinkEvent(
-                        start_ts_ms=start_ts,
-                        min_ts_ms=min_ts,
-                        end_ts_ms=t_end,
-                        duration_ms=duration_ms,
-                        open_ear_before=self._open_ear_before,
-                        min_ear=self._min_ear,
-                        amplitude=amplitude,
-                        closing_velocity_per_s=v_close,
-                        reopening_velocity_per_s=v_reopen,
-                        rcr=rcr,
-                        classification=classification,
-                        is_binocular=is_binocular,
-                    )
+                            # Compute kinematics without arbitrary duration clamping
+                            close_dt_sec = (min_ts - start_ts) / 1000.0
+                            reopen_dt_sec = (t_end - min_ts) / 1000.0
 
-                    if classification != BlinkClassification.UNCERTAIN:
-                        self._recent_duration_ms = duration_ms
-                        self._recent_rcr = rcr
+                            # Kinematic measurement reliability:
+                            # Intervals <= 5 ms indicate insufficient camera sampling to resolve
+                            # eyelid velocity physically. In such cases, mark kinematics unreliable
+                            # and set velocities/RCR to 0.0 rather than exposing extreme/manufactured values.
+                            if close_dt_sec <= 0.005 or reopen_dt_sec <= 0.005:
+                                is_kinematics_reliable = False
+                                v_close = 0.0
+                                v_reopen = 0.0
+                                rcr = 0.0
+                            else:
+                                is_kinematics_reliable = True
+                                v_close = amplitude / close_dt_sec
+                                v_reopen = amplitude / reopen_dt_sec
+                                rcr = v_reopen / max(1e-6, v_close)
 
-                    # Reset to open
-                    self._state = BlinkState.OPEN
-                    self._blink_start_ts = None
-                    self._closure_start_ts = None
-                    self._min_ear = 1.0
-                    self._was_left_closed = False
-                    self._was_right_closed = False
+                            is_binocular = self._was_left_closed and self._was_right_closed
 
-                elif compensated_ear < self.closure_threshold:
+                            # Classify event against provisional noise thresholds
+                            if duration_ms < self.min_blink_duration_ms or amplitude < self.min_amplitude:
+                                classification = BlinkClassification.UNCERTAIN
+                            elif duration_ms <= self.prolonged_duration_ms:
+                                classification = BlinkClassification.NORMAL
+                            elif duration_ms < self.microsleep_duration_ms:
+                                classification = BlinkClassification.PROLONGED
+                            else:
+                                classification = BlinkClassification.MICROSLEEP_CANDIDATE
+
+                            # Filter noise: UNCERTAIN flutter is suppressed from completed blink emission
+                            if classification == BlinkClassification.UNCERTAIN:
+                                completed_blink = None
+                            else:
+                                completed_blink = BlinkEvent(
+                                    start_ts_ms=start_ts,
+                                    min_ts_ms=min_ts,
+                                    end_ts_ms=t_end,
+                                    duration_ms=duration_ms,
+                                    open_ear_before=self._open_ear_before,
+                                    min_ear=self._min_ear,
+                                    amplitude=amplitude,
+                                    closing_velocity_per_s=v_close,
+                                    reopening_velocity_per_s=v_reopen,
+                                    rcr=rcr,
+                                    classification=classification,
+                                    is_binocular=is_binocular,
+                                    is_kinematics_reliable=is_kinematics_reliable,
+                                )
+
+                                # Only valid binocular blinks increment binocular counters
+                                if is_binocular:
+                                    self._total_blinks += 1
+                                    if classification in (
+                                        BlinkClassification.PROLONGED,
+                                        BlinkClassification.MICROSLEEP_CANDIDATE,
+                                    ):
+                                        self._prolonged_blinks += 1
+                                    self._recent_duration_ms = duration_ms
+                                    if is_kinematics_reliable:
+                                        self._recent_rcr = rcr
+
+                        # Reset state to open
+                        self._state = BlinkState.OPEN
+                        self._blink_start_ts = None
+                        self._closure_start_ts = None
+                        self._min_ear = 1.0
+                        self._min_ear_ts = None
+                        self._was_left_closed = False
+                        self._was_right_closed = False
+
+                elif ear_val < self.closure_threshold:
                     # Dropped back into closed
                     self._state = BlinkState.CLOSED
 
-            elif self._state == BlinkState.UNCERTAIN_GAP:
-                if is_above_reopen:
-                    self._state = BlinkState.OPEN
-
         self._prev_ts = timestamp_ms
-        self._prev_ear = compensated_ear
+        self._prev_ear = ear_val
 
         is_currently_closed = self._state in (BlinkState.CLOSED, BlinkState.PROLONGED_CLOSURE)
         if self._closure_start_ts is not None and is_currently_closed:
@@ -348,10 +540,12 @@ class BlinkKinematicsDetector:
         self._blink_start_ts = None
         self._closure_start_ts = None
         self._min_ear = 1.0
+        self._min_ear_ts = None
         self._was_left_closed = False
         self._was_right_closed = False
         self._prev_ts = None
         self._prev_ear = None
+        self._is_left_censored = True
 
     def _handle_sampling_gap(self) -> None:
         """Cancel in-flight blink if camera or frame pipeline suffered a sampling drop."""
@@ -359,8 +553,12 @@ class BlinkKinematicsDetector:
         self._blink_start_ts = None
         self._closure_start_ts = None
         self._min_ear = 1.0
+        self._min_ear_ts = None
         self._was_left_closed = False
         self._was_right_closed = False
+        self._prev_ts = None
+        self._prev_ear = None
+        self._is_left_censored = True
 
     def reset(self) -> None:
         """Reset state for a new session."""
@@ -373,6 +571,7 @@ class BlinkKinematicsDetector:
         self._min_ear_ts = None
         self._was_left_closed = False
         self._was_right_closed = False
+        self._is_left_censored = False
         self._total_blinks = 0
         self._prolonged_blinks = 0
         self._recent_duration_ms = None

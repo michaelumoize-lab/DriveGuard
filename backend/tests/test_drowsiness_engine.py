@@ -127,6 +127,7 @@ def make_driver_features(
         is_authentic_yawn=(yawn_duration_ms >= 1500.0),
         completed_yawn=completed_yawn,
         total_yawn_count=total_yawns,
+        observed_yawn_duration_ms=yawn_duration_ms,
     )
 
     blink = BlinkSnapshot(
@@ -188,6 +189,10 @@ def test_sustained_eye_closure_critical_warning() -> None:
     a1 = engine.evaluate(f1)
     assert a1.state == DrowsinessState.NORMAL  # Instant closure (0ms elapsed)
 
+    # Continuous frame stream (dt = 100ms <= 250ms max gap)
+    for t in range(1100, 1600, 100):
+        engine.evaluate(make_driver_features(timestamp_ms=float(t), is_closed=True, ear_val=0.12))
+
     # Frame 2: Eyes still closed at t=1600ms (600ms closed) -> ATTENTION (extended closure)
     f2 = make_driver_features(
         timestamp_ms=1600.0,
@@ -198,6 +203,10 @@ def test_sustained_eye_closure_critical_warning() -> None:
     a2 = engine.evaluate(f2)
     assert a2.state == DrowsinessState.ATTENTION
     assert a2.primary_reason.code == ReasonCode.EXTENDED_CLOSURE
+
+    # Continue stream to t=2600ms
+    for t in range(1700, 2600, 100):
+        engine.evaluate(make_driver_features(timestamp_ms=float(t), is_closed=True, ear_val=0.12))
 
     # Frame 3: Eyes still closed at t=2600ms (1600ms closed) -> CRITICAL_WARNING
     f3 = make_driver_features(
@@ -220,6 +229,10 @@ def test_nodding_microsleep_critical() -> None:
     # t=1000ms: Head forward, eyes closed
     f1 = make_driver_features(timestamp_ms=1000.0, is_closed=True, pitch_deg=0.0)
     engine.evaluate(f1)
+
+    # Continuous frames (dt = 100ms) with closure accumulating
+    for t in range(1100, 1900, 100):
+        engine.evaluate(make_driver_features(timestamp_ms=float(t), is_closed=True, pitch_deg=0.0))
 
     # t=1900ms: Closure reached 900ms and pitch dropped to -18 degrees (head slumped forward)
     f2 = make_driver_features(
@@ -374,9 +387,10 @@ def test_persistent_off_road_distraction_warning() -> None:
     """Continuous gaze off-road > 3.5s (outside mirror safety context) triggers DROWSINESS_WARNING."""
     engine = DrowsinessEngine(off_road_distraction_limit_ms=3500.0)
 
-    # Driver stares out of bounds for 4.0s
+    # Driver stares out of bounds for 4.0s (stream frames every 200ms <= 250ms gap)
     t_start = 1000.0
-    engine.evaluate(make_driver_features(timestamp_ms=t_start, zone=PoseZone.OUT_OF_BOUNDS))
+    for t in range(int(t_start), int(t_start + 4000.0), 200):
+        engine.evaluate(make_driver_features(timestamp_ms=float(t), zone=PoseZone.OUT_OF_BOUNDS))
 
     t_4s = t_start + 4000.0
     assessment = engine.evaluate(
@@ -391,10 +405,9 @@ def test_face_loss_grace_and_insufficient_data() -> None:
     """Face loss lasting >= 1.0s transitions to INSUFFICIENT_DATA without false drowsiness."""
     engine = DrowsinessEngine()
 
-    # Face lost at t=1000ms
-    f1 = make_driver_features(timestamp_ms=1000.0, has_face=False)
-    a1 = engine.evaluate(f1)
-    assert a1.state == DrowsinessState.NORMAL  # Grace period active
+    # Face lost at t=1000ms, stream frames every 100ms
+    for t in range(1000, 2100, 100):
+        engine.evaluate(make_driver_features(timestamp_ms=float(t), has_face=False))
 
     # Face still lost at t=2100ms (1100ms elapsed) -> INSUFFICIENT_DATA
     f2 = make_driver_features(timestamp_ms=2100.0, has_face=False)
@@ -412,9 +425,9 @@ def test_hysteresis_and_recovery_cooldown() -> None:
         recovery_critical_ms=2000.0,
     )
 
-    # 1. Trigger CRITICAL_WARNING via sustained closure
-    f_crit_start = make_driver_features(timestamp_ms=1000.0, is_closed=True)
-    engine.evaluate(f_crit_start)
+    # 1. Trigger CRITICAL_WARNING via sustained closure (stream at 100ms intervals)
+    for t in range(1000, 2600, 100):
+        engine.evaluate(make_driver_features(timestamp_ms=float(t), is_closed=True))
 
     f_crit = make_driver_features(
         timestamp_ms=2600.0,
@@ -429,10 +442,18 @@ def test_hysteresis_and_recovery_cooldown() -> None:
     a_open_1 = engine.evaluate(f_open_1)
     assert a_open_1.state == DrowsinessState.CRITICAL_WARNING
 
+    # Stream open frames up to t=4000ms
+    for t in range(2800, 4000, 100):
+        engine.evaluate(make_driver_features(timestamp_ms=float(t), is_closed=False))
+
     # 3. Eyes open at t=4000ms (1300ms into recovery, still < 2000ms cooldown) -> Still held in CRITICAL
     f_open_2 = make_driver_features(timestamp_ms=4000.0, is_closed=False)
     a_open_2 = engine.evaluate(f_open_2)
     assert a_open_2.state == DrowsinessState.CRITICAL_WARNING
+
+    # Stream open frames up to t=4800ms
+    for t in range(4100, 4800, 100):
+        engine.evaluate(make_driver_features(timestamp_ms=float(t), is_closed=False))
 
     # 4. Eyes open at t=4800ms (2100ms continuous normal, >= 2000ms cooldown) -> Safely transitions to NORMAL
     f_open_3 = make_driver_features(timestamp_ms=4800.0, is_closed=False)
@@ -555,6 +576,10 @@ def test_continuous_closure_resilience_to_momentary_ear_jitter() -> None:
     )
     engine.evaluate(f1)
 
+    # Stream frames every 100ms
+    for t in range(1100, 1600, 100):
+        engine.evaluate(make_driver_features(timestamp_ms=float(t), is_closed=True, ear_val=0.10))
+
     # t=1600ms: Eyes closed for 600ms, but ear_is_valid jittered to False
     f2 = make_driver_features(
         timestamp_ms=1600.0,
@@ -564,6 +589,10 @@ def test_continuous_closure_resilience_to_momentary_ear_jitter() -> None:
     )
     a2 = engine.evaluate(f2)
     assert a2.temporal_metrics.active_closure_duration_ms >= 600.0
+
+    # Stream frames every 100ms
+    for t in range(1700, 2600, 100):
+        engine.evaluate(make_driver_features(timestamp_ms=float(t), is_closed=True, ear_val=0.10))
 
     # t=2600ms: Still closed for 1600ms -> Escalates to CRITICAL_WARNING
     f3 = make_driver_features(

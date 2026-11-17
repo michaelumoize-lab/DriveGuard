@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import math
 from typing import Deque, Optional, Tuple
 
-from backend.app.features.blink_detector import BlinkEvent
+from backend.app.features.blink_detector import BlinkClassification, BlinkEvent, BlinkState
 from backend.app.features.feature_extractor import DriverFeatures
 from backend.app.features.head_pose import PoseZone
 from backend.app.features.mar import YawnEvent
@@ -49,6 +50,22 @@ class TemporalMetrics:
     perclos_is_reliable: bool
     has_face: bool
     face_lost_duration_ms: float
+    is_eye_closed: Optional[bool] = None
+
+    @property
+    def is_eye_verified_open(self) -> bool:
+        """True only when eye tracking is valid and confirmed open."""
+        return self.is_eye_closed is False
+
+    @property
+    def is_eye_verified_closed(self) -> bool:
+        """True only when eye tracking is valid and confirmed closed."""
+        return self.is_eye_closed is True
+
+    @property
+    def effective_perclos_pct(self) -> Optional[float]:
+        """Gated PERCLOS percentage: returns perclos_pct if perclos_is_reliable, else None."""
+        return self.perclos_pct if self.perclos_is_reliable else None
 
 
 class TemporalAnalyzer:
@@ -62,11 +79,13 @@ class TemporalAnalyzer:
         window_30s_ms: float = 30_000.0,
         nodding_pitch_drop_deg: float = -15.0,
         nodding_min_closure_ms: float = 800.0,
+        max_sampling_gap_ms: float = 250.0,
     ) -> None:
         self.window_60s_ms = window_60s_ms
         self.window_30s_ms = window_30s_ms
         self.nodding_pitch_drop_deg = nodding_pitch_drop_deg
         self.nodding_min_closure_ms = nodding_min_closure_ms
+        self.max_sampling_gap_ms = max_sampling_gap_ms
 
         # Rolling Event Buffers
         self._blinks: Deque[BlinkEvent] = deque()
@@ -74,11 +93,50 @@ class TemporalAnalyzer:
         self._pitch_history: Deque[Tuple[float, float]] = deque()  # (ts_ms, rel_pitch_deg)
 
         # Active Temporal States
+        self._prev_ts_ms: Optional[float] = None
         self._closure_start_ts_ms: Optional[float] = None
         self._off_road_start_ts_ms: Optional[float] = None
         self._face_lost_start_ts_ms: Optional[float] = None
         self._last_processed_blink_end_ts: Optional[float] = None
         self._last_processed_yawn_end_ts: Optional[float] = None
+        self._current_closure_duration_ms: float = 0.0
+        self._current_off_road_duration_ms: float = 0.0
+        self._last_metrics: Optional[TemporalMetrics] = None
+
+    @property
+    def current_closure_duration_ms(self) -> float:
+        """Active continuous eye-closure duration in milliseconds."""
+        return self._current_closure_duration_ms
+
+    @property
+    def current_off_road_duration_ms(self) -> float:
+        """Active off-road gaze dwell in milliseconds."""
+        return self._current_off_road_duration_ms
+
+    def _make_default_metrics(self) -> TemporalMetrics:
+        """Construct safe neutral metrics for uninitialized or invalid frame updates."""
+        return TemporalMetrics(
+            timestamp_ms=0.0,
+            active_closure_duration_ms=0.0,
+            active_off_road_dwell_ms=0.0,
+            is_mirror_check_context=False,
+            is_dashboard_check_context=False,
+            is_nodding_microsleep=False,
+            blink_count_60s=0,
+            blink_count_30s=0,
+            mean_blink_duration_ms_60s=0.0,
+            prolonged_blink_count_60s=0,
+            severe_blink_count_60s=0,
+            mean_rcr_60s=1.0,
+            yawn_count_60s=0,
+            yawn_count_30s=0,
+            active_yawn_duration_ms=0.0,
+            perclos_pct=0.0,
+            perclos_coverage_pct=0.0,
+            perclos_is_reliable=False,
+            has_face=False,
+            face_lost_duration_ms=0.0,
+        )
 
     def update(self, features: DriverFeatures) -> TemporalMetrics:
         """
@@ -87,10 +145,32 @@ class TemporalAnalyzer:
         ts_ms = features.timestamp_ms
 
         # ------------------------------------------------------------------
+        # 0. Timestamp Validation & Integrity Guard
+        # ------------------------------------------------------------------
+        if not math.isfinite(ts_ms) or ts_ms < 0.0:
+            # Reject non-finite or negative timestamps without mutating state
+            return self._last_metrics or self._make_default_metrics()
+
+        if self._prev_ts_ms is not None:
+            dt_ms = ts_ms - self._prev_ts_ms
+            if dt_ms <= 0.0:
+                # Reject duplicate or backwards timestamps without mutating state
+                return self._last_metrics or self._make_default_metrics()
+        else:
+            dt_ms = 0.0
+
+        # Detect sampling gap
+        is_sampling_gap = (self._prev_ts_ms is not None) and (dt_ms > self.max_sampling_gap_ms)
+        blink_gap_signal = getattr(features.blink, "sampling_gap_detected", False) or (
+            getattr(features.blink, "state", None) == BlinkState.UNCERTAIN_GAP
+        )
+        gap_detected = is_sampling_gap or blink_gap_signal
+
+        # ------------------------------------------------------------------
         # 1. Face Loss Tracking
         # ------------------------------------------------------------------
         if not features.has_face:
-            if self._face_lost_start_ts_ms is None:
+            if self._face_lost_start_ts_ms is None or gap_detected:
                 self._face_lost_start_ts_ms = ts_ms
             face_lost_ms = ts_ms - self._face_lost_start_ts_ms
             self._closure_start_ts_ms = None
@@ -103,34 +183,77 @@ class TemporalAnalyzer:
         # ------------------------------------------------------------------
         # 2. Continuous Eye Closure Tracking
         # ------------------------------------------------------------------
-        is_currently_closed = (
-            features.has_face and features.ear.is_valid and features.ear.is_closed
-        ) or (features.has_face and features.blink.is_eye_closed)
+        ear_valid = features.has_face and features.ear.is_valid
+        blink_valid = (
+            features.has_face
+            and not features.blink.sampling_gap_detected
+            and features.blink.state != BlinkState.UNCERTAIN_GAP
+        )
 
-        if is_currently_closed:
-            if self._closure_start_ts_ms is None:
-                self._closure_start_ts_ms = ts_ms
-            raw_closure_duration = ts_ms - self._closure_start_ts_ms
-            # Blend with kinematic detector's sub-frame interpolated closure duration
-            active_closure_ms = max(
-                raw_closure_duration,
-                features.blink.current_closure_duration_ms,
-            )
+        ear_closed = ear_valid and features.ear.is_closed
+        blink_closed = blink_valid and features.blink.is_eye_closed
+
+        if ear_closed or blink_closed:
+            is_eye_closed_val: Optional[bool] = True
+        elif ear_valid and blink_valid:
+            is_eye_closed_val = False
+        elif ear_valid and not features.ear.is_closed and not blink_valid:
+            is_eye_closed_val = False
+        elif blink_valid and not features.blink.is_eye_closed and not ear_valid:
+            is_eye_closed_val = False
         else:
-            self._closure_start_ts_ms = None
+            is_eye_closed_val = None
+
+        is_currently_closed = is_eye_closed_val is True
+
+        if gap_detected:
+            # Sampling gap: unobserved camera time must never be counted as closure.
+            # If the driver is closed on the first post-gap observation, establish a new
+            # closure start at this frame without backdating or carrying previous duration.
+            if is_currently_closed:
+                self._closure_start_ts_ms = ts_ms
+            else:
+                self._closure_start_ts_ms = None
             active_closure_ms = 0.0
+        else:
+            if is_currently_closed:
+                if self._closure_start_ts_ms is None:
+                    self._closure_start_ts_ms = ts_ms
+                raw_closure_duration = ts_ms - self._closure_start_ts_ms
+                # Blend with kinematic detector's sub-frame interpolated closure duration
+                active_closure_ms = max(
+                    raw_closure_duration,
+                    features.blink.current_closure_duration_ms,
+                )
+            else:
+                self._closure_start_ts_ms = None
+                active_closure_ms = 0.0
 
         # ------------------------------------------------------------------
         # 3. Off-Road Gaze Dwell & Cockpit Context
         # ------------------------------------------------------------------
         zone = features.head_pose.zone
-        if features.has_face and features.head_pose.is_valid and zone != PoseZone.CENTER:
-            if self._off_road_start_ts_ms is None:
+        is_off_road = (
+            features.has_face
+            and features.head_pose.is_valid
+            and zone not in (PoseZone.CENTER, PoseZone.UNKNOWN)
+        )
+
+        if gap_detected:
+            # Sampling gap: unobserved camera time must never be counted as off-road gaze.
+            if is_off_road:
                 self._off_road_start_ts_ms = ts_ms
-            active_off_road_ms = ts_ms - self._off_road_start_ts_ms
-        else:
-            self._off_road_start_ts_ms = None
+            else:
+                self._off_road_start_ts_ms = None
             active_off_road_ms = 0.0
+        else:
+            if is_off_road:
+                if self._off_road_start_ts_ms is None:
+                    self._off_road_start_ts_ms = ts_ms
+                active_off_road_ms = ts_ms - self._off_road_start_ts_ms
+            else:
+                self._off_road_start_ts_ms = None
+                active_off_road_ms = 0.0
 
         # Euro NCAP / SAE J941 Mirror Glance Context
         is_mirror_check = (
@@ -145,6 +268,9 @@ class TemporalAnalyzer:
         # ------------------------------------------------------------------
         # 4. Nodding Microsleep Detection
         # ------------------------------------------------------------------
+        if gap_detected:
+            self._pitch_history.clear()
+
         is_nodding_microsleep = False
         if features.has_face and features.head_pose.is_valid:
             rel_pitch = features.head_pose.rel_pitch_deg
@@ -184,16 +310,36 @@ class TemporalAnalyzer:
         cutoff_30s = ts_ms - self.window_30s_ms
         blinks_30s = [b for b in self._blinks if b.end_ts_ms >= cutoff_30s]
 
-        blink_count_60s = len(self._blinks)
-        blink_count_30s = len(blinks_30s)
+        # Only valid binocular blinks contribute to rolling binocular fatigue statistics.
+        # Unilateral events are preserved in self._blinks for diagnostics but excluded here.
+        binocular_blinks_60s = [
+            b for b in self._blinks
+            if b.is_binocular and b.classification != BlinkClassification.UNCERTAIN
+        ]
+        binocular_blinks_30s = [
+            b for b in blinks_30s
+            if b.is_binocular and b.classification != BlinkClassification.UNCERTAIN
+        ]
+
+        blink_count_60s = len(binocular_blinks_60s)
+        blink_count_30s = len(binocular_blinks_30s)
 
         if blink_count_60s > 0:
-            durations = [b.duration_ms for b in self._blinks]
+            durations = [b.duration_ms for b in binocular_blinks_60s]
             mean_dur_60s = float(sum(durations) / blink_count_60s)
-            prolonged_count_60s = sum(1 for d in durations if d >= 300.0)
+            prolonged_count_60s = sum(
+                1 for b in binocular_blinks_60s
+                if b.classification in (
+                    BlinkClassification.PROLONGED,
+                    BlinkClassification.MICROSLEEP_CANDIDATE,
+                )
+            )
             severe_count_60s = sum(1 for d in durations if d >= 500.0)
-            rcr_values = [b.rcr for b in self._blinks]
-            mean_rcr_60s = float(sum(rcr_values) / blink_count_60s)
+            reliable_rcrs = [
+                b.rcr for b in binocular_blinks_60s
+                if getattr(b, "is_kinematics_reliable", True) and b.rcr > 0.0
+            ]
+            mean_rcr_60s = float(sum(reliable_rcrs) / len(reliable_rcrs)) if reliable_rcrs else 1.0
         else:
             mean_dur_60s = 0.0
             prolonged_count_60s = 0
@@ -219,10 +365,14 @@ class TemporalAnalyzer:
         yawn_count_60s = len(self._yawns)
         yawn_count_30s = len(yawns_30s)
         active_yawn_ms = (
-            features.mar.current_yawn_duration_ms if features.mar.is_yawn_in_progress else 0.0
+            features.mar.observed_yawn_duration_ms if features.mar.is_yawn_in_progress else 0.0
         )
 
-        return TemporalMetrics(
+        self._current_closure_duration_ms = active_closure_ms
+        self._current_off_road_duration_ms = active_off_road_ms
+        self._prev_ts_ms = ts_ms
+
+        metrics = TemporalMetrics(
             timestamp_ms=ts_ms,
             active_closure_duration_ms=active_closure_ms,
             active_off_road_dwell_ms=active_off_road_ms,
@@ -243,15 +393,22 @@ class TemporalAnalyzer:
             perclos_is_reliable=features.perclos.is_reliable,
             has_face=features.has_face,
             face_lost_duration_ms=face_lost_ms,
+            is_eye_closed=is_eye_closed_val,
         )
+        self._last_metrics = metrics
+        return metrics
 
     def reset(self) -> None:
         """Reset all temporal history for a fresh monitoring session."""
         self._blinks.clear()
         self._yawns.clear()
         self._pitch_history.clear()
+        self._prev_ts_ms = None
         self._closure_start_ts_ms = None
         self._off_road_start_ts_ms = None
         self._face_lost_start_ts_ms = None
         self._last_processed_blink_end_ts = None
         self._last_processed_yawn_end_ts = None
+        self._current_closure_duration_ms = 0.0
+        self._current_off_road_duration_ms = 0.0
+        self._last_metrics = None

@@ -210,6 +210,8 @@ export function DriverCockpitHUD({
         return { label: "Right Side Mirror", hint: "Side Check (Safe)", color: "text-amber-400" };
       case "DASHBOARD":
         return { label: "Dashboard Cluster", hint: "Speed/Instrument Check", color: "text-purple-400" };
+      case "UNKNOWN":
+        return { label: "Tracking Unavailable", hint: "Face tracking lost", color: "text-muted-foreground" };
       default:
         return { label: zone, hint: "Averted Gaze", color: "text-rose-400" };
     }

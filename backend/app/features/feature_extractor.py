@@ -129,6 +129,7 @@ class DriverFeatureExtractor:
             reopen_threshold=initial_reopen,
         )
         self._perclos_calculator = PerclosCalculator(window_sec=perclos_window_sec)
+        self._last_zone: Optional[PoseZone] = None
 
     def get_effective_thresholds(self) -> Tuple[float, float]:
         """
@@ -185,7 +186,9 @@ class DriverFeatureExtractor:
                 neutral_pitch_deg=self.neutral_pitch_deg,
                 neutral_yaw_deg=self.neutral_yaw_deg,
                 is_mirrored=mirrored,
+                current_zone=self._last_zone,
             )
+            self._last_zone = pose_res.zone if pose_res.is_valid else None
 
             # 2. Eye Aspect Ratio (Yaw-weighted & Pitch-compensated relative to neutral)
             ear_res = extract_eye_aspect_ratio(
@@ -194,6 +197,7 @@ class DriverFeatureExtractor:
                 pitch_deg=pose_res.rel_pitch_deg,
                 aspect_ratio=aspect_ratio,
                 closure_threshold=c_thresh,
+                is_mirrored=mirrored,
             )
 
             # Accumulate rolling open-eye baseline if driver is looking forward and eyes are open
@@ -211,14 +215,15 @@ class DriverFeatureExtractor:
                 timestamp_ms=ts_ms,
                 aspect_ratio=aspect_ratio,
                 has_face=has_face,
+                is_looking_away=pose_res.is_looking_away,
             )
 
-            # 4. Blink Kinematics FSM
+            # 4. Blink Kinematics FSM (receives uncompensated perspective-weighted EAR)
             valid_eye_tracking = has_face and ear_res.is_valid
             blink_res = self._blink_detector.update(
                 left_ear=ear_res.left_ear,
                 right_ear=ear_res.right_ear,
-                compensated_ear=ear_res.compensated_ear,
+                compensated_ear=ear_res.weighted_ear,
                 timestamp_ms=ts_ms,
                 has_face=valid_eye_tracking,
             )
@@ -226,19 +231,25 @@ class DriverFeatureExtractor:
             # 5. Sliding-Window PERCLOS
             perclos_res = self._perclos_calculator.update(
                 timestamp_ms=ts_ms,
-                is_closed=ear_res.is_closed,
-                has_face=valid_eye_tracking,
+                is_closed=ear_res.is_closed if ear_res.is_valid else None,
+                has_face=has_face,
+                is_valid=ear_res.is_valid,
             )
 
         else:
             # Face Loss Branch — gracefully freeze/invalidate without false alarms
+            self._last_zone = None
             pose_res = HeadPoseResult(
                 pitch_deg=0.0,
                 yaw_deg=0.0,
                 roll_deg=0.0,
-                zone=PoseZone.OUT_OF_BOUNDS,
-                is_looking_away=True,
+                zone=PoseZone.UNKNOWN,
+                is_looking_away=False,
                 is_valid=False,
+                rel_pitch_deg=0.0,
+                rel_yaw_deg=0.0,
+                rel_roll_deg=0.0,
+                rot_mat=None,
             )
             ear_res = EyeAspectRatioResult(
                 left_ear=0.0,
@@ -266,8 +277,9 @@ class DriverFeatureExtractor:
             )
             perclos_res = self._perclos_calculator.update(
                 timestamp_ms=ts_ms,
-                is_closed=False,
+                is_closed=None,
                 has_face=False,
+                is_valid=False,
             )
 
         return DriverFeatures(
