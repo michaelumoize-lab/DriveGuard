@@ -57,11 +57,11 @@ class DrowsinessAssessment:
         if self.state == DrowsinessState.NORMAL:
             return (34, 197, 94)    # Emerald-500 (Green)
         elif self.state == DrowsinessState.ATTENTION:
-            return (234, 179, 8)    # Amber-500 (Yellow)
+            return (8, 179, 234)    # Amber-500 (Yellow in BGR)
         elif self.state == DrowsinessState.DROWSINESS_WARNING:
-            return (249, 115, 22)   # Orange-500
+            return (22, 115, 249)   # Orange-500 (in BGR)
         elif self.state == DrowsinessState.CRITICAL_WARNING:
-            return (239, 68, 68)    # Red-500 (Alert)
+            return (68, 68, 239)    # Red-500 (Alert in BGR)
         else:  # INSUFFICIENT_DATA
             return (148, 163, 184)  # Slate-400
 
@@ -115,7 +115,10 @@ class DrowsinessEngine:
         confidence_res = self.confidence_evaluator.evaluate(features=features, quality=quality)
 
         # 2. Accumulate temporal observations across sliding windows
-        temporal_res = self.temporal_analyzer.update(features=features)
+        temporal_res = self.temporal_analyzer.update(
+            features=features,
+            is_reliable=confidence_res.is_reliable,
+        )
 
         # 3. Arbitrate alert state through deterministic decision engine
         decision_res = self.decision_engine.evaluate(

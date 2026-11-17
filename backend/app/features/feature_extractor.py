@@ -226,6 +226,8 @@ class DriverFeatureExtractor:
                 compensated_ear=ear_res.weighted_ear,
                 timestamp_ms=ts_ms,
                 has_face=valid_eye_tracking,
+                left_valid=ear_res.is_left_valid,
+                right_valid=ear_res.is_right_valid,
             )
 
             # 5. Sliding-Window PERCLOS
@@ -274,6 +276,8 @@ class DriverFeatureExtractor:
                 compensated_ear=0.0,
                 timestamp_ms=ts_ms,
                 has_face=False,
+                left_valid=False,
+                right_valid=False,
             )
             perclos_res = self._perclos_calculator.update(
                 timestamp_ms=ts_ms,

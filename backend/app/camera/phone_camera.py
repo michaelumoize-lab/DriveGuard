@@ -133,21 +133,35 @@ class PhoneCamera(BaseCamera):
         Connect to the phone video stream and start the background frame pump thread.
         Coordinates with any existing worker to guarantee a single owner.
         """
+        worker_to_join: Optional[threading.Thread] = None
         with self._lock:
             if self._is_connected and self._cap is not None and self._cap.isOpened():
                 logger.info("Phone camera stream already connected to %s", self._safe_stream_url)
                 return True
 
-            # If a prior capture thread is running (e.g. attempting reconnection), stop and join it
+            # If a prior capture thread is running (e.g. attempting reconnection), signal it to stop
             if self._capture_thread is not None and self._capture_thread.is_alive():
                 logger.info("Stopping prior phone capture worker before reopening stream...")
                 self._stop_event.set()
-                self._capture_thread.join(timeout=2.0)
-                self._capture_thread = None
-                if self._cap is not None:
-                    self._cap.release()
-                    self._cap = None
-                self._stop_event.clear()
+                worker_to_join = self._capture_thread
+
+        if worker_to_join is not None:
+            worker_to_join.join(timeout=2.0)
+
+        with self._lock:
+            if self._is_connected and self._cap is not None and self._cap.isOpened():
+                logger.info("Phone camera stream already connected to %s", self._safe_stream_url)
+                return True
+
+            if self._capture_thread is not None and self._capture_thread.is_alive():
+                logger.warning("Prior phone capture worker did not terminate within timeout; aborting open.")
+                return False
+
+            self._capture_thread = None
+            if self._cap is not None:
+                self._cap.release()
+                self._cap = None
+            self._stop_event.clear()
 
             logger.info("Connecting to phone video stream at %s...", self._safe_stream_url)
 
@@ -212,101 +226,110 @@ class PhoneCamera(BaseCamera):
         """
         Background loop continuously draining the network stream buffer.
         """
-        while not self._stop_event.is_set():
-            if self._cap is None or not self._cap.isOpened():
-                if self._config.auto_reconnect:
-                    self._attempt_reconnect()
-                else:
-                    self._stop_event.wait(0.05)
-                continue
-
-            # grab() flushes the frame from the network buffer without heavy decoding
-            try:
-                grabbed = self._cap.grab()
-            except Exception as exc:
-                logger.warning("Exception during grab() on phone stream: %s", exc)
-                grabbed = False
-
-            capture_time_ns = time.monotonic_ns()
-
-            if not grabbed:
-                now_sec = time.monotonic()
-                # Check watchdog timeout for dropped connection
-                if (now_sec - self._last_frame_received_time) > self._config.timeout_sec:
-                    logger.warning(
-                        "Phone stream timed out (> %.1fs without frame). Marking disconnected.",
-                        self._config.timeout_sec,
-                    )
-                    with self._lock:
-                        self._is_connected = False
-                        self._buffer.clear()
+        try:
+            while not self._stop_event.is_set():
+                if self._cap is None or not self._cap.isOpened():
                     if self._config.auto_reconnect:
                         self._attempt_reconnect()
                     else:
-                        break
-                self._stop_event.wait(0.01)
-                continue
+                        self._stop_event.wait(0.05)
+                    continue
 
-            # Decode the grabbed frame
-            try:
-                ret, frame = self._cap.retrieve()
-            except Exception as exc:
-                logger.warning("Exception during retrieve() on phone stream: %s", exc)
-                ret, frame = False, None
+                # grab() flushes the frame from the network buffer without heavy decoding
+                try:
+                    grabbed = self._cap.grab()
+                except Exception as exc:
+                    logger.warning("Exception during grab() on phone stream: %s", exc)
+                    grabbed = False
 
-            if not ret or frame is None or frame.size == 0:
+                capture_time_ns = time.monotonic_ns()
+
+                if not grabbed:
+                    now_sec = time.monotonic()
+                    # Check watchdog timeout for dropped connection
+                    if (now_sec - self._last_frame_received_time) > self._config.timeout_sec:
+                        logger.warning(
+                            "Phone stream timed out (> %.1fs without frame). Marking disconnected.",
+                            self._config.timeout_sec,
+                        )
+                        with self._lock:
+                            self._is_connected = False
+                            self._buffer.clear()
+                        if self._config.auto_reconnect:
+                            self._attempt_reconnect()
+                        else:
+                            break
+                    self._stop_event.wait(0.01)
+                    continue
+
+                # Decode the grabbed frame
+                try:
+                    ret, frame = self._cap.retrieve()
+                except Exception as exc:
+                    logger.warning("Exception during retrieve() on phone stream: %s", exc)
+                    ret, frame = False, None
+
+                if not ret or frame is None or frame.size == 0:
+                    now_sec = time.monotonic()
+                    if (now_sec - self._last_frame_received_time) > self._config.timeout_sec:
+                        logger.warning(
+                            "Phone stream frame retrieval timed out (> %.1fs without valid frame). Marking disconnected.",
+                            self._config.timeout_sec,
+                        )
+                        with self._lock:
+                            self._is_connected = False
+                            self._buffer.clear()
+                        if self._config.auto_reconnect:
+                            self._attempt_reconnect()
+                        else:
+                            break
+                    self._stop_event.wait(0.01)
+                    continue
+
+                # Apply orientation/mirror transforms if requested
+                if self._flip_horizontal and self._flip_vertical:
+                    frame = cv2.flip(frame, -1)
+                elif self._flip_horizontal:
+                    frame = cv2.flip(frame, 1)
+                elif self._flip_vertical:
+                    frame = cv2.flip(frame, 0)
+
+                # Update dimensions dynamically if phone changed orientation
+                h, w = frame.shape[:2]
+                self._actual_width = w
+                self._actual_height = h
+
                 now_sec = time.monotonic()
-                if (now_sec - self._last_frame_received_time) > self._config.timeout_sec:
-                    logger.warning(
-                        "Phone stream frame retrieval timed out (> %.1fs without valid frame). Marking disconnected.",
-                        self._config.timeout_sec,
-                    )
-                    with self._lock:
-                        self._is_connected = False
-                        self._buffer.clear()
-                    if self._config.auto_reconnect:
-                        self._attempt_reconnect()
-                    else:
-                        break
-                self._stop_event.wait(0.01)
-                continue
+                self._last_frame_received_time = now_sec
+                self._is_connected = True
+                self._frame_count += 1
+                self._fps_window_frames += 1
 
-            # Apply orientation/mirror transforms if requested
-            if self._flip_horizontal and self._flip_vertical:
-                frame = cv2.flip(frame, -1)
-            elif self._flip_horizontal:
-                frame = cv2.flip(frame, 1)
-            elif self._flip_vertical:
-                frame = cv2.flip(frame, 0)
+                # Update rolling measured ingestion FPS every 0.5s
+                elapsed_sec = now_sec - self._fps_window_start
+                if elapsed_sec >= 0.5:
+                    self._ingestion_fps = self._fps_window_frames / elapsed_sec
+                    self._fps_window_start = now_sec
+                    self._fps_window_frames = 0
 
-            # Update dimensions dynamically if phone changed orientation
-            h, w = frame.shape[:2]
-            self._actual_width = w
-            self._actual_height = h
-
-            now_sec = time.monotonic()
-            self._last_frame_received_time = now_sec
-            self._is_connected = True
-            self._frame_count += 1
-            self._fps_window_frames += 1
-
-            # Update rolling measured ingestion FPS every 0.5s
-            elapsed_sec = now_sec - self._fps_window_start
-            if elapsed_sec >= 0.5:
-                self._ingestion_fps = self._fps_window_frames / elapsed_sec
-                self._fps_window_start = now_sec
-                self._fps_window_frames = 0
-
-            # Wrap in FramePacket and push to bounded buffer
-            packet = FramePacket(
-                frame=frame,
-                timestamp_ns=capture_time_ns,
-                frame_index=self._frame_count,
-                source_id=self._source_id,
-            )
-            self._buffer.push(packet)
-
-        logger.info("Phone camera worker thread stopped for %s.", self._source_id)
+                # Wrap in FramePacket and push to bounded buffer
+                packet = FramePacket(
+                    frame=frame,
+                    timestamp_ns=capture_time_ns,
+                    frame_index=self._frame_count,
+                    source_id=self._source_id,
+                )
+                self._buffer.push(packet)
+        finally:
+            with self._lock:
+                if self._cap is not None:
+                    self._cap.release()
+                    self._cap = None
+                self._is_connected = False
+                self._buffer.clear()
+                if self._capture_thread is threading.current_thread():
+                    self._capture_thread = None
+            logger.info("Phone camera worker thread stopped for %s.", self._source_id)
 
     def _attempt_reconnect(self) -> None:
         """Attempt to reconnect to the phone stream URL after network interruption."""

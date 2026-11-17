@@ -1017,7 +1017,7 @@ class SessionAIEngine:
             state=state,
             monitoring_status=monitoring_status,
             risk_score=risk_score,
-            pose_zone=PoseZoneEnum.OUT_OF_BOUNDS,
+            pose_zone=PoseZoneEnum.UNKNOWN,
             reason_codes=[reason],
             head_pose=HeadPoseDTO(pitch_deg=0.0, yaw_deg=0.0, roll_deg=0.0),
             eye_metrics=EyeMetricsDTO(
@@ -1060,7 +1060,7 @@ class SessionAIEngine:
                 fixed_cutoff_ear=0.22,
                 fixed_alert_state="UNAVAILABLE",
                 fixed_false_alarm=False,
-                personalised_zone="OUT_OF_BOUNDS",
+                personalised_zone="UNKNOWN",
                 personalised_threshold=0.20,
                 is_mirror_check_suppressed=False,
             ),

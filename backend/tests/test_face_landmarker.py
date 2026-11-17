@@ -164,23 +164,26 @@ def test_face_landmarker_grace_period_fsm() -> None:
     landmarker = DriveGuardFaceLandmarker(cfg)
     try:
         dummy_img = np.zeros((240, 320, 3), dtype=np.uint8)
+        mock_empty_result = MagicMock(face_landmarks=[])
 
-        # Simulate a mock detection hit by manually updating internal state
-        landmarker._last_face_seen_time = time.monotonic()
+        with (
+            patch.object(landmarker._landmarker, "detect_for_video", return_value=mock_empty_result),
+            patch("backend.app.vision.face_landmarker.time.monotonic", side_effect=[1000.1, 1000.4]),
+        ):
+            # Simulate a mock detection hit at mocked time 1000.0
+            landmarker._last_face_seen_time = 1000.0
 
-        # Immediate next frame without face (< 0.3s)
-        res_grace = landmarker.detect(dummy_img, timestamp_ms=100)
-        assert res_grace.has_face is False
-        assert res_grace.status == FaceLandmarkStatus.FACE_LOST_GRACE
-        assert any("momentarily lost" in r for r in res_grace.reasons)
+            # Immediate next frame without face (elapsed 0.1s < 0.3s)
+            res_grace = landmarker.detect(dummy_img, timestamp_ms=100)
+            assert res_grace.has_face is False
+            assert res_grace.status == FaceLandmarkStatus.FACE_LOST_GRACE
+            assert any("momentarily lost" in r for r in res_grace.reasons)
 
-        # Wait past grace timeout
-        time.sleep(0.35)
-
-        res_expired = landmarker.detect(dummy_img, timestamp_ms=200)
-        assert res_expired.has_face is False
-        assert res_expired.status == FaceLandmarkStatus.INSUFFICIENT_DATA
-        assert any("exceeds" in r for r in res_expired.reasons)
+            # Frame after grace timeout (elapsed 0.4s >= 0.3s)
+            res_expired = landmarker.detect(dummy_img, timestamp_ms=200)
+            assert res_expired.has_face is False
+            assert res_expired.status == FaceLandmarkStatus.INSUFFICIENT_DATA
+            assert any("exceeds" in r for r in res_expired.reasons)
     finally:
         landmarker.close()
 

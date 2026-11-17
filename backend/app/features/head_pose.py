@@ -64,20 +64,20 @@ class PoseZone(str, Enum):
 
 
 # Canonical 3D anthropometric facial model points (in mm, centered at nose tip)
-# Coordinates conform to standard anthropometric head models:
-# X: lateral (+X = left outer eye corner, -X = right outer eye corner in canonical frame)
-# Y: vertical (+Y = forehead / sellion, -Y = chin)
-# Z: sagittal depth (+Z = nose tip forward, -Z = eye sockets / cranial base recessed)
+# Coordinates are aligned with the OpenCV pinhole camera convention at neutral frontal pose (R = I):
+# X: lateral (+X = image right / landmark 263, -X = image left / landmark 33)
+# Y: vertical (+Y = image down / chin, -Y = image up / forehead & sellion)
+# Z: sagittal depth (+Z = recessed away from camera lens into skull, 0 = nose tip)
 CANONICAL_3D_FACE_POINTS = np.array(
     [
         (0.0, 0.0, 0.0),          # Nose tip (idx 1)
-        (0.0, -63.6, -12.5),      # Chin (idx 152)
-        (-43.3, 32.7, -26.0),     # Right eye outer corner in mirrored / left in canonical (idx 33)
-        (43.3, 32.7, -26.0),      # Left eye outer corner in mirrored / right in canonical (idx 263)
-        (-28.9, -28.9, -24.1),    # Right mouth corner in mirrored (idx 61)
-        (28.9, -28.9, -24.1),     # Left mouth corner in mirrored (idx 291)
-        (0.0, 31.0, -22.0),       # Sellion / nose bridge between eyes (idx 6)
-        (0.0, 68.0, -35.0),       # Glabella / lower forehead midpoint (idx 10)
+        (0.0, 63.6, 12.5),        # Chin (idx 152)
+        (-43.3, -32.7, 26.0),     # Right eye outer corner in mirrored / left in canonical (idx 33)
+        (43.3, -32.7, 26.0),      # Left eye outer corner in mirrored / right in canonical (idx 263)
+        (-28.9, 28.9, 24.1),      # Right mouth corner in mirrored (idx 61)
+        (28.9, 28.9, 24.1),      # Left mouth corner in mirrored (idx 291)
+        (0.0, -31.0, 22.0),       # Sellion / nose bridge between eyes (idx 6)
+        (0.0, -68.0, 35.0),       # Glabella / lower forehead midpoint (idx 10)
     ],
     dtype=np.float64,
 )

@@ -42,6 +42,7 @@ import logging
 import threading
 import time
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -221,7 +222,7 @@ class DriveGuardFaceLandmarker:
         # If not found, download to standard weights directory atomically
         target_path = repo_root / "backend" / "weights" / "face_landmarker.task"
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = target_path.with_suffix(".tmp")
+        temp_path = target_path.with_name(f"{target_path.stem}.{uuid.uuid4().hex}.tmp")
         logger.info("Model not found locally. Downloading official MediaPipe Face Landmarker bundle to %s...", target_path)
         try:
             req = urllib.request.Request(

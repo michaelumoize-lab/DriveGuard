@@ -219,7 +219,7 @@ def test_sustained_eye_closure_critical_warning() -> None:
     assert a3.state == DrowsinessState.CRITICAL_WARNING
     assert a3.severity == 3
     assert a3.primary_reason.code == ReasonCode.SUSTAINED_EYE_CLOSURE
-    assert a3.status_color_bgr == (239, 68, 68)  # Red
+    assert a3.status_color_bgr == (68, 68, 239)  # Red (BGR)
 
 
 def test_nodding_microsleep_critical() -> None:
@@ -268,7 +268,7 @@ def test_elevated_perclos_drowsiness_warning() -> None:
     assert assessment.state == DrowsinessState.DROWSINESS_WARNING
     assert assessment.severity == 2
     assert assessment.primary_reason.code == ReasonCode.PERCLOS_ELEVATED
-    assert assessment.status_color_bgr == (249, 115, 22)  # Orange
+    assert assessment.status_color_bgr == (22, 115, 249)  # Orange (BGR)
 
 
 def test_mild_perclos_attention() -> None:
@@ -281,6 +281,7 @@ def test_mild_perclos_attention() -> None:
     assert assessment.state == DrowsinessState.ATTENTION
     assert assessment.severity == 1
     assert assessment.primary_reason.code == ReasonCode.MILD_PERCLOS
+    assert assessment.status_color_bgr == (8, 179, 234)  # Amber (BGR)
 
 
 def test_authentic_yawn_attention() -> None:

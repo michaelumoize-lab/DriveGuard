@@ -192,9 +192,20 @@ def test_phone_camera_watchdog_timeout_on_repeated_retrieve_failure() -> None:
 
 def test_phone_camera_open_stops_prior_worker() -> None:
     """Verifies that calling open() coordinates with and stops any existing worker thread."""
+    import threading
+
+    allow_frames = True
+    worker_paused = threading.Event()
+
+    def grab_side_effect() -> bool:
+        if allow_frames:
+            return True
+        worker_paused.set()
+        return False
+
     mock_cap1 = MagicMock()
     mock_cap1.isOpened.return_value = True
-    mock_cap1.grab.return_value = True
+    mock_cap1.grab.side_effect = grab_side_effect
     mock_cap1.retrieve.return_value = (True, np.zeros((720, 1280, 3), dtype=np.uint8))
     mock_cap1.get.side_effect = lambda prop: {3: 1280.0, 4: 720.0, 5: 30.0}.get(prop, 0.0)
 
@@ -211,7 +222,9 @@ def test_phone_camera_open_stops_prior_worker() -> None:
         old_thread = camera._capture_thread
         assert old_thread is not None and old_thread.is_alive()
 
-        # Simulate connection drop so subsequent open() proceeds with reopening
+        # Synchronize worker so it cannot produce a successful frame that restores _is_connected
+        allow_frames = False
+        assert worker_paused.wait(timeout=1.0)
         camera._is_connected = False
         assert camera.open() is True
 

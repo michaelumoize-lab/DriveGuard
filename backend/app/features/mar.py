@@ -382,8 +382,13 @@ class YawnDetector:
             )
 
         # Observation is valid: check if recovering from dropout
-        was_in_dropout = self._dropout_start_ts is not None
-        self._dropout_start_ts = None
+        was_in_dropout = False
+        if self._dropout_start_ts is not None:
+            if (ts - self._dropout_start_ts) > self.dropout_grace_ms:
+                self._abort_opening()
+            else:
+                was_in_dropout = True
+            self._dropout_start_ts = None
 
         # 4. Temporal Dynamics & Hysteresis State Machine
         completed_yawn: Optional[YawnEvent] = None

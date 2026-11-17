@@ -99,6 +99,7 @@ class OpenCVCamera(BaseCamera):
         Open the camera device, negotiate resolution/FPS, and start the capture thread.
         Coordinates with any existing worker to guarantee a single owner.
         """
+        worker_to_join: Optional[threading.Thread] = None
         with self._lock:
             # If already open and capturing normally, return True
             if self._is_connected and self._cap is not None and self._cap.isOpened():
@@ -109,12 +110,28 @@ class OpenCVCamera(BaseCamera):
             if self._capture_thread is not None and self._capture_thread.is_alive():
                 logger.info("Stopping prior capture worker before reopening device %d...", self._config.device_index)
                 self._stop_event.set()
-                self._capture_thread.join(timeout=2.0)
-                self._capture_thread = None
-                if self._cap is not None:
-                    self._cap.release()
-                    self._cap = None
-                self._stop_event.clear()
+                worker_to_join = self._capture_thread
+
+        if worker_to_join is not None:
+            worker_to_join.join(timeout=2.0)
+
+        with self._lock:
+            if self._is_connected and self._cap is not None and self._cap.isOpened():
+                logger.info("Camera already opened on device index %d.", self._config.device_index)
+                return True
+
+            if self._capture_thread is not None and self._capture_thread.is_alive():
+                logger.warning(
+                    "Prior capture worker on device %d did not terminate within timeout; aborting open.",
+                    self._config.device_index,
+                )
+                return False
+
+            self._capture_thread = None
+            if self._cap is not None:
+                self._cap.release()
+                self._cap = None
+            self._stop_event.clear()
 
             cv_backend = self._resolve_backend_flag()
             logger.info(
@@ -165,8 +182,20 @@ class OpenCVCamera(BaseCamera):
             )
 
             # Warmup: discard initial dark frames while exposure and white balance adjust
-            for _ in range(self._config.warmup_frames):
-                self._cap.read()
+            try:
+                for _ in range(self._config.warmup_frames):
+                    self._cap.read()
+            except Exception as exc:
+                logger.error(
+                    "Exception during warmup read on camera device %d: %s",
+                    self._config.device_index,
+                    exc,
+                )
+                self._cap.release()
+                self._cap = None
+                self._is_connected = False
+                self._buffer.clear()
+                return False
 
             # Start background acquisition thread
             self._stop_event.clear()
@@ -190,72 +219,83 @@ class OpenCVCamera(BaseCamera):
         consecutive_read_failures = 0
         max_consecutive_failures = 30  # Approximately 1 second of failed frames at 30 FPS
 
-        while not self._stop_event.is_set():
-            if self._cap is None or not self._cap.isOpened():
-                if self._config.auto_reconnect:
-                    self._attempt_reconnect()
-                else:
-                    time.sleep(0.05)
-                continue
-
-            try:
-                grabbed, frame = self._cap.read()
-                capture_time_ns = time.monotonic_ns()
-            except Exception as exc:
-                logger.warning("Exception during frame capture from %s: %s", source_id, exc)
-                grabbed, frame = False, None
-                capture_time_ns = time.monotonic_ns()
-
-            if not grabbed or frame is None or frame.size == 0:
-                consecutive_read_failures += 1
-                if consecutive_read_failures >= max_consecutive_failures:
-                    logger.warning(
-                        "Camera %s stopped delivering frames (%d consecutive read errors).",
-                        source_id,
-                        consecutive_read_failures,
-                    )
+        try:
+            while not self._stop_event.is_set():
+                if self._cap is None or not self._cap.isOpened():
                     self._is_connected = False
                     self._buffer.clear()
                     if self._config.auto_reconnect:
                         self._attempt_reconnect()
-                        consecutive_read_failures = 0
                     else:
-                        break
-                time.sleep(0.01)
-                continue
+                        time.sleep(0.05)
+                    continue
 
-            # Reset failure count on valid frame
-            consecutive_read_failures = 0
-            self._is_connected = True
-            self._frame_count += 1
-            self._fps_window_frames += 1
+                try:
+                    grabbed, frame = self._cap.read()
+                    capture_time_ns = time.monotonic_ns()
+                except Exception as exc:
+                    logger.warning("Exception during frame capture from %s: %s", source_id, exc)
+                    grabbed, frame = False, None
+                    capture_time_ns = time.monotonic_ns()
 
-            # Apply orientation/mirror transforms if requested
-            if self._flip_horizontal and self._flip_vertical:
-                frame = cv2.flip(frame, -1)
-            elif self._flip_horizontal:
-                frame = cv2.flip(frame, 1)
-            elif self._flip_vertical:
-                frame = cv2.flip(frame, 0)
+                if not grabbed or frame is None or frame.size == 0:
+                    consecutive_read_failures += 1
+                    if consecutive_read_failures >= max_consecutive_failures:
+                        logger.warning(
+                            "Camera %s stopped delivering frames (%d consecutive read errors).",
+                            source_id,
+                            consecutive_read_failures,
+                        )
+                        self._is_connected = False
+                        self._buffer.clear()
+                        if self._config.auto_reconnect:
+                            self._attempt_reconnect()
+                            consecutive_read_failures = 0
+                        else:
+                            break
+                    time.sleep(0.01)
+                    continue
 
-            # Update rolling measured ingestion FPS every 0.5s
-            now_sec = time.monotonic()
-            elapsed_sec = now_sec - self._fps_window_start
-            if elapsed_sec >= 0.5:
-                self._ingestion_fps = self._fps_window_frames / elapsed_sec
-                self._fps_window_start = now_sec
-                self._fps_window_frames = 0
+                # Reset failure count on valid frame
+                consecutive_read_failures = 0
+                self._is_connected = True
+                self._frame_count += 1
+                self._fps_window_frames += 1
 
-            # Wrap in FramePacket and push to bounded buffer
-            packet = FramePacket(
-                frame=frame,
-                timestamp_ns=capture_time_ns,
-                frame_index=self._frame_count,
-                source_id=source_id,
-            )
-            self._buffer.push(packet)
+                # Apply orientation/mirror transforms if requested
+                if self._flip_horizontal and self._flip_vertical:
+                    frame = cv2.flip(frame, -1)
+                elif self._flip_horizontal:
+                    frame = cv2.flip(frame, 1)
+                elif self._flip_vertical:
+                    frame = cv2.flip(frame, 0)
 
-        logger.info("Camera capture worker thread stopped for %s.", source_id)
+                # Update rolling measured ingestion FPS every 0.5s
+                now_sec = time.monotonic()
+                elapsed_sec = now_sec - self._fps_window_start
+                if elapsed_sec >= 0.5:
+                    self._ingestion_fps = self._fps_window_frames / elapsed_sec
+                    self._fps_window_start = now_sec
+                    self._fps_window_frames = 0
+
+                # Wrap in FramePacket and push to bounded buffer
+                packet = FramePacket(
+                    frame=frame,
+                    timestamp_ns=capture_time_ns,
+                    frame_index=self._frame_count,
+                    source_id=source_id,
+                )
+                self._buffer.push(packet)
+        finally:
+            with self._lock:
+                if self._cap is not None:
+                    self._cap.release()
+                    self._cap = None
+                self._buffer.clear()
+                self._is_connected = False
+                if self._capture_thread is threading.current_thread():
+                    self._capture_thread = None
+            logger.info("Camera capture worker thread stopped for %s.", source_id)
 
     def _attempt_reconnect(self) -> None:
         """
@@ -266,9 +306,12 @@ class OpenCVCamera(BaseCamera):
             return
 
         logger.info("Attempting camera reconnect on device %d...", self._config.device_index)
-        if self._cap is not None:
-            self._cap.release()
-            self._cap = None
+        with self._lock:
+            if self._cap is not None:
+                self._cap.release()
+                self._cap = None
+            self._is_connected = False
+            self._buffer.clear()
 
         deadline = time.monotonic() + self._config.reconnect_timeout_sec
         cv_backend = self._resolve_backend_flag()
@@ -294,13 +337,20 @@ class OpenCVCamera(BaseCamera):
                     new_cap.set(cv2.CAP_PROP_FPS, float(self._config.target_fps))
                     new_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1.0)
 
-                    self._actual_width = int(new_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    self._actual_height = int(new_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    w = int(new_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    h = int(new_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                     rep_fps = float(new_cap.get(cv2.CAP_PROP_FPS))
-                    self._actual_fps = rep_fps if rep_fps > 0 else float(self._config.target_fps)
+                    actual_fps = rep_fps if rep_fps > 0 else float(self._config.target_fps)
 
-                    self._cap = new_cap
-                    self._is_connected = True
+                    with self._lock:
+                        if self._stop_event.is_set():
+                            new_cap.release()
+                            return
+                        self._actual_width = w
+                        self._actual_height = h
+                        self._actual_fps = actual_fps
+                        self._cap = new_cap
+                        self._is_connected = True
                     logger.info(
                         "Camera reconnected successfully on device %d. Negotiated: %dx%d (reported FPS: %.1f).",
                         self._config.device_index,
@@ -333,21 +383,19 @@ class OpenCVCamera(BaseCamera):
         Safely stop the capture worker and release camera hardware descriptors.
         Preserves capture ownership until worker thread termination is confirmed.
         """
+        worker_to_join: Optional[threading.Thread] = None
         with self._lock:
             self._stop_event.set()
-            if self._capture_thread is not None and self._capture_thread.is_alive():
-                self._capture_thread.join(timeout=2.0)
-                if not self._capture_thread.is_alive():
-                    self._capture_thread = None
-                    if self._cap is not None:
-                        self._cap.release()
-                        self._cap = None
-                    self._buffer.clear()
-                    self._is_connected = False
-                else:
-                    logger.warning(
-                        "Capture worker thread join timed out; preserving capture descriptors until worker exits."
-                    )
+            worker_to_join = self._capture_thread
+
+        if worker_to_join is not None and worker_to_join.is_alive():
+            worker_to_join.join(timeout=2.0)
+
+        with self._lock:
+            if worker_to_join is not None and worker_to_join.is_alive():
+                logger.warning(
+                    "Capture worker thread join timed out; preserving capture descriptors until worker exits."
+                )
             else:
                 self._capture_thread = None
                 if self._cap is not None:

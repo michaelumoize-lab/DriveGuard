@@ -197,12 +197,14 @@ class BlinkKinematicsDetector:
 
     def update(
         self,
-        left_ear: float,
-        right_ear: float,
+        left_ear: Optional[float],
+        right_ear: Optional[float],
         ear: Optional[float] = None,
         timestamp_ms: float = 0.0,
         has_face: bool = True,
         compensated_ear: Optional[float] = None,
+        left_valid: bool = True,
+        right_valid: bool = True,
     ) -> BlinkSnapshot:
         """
         Process a new frame measurement and update blink kinematics state machine.
@@ -214,6 +216,8 @@ class BlinkKinematicsDetector:
             timestamp_ms: Monotonic frame timestamp in milliseconds.
             has_face: Whether face tracking and eye geometry are valid.
             compensated_ear: Legacy keyword alias for `ear` (backward compatibility).
+            left_valid: Whether left eye landmarks are valid.
+            right_valid: Whether right eye landmarks are valid.
         """
         # Resolve uncompensated EAR with backward-compatible keyword alias
         ear_val = ear if ear is not None else (compensated_ear if compensated_ear is not None else 0.0)
@@ -248,7 +252,7 @@ class BlinkKinematicsDetector:
             )
 
         # 2. Face Loss Handling
-        if not has_face:
+        if not has_face or (not left_valid and not right_valid):
             self._handle_face_lost()
             return BlinkSnapshot(
                 state=self._state,
@@ -306,13 +310,23 @@ class BlinkKinematicsDetector:
         is_below_closed = ear_val < self.closure_threshold
         is_above_reopen = ear_val >= self.reopen_threshold
 
-        # Track whether individual eyes reached closure during this in-flight event
+        # Track whether individual eyes reached valid overlapping closure during this in-flight event
         l_val = left_ear if left_ear is not None else ear_val
         r_val = right_ear if right_ear is not None else ear_val
+        left_closed_now = bool(left_valid and (l_val < self.closure_threshold))
+        right_closed_now = bool(right_valid and (r_val < self.closure_threshold))
+        if left_valid and right_valid:
+            valid_eye_closed = left_closed_now and right_closed_now
+        elif left_valid:
+            valid_eye_closed = left_closed_now
+        elif right_valid:
+            valid_eye_closed = right_closed_now
+        else:
+            valid_eye_closed = False
+
         if is_below_closed or self._state in (BlinkState.CLOSING, BlinkState.CLOSED, BlinkState.PROLONGED_CLOSURE):
-            if l_val < self.closure_threshold:
+            if left_closed_now and right_closed_now:
                 self._was_left_closed = True
-            if r_val < self.closure_threshold:
                 self._was_right_closed = True
 
         # 4. State Machine Evaluation
@@ -327,9 +341,8 @@ class BlinkKinematicsDetector:
                 self._is_left_censored = True
                 self._min_ear = ear_val
                 self._min_ear_ts = timestamp_ms
-                if l_val < self.closure_threshold:
+                if left_closed_now and right_closed_now:
                     self._was_left_closed = True
-                if r_val < self.closure_threshold:
                     self._was_right_closed = True
             elif is_above_reopen:
                 self._state = BlinkState.OPEN
@@ -514,6 +527,7 @@ class BlinkKinematicsDetector:
 
                 elif ear_val < self.closure_threshold:
                     # Dropped back into closed
+                    self._closure_start_ts = timestamp_ms
                     self._state = BlinkState.CLOSED
 
         self._prev_ts = timestamp_ms
@@ -525,7 +539,7 @@ class BlinkKinematicsDetector:
 
         return BlinkSnapshot(
             state=self._state,
-            is_eye_closed=is_currently_closed,
+            is_eye_closed=is_currently_closed and valid_eye_closed,
             current_closure_duration_ms=current_closure_duration_ms,
             completed_blink=completed_blink,
             recent_blink_duration_ms=self._recent_duration_ms,

@@ -51,6 +51,7 @@ class TemporalMetrics:
     has_face: bool
     face_lost_duration_ms: float
     is_eye_closed: Optional[bool] = None
+    completed_blink: Optional[BlinkEvent] = None
 
     @property
     def is_eye_verified_open(self) -> bool:
@@ -138,7 +139,7 @@ class TemporalAnalyzer:
             face_lost_duration_ms=0.0,
         )
 
-    def update(self, features: DriverFeatures) -> TemporalMetrics:
+    def update(self, features: DriverFeatures, is_reliable: bool = True) -> TemporalMetrics:
         """
         Ingest current frame's DriverFeatures and return consolidated TemporalMetrics.
         """
@@ -170,7 +171,7 @@ class TemporalAnalyzer:
         # 1. Face Loss Tracking
         # ------------------------------------------------------------------
         if not features.has_face:
-            if self._face_lost_start_ts_ms is None or gap_detected:
+            if self._face_lost_start_ts_ms is None:
                 self._face_lost_start_ts_ms = ts_ms
             face_lost_ms = ts_ms - self._face_lost_start_ts_ms
             self._closure_start_ts_ms = None
@@ -183,51 +184,56 @@ class TemporalAnalyzer:
         # ------------------------------------------------------------------
         # 2. Continuous Eye Closure Tracking
         # ------------------------------------------------------------------
-        ear_valid = features.has_face and features.ear.is_valid
-        blink_valid = (
-            features.has_face
-            and not features.blink.sampling_gap_detected
-            and features.blink.state != BlinkState.UNCERTAIN_GAP
-        )
-
-        ear_closed = ear_valid and features.ear.is_closed
-        blink_closed = blink_valid and features.blink.is_eye_closed
-
-        if ear_closed or blink_closed:
-            is_eye_closed_val: Optional[bool] = True
-        elif ear_valid and blink_valid:
-            is_eye_closed_val = False
-        elif ear_valid and not features.ear.is_closed and not blink_valid:
-            is_eye_closed_val = False
-        elif blink_valid and not features.blink.is_eye_closed and not ear_valid:
-            is_eye_closed_val = False
-        else:
-            is_eye_closed_val = None
-
-        is_currently_closed = is_eye_closed_val is True
-
-        if gap_detected:
-            # Sampling gap: unobserved camera time must never be counted as closure.
-            # If the driver is closed on the first post-gap observation, establish a new
-            # closure start at this frame without backdating or carrying previous duration.
-            if is_currently_closed:
-                self._closure_start_ts_ms = ts_ms
-            else:
-                self._closure_start_ts_ms = None
+        if not is_reliable:
+            is_eye_closed_val: Optional[bool] = None
+            self._closure_start_ts_ms = None
             active_closure_ms = 0.0
         else:
-            if is_currently_closed:
-                if self._closure_start_ts_ms is None:
-                    self._closure_start_ts_ms = ts_ms
-                raw_closure_duration = ts_ms - self._closure_start_ts_ms
-                # Blend with kinematic detector's sub-frame interpolated closure duration
-                active_closure_ms = max(
-                    raw_closure_duration,
-                    features.blink.current_closure_duration_ms,
-                )
+            ear_valid = features.has_face and features.ear.is_valid
+            blink_valid = (
+                features.has_face
+                and not features.blink.sampling_gap_detected
+                and features.blink.state != BlinkState.UNCERTAIN_GAP
+            )
+
+            ear_closed = ear_valid and features.ear.is_closed
+            blink_closed = blink_valid and features.blink.is_eye_closed
+
+            if ear_closed or blink_closed:
+                is_eye_closed_val = True
+            elif ear_valid and blink_valid:
+                is_eye_closed_val = False
+            elif ear_valid and not features.ear.is_closed and not blink_valid:
+                is_eye_closed_val = False
+            elif blink_valid and not features.blink.is_eye_closed and not ear_valid:
+                is_eye_closed_val = False
             else:
-                self._closure_start_ts_ms = None
+                is_eye_closed_val = None
+
+            is_currently_closed = is_eye_closed_val is True
+
+            if gap_detected:
+                # Sampling gap: unobserved camera time must never be counted as closure.
+                # If the driver is closed on the first post-gap observation, establish a new
+                # closure start at this frame without backdating or carrying previous duration.
+                if is_currently_closed:
+                    self._closure_start_ts_ms = ts_ms
+                else:
+                    self._closure_start_ts_ms = None
                 active_closure_ms = 0.0
+            else:
+                if is_currently_closed:
+                    if self._closure_start_ts_ms is None:
+                        self._closure_start_ts_ms = ts_ms
+                    raw_closure_duration = ts_ms - self._closure_start_ts_ms
+                    # Blend with kinematic detector's sub-frame interpolated closure duration
+                    active_closure_ms = max(
+                        raw_closure_duration,
+                        features.blink.current_closure_duration_ms,
+                    )
+                else:
+                    self._closure_start_ts_ms = None
+                    active_closure_ms = 0.0
 
         # ------------------------------------------------------------------
         # 3. Off-Road Gaze Dwell & Cockpit Context
@@ -268,11 +274,11 @@ class TemporalAnalyzer:
         # ------------------------------------------------------------------
         # 4. Nodding Microsleep Detection
         # ------------------------------------------------------------------
-        if gap_detected:
+        if gap_detected or not is_reliable:
             self._pitch_history.clear()
 
         is_nodding_microsleep = False
-        if features.has_face and features.head_pose.is_valid:
+        if is_reliable and features.has_face and features.head_pose.is_valid:
             rel_pitch = features.head_pose.rel_pitch_deg
             self._pitch_history.append((ts_ms, rel_pitch))
             # Expire pitch older than 2.5s
@@ -296,12 +302,14 @@ class TemporalAnalyzer:
         # 5. Blink History Accumulation & Kinematic Aggregation
         # ------------------------------------------------------------------
         completed_blink = features.blink.completed_blink
+        new_completed_blink: Optional[BlinkEvent] = None
         if (
             completed_blink is not None
             and completed_blink.end_ts_ms != self._last_processed_blink_end_ts
         ):
             self._blinks.append(completed_blink)
             self._last_processed_blink_end_ts = completed_blink.end_ts_ms
+            new_completed_blink = completed_blink
 
         # Expire blinks older than 60s
         while self._blinks and (ts_ms - self._blinks[0].end_ts_ms) > self.window_60s_ms:
@@ -394,6 +402,7 @@ class TemporalAnalyzer:
             has_face=features.has_face,
             face_lost_duration_ms=face_lost_ms,
             is_eye_closed=is_eye_closed_val,
+            completed_blink=new_completed_blink,
         )
         self._last_metrics = metrics
         return metrics

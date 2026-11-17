@@ -36,6 +36,10 @@ if str(project_root) not in sys.path:
 import cv2
 import numpy as np
 
+from backend.app.ai.blink_kinematics import (
+    BlinkClassification as AIBlinkClassification,
+    BlinkEvent as AIBlinkEvent,
+)
 from backend.app.ai.pdbp_calibration import (
     DriverBehaviourProfile,
     GuidedCalibrationSession,
@@ -456,6 +460,25 @@ def run_benchmark(
             if calibration_session is not None and calibration_session.is_running:
                 calib_info = calibration_session.get_progress(packet.timestamp_ms)
                 if latest_landmark is not None and latest_features is not None:
+                    fb = latest_features.blink.completed_blink
+                    adapted_blink: Optional[AIBlinkEvent] = None
+                    if fb is not None:
+                        cls_name = getattr(fb.classification, "name", "NORMAL")
+                        ai_cls = getattr(AIBlinkClassification, cls_name, AIBlinkClassification.NORMAL)
+                        adapted_blink = AIBlinkEvent(
+                            start_ts_ms=fb.start_ts_ms,
+                            min_ts_ms=fb.min_ts_ms,
+                            end_ts_ms=fb.end_ts_ms,
+                            duration_ms=fb.duration_ms,
+                            open_ear_before=fb.open_ear_before,
+                            min_ear=fb.min_ear,
+                            amplitude=fb.amplitude,
+                            closing_velocity_per_s=fb.closing_velocity_per_s,
+                            reopening_velocity_per_s=fb.reopening_velocity_per_s,
+                            rcr=fb.rcr,
+                            classification=ai_cls,
+                            is_binocular=fb.is_binocular,
+                        )
                     completed_profile = calibration_session.ingest_frame(
                         timestamp_ms=packet.timestamp_ms,
                         face_detected=latest_landmark.has_face,
@@ -464,7 +487,7 @@ def run_benchmark(
                         pitch_deg=latest_features.head_pose.pitch_deg,
                         yaw_deg=latest_features.head_pose.yaw_deg,
                         is_eye_currently_closed=latest_features.ear.is_closed,
-                        completed_blink=None,
+                        completed_blink=adapted_blink,
                         left_ear=latest_features.ear.left_ear,
                         right_ear=latest_features.ear.right_ear,
                         landmark_confidence=latest_landmark.presence_confidence,

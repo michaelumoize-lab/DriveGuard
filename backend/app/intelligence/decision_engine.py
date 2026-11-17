@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 import math
 from typing import List, Optional
 
+from backend.app.features.blink_detector import BlinkClassification
 from backend.app.intelligence.confidence import ConfidenceAssessment
 from backend.app.intelligence.reason_codes import (
     DrowsinessState,
@@ -488,10 +489,23 @@ class DecisionEngine:
                     self._alert_recovery_start_ts_ms = ts_ms
             else:
                 # Continuation allows normal blinks (< 350ms) but cancels on prolonged blink, ATTENTION+, face lost, etc.
+                completed_blink = metrics.completed_blink
+                has_completed_prolonged_blink = (
+                    completed_blink is not None
+                    and completed_blink.is_binocular
+                    and (
+                        completed_blink.classification in (
+                            BlinkClassification.PROLONGED,
+                            BlinkClassification.MICROSLEEP_CANDIDATE,
+                        )
+                        or completed_blink.duration_ms > self.prolonged_blink_threshold_ms
+                    )
+                )
                 if (
                     candidate_state == DrowsinessState.NORMAL
                     and metrics.is_eye_closed is not None
                     and metrics.active_closure_duration_ms < self.prolonged_blink_threshold_ms
+                    and not has_completed_prolonged_blink
                     and confidence.is_reliable
                     and metrics.has_face
                 ):
