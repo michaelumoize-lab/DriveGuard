@@ -47,7 +47,20 @@ from backend.app.ai.pdbp_calibration import (
     GuidedCalibrationSession,
     create_immutable_profile_snapshot,
 )
+from backend.app.ai.eye_shadow_observer import (
+    BinocularShadowTelemetry,
+    EyeCNNInvocationPolicy,
+    EyeCNNShadowWorker,
+)
 from backend.app.ai.profile_adapter import dto_to_profile, profile_to_dto
+from backend.app.alerts import (
+    AlertDispatcher,
+    AlertState,
+    AlertStateManager,
+    AudioWarningEngine,
+    audio_settings_store,
+    map_drowsiness_state_to_alert_state,
+)
 from backend.app.camera.camera_config import make_filename_safe, sanitize_source_identifier
 from backend.app.camera.camera_manager import create_camera, discover_local_devices
 from backend.app.camera.frame_quality import FrameQualityAnalyzer, FrameQualityResult, QualityStatus
@@ -268,19 +281,27 @@ def draw_diagnostic_hud(
     calibrated_profile_name: Optional[str] = None,
     recording_info: Optional[Tuple[bool, float, int]] = None,
     show_position_guide: bool = False,
+    alert_state: Optional[AlertState] = None,
+    is_recovering: bool = False,
+    audio_warnings_enabled: bool = True,
+    audio_feedback_banner: Optional[str] = None,
+    shadow_telemetry: Optional[BinocularShadowTelemetry] = None,
+    shadow_enabled: bool = False,
 ) -> np.ndarray:
     """
     Renders a semi-transparent diagnostic overlay with real-time performance indicators,
     optical quality metrics (Phase 3), facial landmark tracking (Phase 4),
-    physiological feature extraction (Phase 5), and drowsiness intelligence state (Phase 6).
+    physiological feature extraction (Phase 5), drowsiness intelligence state (Phase 6),
+    alert state machine / audio warning indicators (Phase 8),
+    and passive MobileNetV3 eye CNN shadow observer diagnostics (Phase B1).
     Guarantees responsive layout with zero text overlaps across all resolutions.
     """
     canvas = frame.copy()
     height, width = canvas.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
 
-    # 1. Top Panel (Banner Height 168px with Glassmorphic Slate-900 Overlay)
-    banner_height = 168
+    # 1. Top Panel (Banner Height 192px with Glassmorphic Slate-900 Overlay)
+    banner_height = 192
     overlay = canvas.copy()
     cv2.rectangle(overlay, (0, 0), (width, banner_height), (15, 23, 42), -1)  # Slate-900
     cv2.addWeighted(overlay, 0.82, canvas, 0.18, 0, canvas)
@@ -296,7 +317,7 @@ def draw_diagnostic_hud(
     (tw, th), _ = cv2.getTextSize(title_text, font, 0.54, 2)
     cv2.putText(canvas, title_text, (16, y_row1), font, 0.54, (255, 255, 255), 2, cv2.LINE_AA)
 
-    version_text = "Phase 7"
+    version_text = "Phase 8"
     (vw, vh), _ = cv2.getTextSize(version_text, font, 0.38, 1)
     vx = 16 + tw + 8
     cv2.putText(canvas, version_text, (vx, y_row1), font, 0.38, (148, 163, 184), 1, cv2.LINE_AA)
@@ -348,7 +369,7 @@ def draw_diagnostic_hud(
             qual_bg = (40, 15, 15)
             qual_text = "[DEGRADED]"
         (qw, _), _ = cv2.getTextSize(qual_text, font, 0.40, 1)
-        if cur_x - (qw + 22) > title_reserved_x + 160:
+        if cur_x - (qw + 22) > title_reserved_x + 220:
             bx1, _, _, _ = draw_pill(canvas, qual_text, cur_x, y_row1, qual_color, qual_bg, qual_color, 0.40, 1, 7, 3, "right")
             cur_x = bx1 - 8
 
@@ -367,22 +388,57 @@ def draw_diagnostic_hud(
             lm_bg = (40, 15, 15)
             lm_text = f"[AI: {landmark_result.status.value}]"
         (lw, _), _ = cv2.getTextSize(lm_text, font, 0.40, 1)
-        if cur_x - (lw + 22) > title_reserved_x + 90:
+        if cur_x - (lw + 22) > title_reserved_x + 140:
             bx1, _, _, _ = draw_pill(canvas, lm_text, cur_x, y_row1, lm_color, lm_bg, lm_color, 0.40, 1, 7, 3, "right")
             cur_x = bx1 - 8
 
-    # 4. Drowsiness State Badge (Phase 6)
-    if assessment is not None:
-        state_color = assessment.status_color_bgr
-        state_badge = f"[{assessment.state.value}]"
-        state_bg = (
-            (6, 78, 59) if assessment.state == DrowsinessState.NORMAL
-            else ((15, 35, 55) if assessment.state == DrowsinessState.INSUFFICIENT_DATA
-            else (40, 15, 15))
-        )
-        (sw, _), _ = cv2.getTextSize(state_badge, font, 0.42, 1)
-        if cur_x - (sw + 22) >= title_reserved_x:
-            draw_pill(canvas, state_badge, cur_x, y_row1, state_color, state_bg, state_color, 0.42, 1, 8, 4, "right")
+    # 3b. Audio Warnings Badge (Phase 8)
+    if audio_warnings_enabled:
+        audio_color = (34, 197, 94)  # Emerald-500
+        audio_bg = (12, 35, 25)
+        audio_text = "[AUDIO: ON]"
+    else:
+        audio_color = (148, 163, 184)  # Slate-400
+        audio_bg = (30, 41, 59)
+        audio_text = "[AUDIO: OFF]"
+    (aw, _), _ = cv2.getTextSize(audio_text, font, 0.40, 1)
+    if cur_x - (aw + 22) > title_reserved_x + 80:
+        bx1, _, _, _ = draw_pill(canvas, audio_text, cur_x, y_row1, audio_color, audio_bg, audio_color, 0.40, 1, 7, 3, "right")
+        cur_x = bx1 - 8
+
+    # 3c. CNN Shadow Badge (Phase B1)
+    if shadow_enabled:
+        sh_color = (56, 189, 248)  # Sky-400
+        sh_bg = (15, 35, 55)
+        sh_text = "[SHADOW: ON]"
+    else:
+        sh_color = (148, 163, 184)  # Slate-400
+        sh_bg = (30, 41, 59)
+        sh_text = "[SHADOW: OFF]"
+    (sw_w, _), _ = cv2.getTextSize(sh_text, font, 0.40, 1)
+    if cur_x - (sw_w + 22) > title_reserved_x + 80:
+        bx1, _, _, _ = draw_pill(canvas, sh_text, cur_x, y_row1, sh_color, sh_bg, sh_color, 0.40, 1, 7, 3, "right")
+        cur_x = bx1 - 8
+
+    # 4. Alert State Badge (Phase 8)
+    effective_alert = alert_state
+    if effective_alert is None and assessment is not None:
+        effective_alert = map_drowsiness_state_to_alert_state(assessment.state)
+    if effective_alert is None:
+        effective_alert = AlertState.NORMAL
+
+    state_color = effective_alert.hud_color_bgr
+    rec_suffix = " | RECOVERING" if is_recovering else ""
+    state_badge = f"[{effective_alert.value}{rec_suffix}]"
+    state_bg = (
+        (6, 78, 59) if effective_alert == AlertState.NORMAL
+        else ((35, 28, 10) if effective_alert == AlertState.ATTENTION
+        else ((45, 20, 10) if effective_alert == AlertState.WARNING
+        else (60, 10, 10)))
+    )
+    (sw, _), _ = cv2.getTextSize(state_badge, font, 0.42, 1)
+    if cur_x - (sw + 22) >= title_reserved_x:
+        draw_pill(canvas, state_badge, cur_x, y_row1, state_color, state_bg, state_color, 0.42, 1, 8, 4, "right")
 
     # -------------------------------------------------------------
     # ROW 2 (Y = 47): Ocular Profile Status (Left) & Stream Info (Right)
@@ -453,20 +509,27 @@ def draw_diagnostic_hud(
     put_fitted_text(canvas, telemetry_line_3, 16, y_row3, font, 0.41, features_color, width - 32, 1)
 
     # -------------------------------------------------------------
-    # ROW 4 (Y = 98): Drowsiness Intelligence (Phase 6)
+    # ROW 4 (Y = 98): Alert State & Drowsiness Intelligence (Phase 8)
     # -------------------------------------------------------------
     y_row4 = 98
+    effective_alert = alert_state
+    if effective_alert is None and assessment is not None:
+        effective_alert = map_drowsiness_state_to_alert_state(assessment.state)
+    if effective_alert is None:
+        effective_alert = AlertState.NORMAL
+
+    state_color = effective_alert.hud_color_bgr
+    rec_str = "[RECOVERING] " if is_recovering else ""
     if assessment is not None:
-        state_color = assessment.status_color_bgr
         reason_text = assessment.primary_reason_text
         intel_line = (
-            f"Drowsiness: {assessment.state.value} (Sev {assessment.severity}) | "
-            f"Confidence: {assessment.confidence.overall_confidence:.2f} [{assessment.confidence.tier.value}] | "
+            f"Alert State: {effective_alert.value} (Sev {effective_alert.severity}) | "
+            f"{rec_str}Conf: {assessment.confidence.overall_confidence:.2f} [{assessment.confidence.tier.value}] | "
             f"Reason: {reason_text}"
         )
         put_fitted_text(canvas, intel_line, 16, y_row4, font, 0.41, state_color, width - 32, 1)
     else:
-        intel_line = "Drowsiness Intelligence: N/A"
+        intel_line = f"Alert State: {effective_alert.value} (Sev {effective_alert.severity}) | {rec_str}Nominal Monitoring"
         put_fitted_text(canvas, intel_line, 16, y_row4, font, 0.41, (148, 163, 184), width - 32, 1)
 
     # -------------------------------------------------------------
@@ -487,17 +550,65 @@ def draw_diagnostic_hud(
     put_fitted_text(canvas, telemetry_line_2, 16, y_row5, font, 0.40, (148, 163, 184), width - 32, 1)
 
     # -------------------------------------------------------------
-    # ROW 6 (Y = 144): Controls Guide
+    # ROW 6 (Y = 144): CNN Shadow Diagnostics (Phase B1 - Experimental Observer)
     # -------------------------------------------------------------
     y_row6 = 144
+    if not shadow_enabled:
+        shadow_str = "[EXP] CNN SHADOW: OFF (Press 'x' to enable shadow observer)"
+        shadow_color = (100, 116, 139)  # Slate-500
+    elif shadow_telemetry is None:
+        shadow_str = "[EXP] CNN SHADOW: INITIALIZING / IDLE..."
+        shadow_color = (234, 179, 8)  # Amber-500
+    elif shadow_telemetry.status_label == "STALE":
+        shadow_str = f"[EXP] CNN SHADOW: STALE (>200ms) | Age: {frame_age_ms:.0f}ms | Drops: {shadow_telemetry.worker_queue_depth}"
+        shadow_color = (234, 179, 8)
+    elif shadow_telemetry.status_label == "ERROR":
+        shadow_str = "[EXP] CNN SHADOW: INFERENCE ERROR (Webcam unaffected)"
+        shadow_color = (239, 68, 68)  # Red-500
+    elif shadow_telemetry.status_label == "QUALITY_REJECTED":
+        shadow_str = f"[EXP] CNN SHADOW: CROPS REJECTED (Low quality / occlusion) | Latency: {shadow_telemetry.inference_latency_ms:.1f}ms"
+        shadow_color = (148, 163, 184)
+    else:
+        # ACTIVE
+        l = shadow_telemetry.left_eye
+        r = shadow_telemetry.right_eye
+        l_pred_txt = f"{l.cnn_predicted_class or 'N/A'}"
+        if l.cnn_open_prob is not None:
+            l_prob = max(l.cnn_open_prob, l.cnn_closed_prob or 0.0)
+            l_pred_txt += f"({l_prob:.2f})"
+        r_pred_txt = f"{r.cnn_predicted_class or 'N/A'}"
+        if r.cnn_open_prob is not None:
+            r_prob = max(r.cnn_open_prob, r.cnn_closed_prob or 0.0)
+            r_pred_txt += f"({r_prob:.2f})"
+
+        l_agree = "AGREE" if l.is_agreement is True else ("DIFF" if l.is_agreement is False else "N/A")
+        r_agree = "AGREE" if r.is_agreement is True else ("DIFF" if r.is_agreement is False else "N/A")
+        binoc_tag = "CONSENSUS" if shadow_telemetry.binocular_agreement is True else ("DIVERGENT" if shadow_telemetry.binocular_agreement is False else "PARTIAL")
+
+        shadow_str = (
+            f"[EXP] CNN SHADOW: [{binoc_tag}] | "
+            f"L: {l.geometric_state} vs CNN:{l_pred_txt} [{l_agree}] | "
+            f"R: {r.geometric_state} vs CNN:{r_pred_txt} [{r_agree}] | "
+            f"CNN: {shadow_telemetry.inference_latency_ms:.1f}ms (Tot:{shadow_telemetry.total_latency_ms:.1f}ms)"
+        )
+        shadow_color = (56, 189, 248) if shadow_telemetry.binocular_agreement is True else (234, 179, 8)
+
+    put_fitted_text(canvas, shadow_str, 16, y_row6, font, 0.39, shadow_color, width - 32, 1)
+
+    # -------------------------------------------------------------
+    # ROW 7 (Y = 168): Controls Guide
+    # -------------------------------------------------------------
+    y_row7 = 168
     mesh_str = "ON" if draw_mesh else "OFF"
     eyes_str = "ON" if draw_eyes else "OFF"
     rec_str = "ON" if (recording_info and recording_info[0]) else "OFF"
     guide_str = "ON" if show_position_guide else "OFF"
+    audio_str = "ON" if audio_warnings_enabled else "OFF"
+    shadow_sw = "ON" if shadow_enabled else "OFF"
     controls_line = (
-        f"Controls: [q] Exit  [c] Calibrate  [p] Guide:{guide_str}  [r] Rec:{rec_str}  [m] Mirror  [w] Mesh:{mesh_str}  [e] Eyes:{eyes_str}  [s] Snapshot"
+        f"Controls: [q] Exit  [a] Audio:{audio_str}  [x] Shadow:{shadow_sw}  [c] Calibrate  [p] Guide:{guide_str}  [r] Rec:{rec_str}  [m] Mirror  [w] Mesh:{mesh_str}  [e] Eyes:{eyes_str}  [s] Snapshot"
     )
-    put_fitted_text(canvas, controls_line, 16, y_row6, font, 0.39, (100, 116, 139), width - 32, 1)
+    put_fitted_text(canvas, controls_line, 16, y_row7, font, 0.38, (100, 116, 139), width - 32, 1)
 
     # -------------------------------------------------------------
     # BOTTOM CALIBRATION BOX (Phase 7 Guided Calibration)
@@ -556,7 +667,7 @@ def draw_diagnostic_hud(
 
         # Line 3: Live Feedback Status (Left) & Cancel Hint (Right)
         feed_y = box_y + 84
-        feed_prefix = "[ALIGNED] " if is_aligned else "[ALIGNING] "
+        feed_prefix = "[HOLDING STEADY] " if is_aligned else "[ALIGNING] "
         feed_str = f"{feed_prefix}{feedback}"
         cancel_hint = "Press 'c' or ESC to cancel"
         (cw, ch), _ = cv2.getTextSize(cancel_hint, font, 0.38, 1)
@@ -590,8 +701,24 @@ def draw_diagnostic_hud(
         by = box_y + (box_h + th) // 2
         cv2.putText(canvas, calibration_banner, (bx, by), font, b_scale, (255, 255, 255), b_thick, cv2.LINE_AA)
 
-    # Subtle status border around the full viewport
-    border_color = assessment.status_color_bgr if assessment else (34, 197, 94)
+    elif audio_feedback_banner:
+        box_y = height - 76
+        box_h = 56
+        sub = canvas.copy()
+        is_muted = "MUTED" in audio_feedback_banner or "OFF" in audio_feedback_banner
+        bg_color = (40, 30, 20) if is_muted else (6, 78, 59)
+        border_color = (234, 179, 8) if is_muted else (34, 197, 94)
+        cv2.rectangle(sub, (16, box_y), (width - 16, box_y + box_h), bg_color, -1)
+        cv2.addWeighted(sub, 0.85, canvas, 0.15, 0, canvas)
+        cv2.rectangle(canvas, (16, box_y), (width - 16, box_y + box_h), border_color, 2)
+
+        (tw, th), _ = cv2.getTextSize(audio_feedback_banner, font, 0.52, 2)
+        bx = max(24, (width - tw) // 2)
+        by = box_y + (box_h + th) // 2
+        cv2.putText(canvas, audio_feedback_banner, (bx, by), font, 0.52, (255, 255, 255), 2, cv2.LINE_AA)
+
+    # Subtle status border around the full viewport (Phase 8 alert-aware)
+    border_color = effective_alert.hud_color_bgr
     cv2.rectangle(canvas, (0, 0), (width - 1, height - 1), border_color, 3)
 
     return canvas
@@ -611,6 +738,8 @@ def run_benchmark(
     start_calibrating: bool = False,
     driver_id: str = "driver_default",
     record_session: bool = False,
+    cnn_shadow: bool = False,
+    cnn_shadow_hz: float = 15.0,
 ) -> int:
     """
     Executes the camera capture verification loop for webcams or phone streams.
@@ -705,6 +834,28 @@ def run_benchmark(
         landmarker = DriveGuardFaceLandmarker()
 
         drowsiness_engine = DrowsinessEngine()
+
+        # Phase 8: Alert State Machine & Audio Warning System
+        alert_manager = AlertStateManager()
+        audio_engine = AudioWarningEngine()
+        alert_dispatcher = AlertDispatcher(
+            audio_engine=audio_engine,
+            settings_store=audio_settings_store,
+        )
+        audio_feedback_banner_text: Optional[str] = None
+        audio_feedback_banner_until: float = 0.0
+
+        # Phase B1: Passive Eye CNN Shadow Observer (Decoupled Diagnostic)
+        shadow_policy = EyeCNNInvocationPolicy(
+            enabled=cnn_shadow,
+            max_frequency_hz=cnn_shadow_hz,
+            max_staleness_ms=200.0,
+        )
+        shadow_worker = EyeCNNShadowWorker(policy=shadow_policy)
+        shadow_worker.start()
+        latest_shadow_obs: Optional[BinocularShadowTelemetry] = None
+        if cnn_shadow:
+            logger.info("Eye CNN Shadow Observer active at max %.1f Hz (passive diagnostic).", cnn_shadow_hz)
 
         # Guided Calibration Session (Phase 7)
         calibration_session: Optional[GuidedCalibrationSession] = None
@@ -807,6 +958,35 @@ def run_benchmark(
                 is_mirrored=is_mirrored,
             )
 
+            # Eye CNN Passive Shadow Observer Ingestion (Phase B1 - Decoupled Diagnostic)
+            try:
+                should_shadow, _ = shadow_policy.should_invoke(
+                    timestamp_ms=packet.timestamp_ms,
+                    has_face=latest_landmark.has_face if latest_landmark else False,
+                    ear_valid=latest_features.ear.is_geometric_valid if latest_features else False,
+                )
+                if should_shadow and latest_landmark is not None and latest_landmark.has_face:
+                    lms_xyz = np.array(
+                        [[lm.x * f_w, lm.y * f_h, lm.z * f_w] for lm in latest_landmark.landmarks],
+                        dtype=np.float64,
+                    )
+                    shadow_worker.submit_frame(
+                        frame_bgr=packet.frame,
+                        landmarks_pixel_xyz=lms_xyz,
+                        timestamp_ms=packet.timestamp_ms,
+                        frame_id=getattr(packet, "frame_index", total_frames_displayed),
+                        geom_left_closed=latest_features.ear.is_left_closed if latest_features else None,
+                        geom_right_closed=latest_features.ear.is_right_closed if latest_features else None,
+                        raw_left_ear=latest_features.ear.left_ear if latest_features else 0.0,
+                        raw_right_ear=latest_features.ear.right_ear if latest_features else 0.0,
+                        ear_threshold=latest_features.ear.closure_threshold if latest_features else 0.20,
+                    )
+
+                # Retrieve freshest non-stale shadow telemetry observation
+                latest_shadow_obs = shadow_worker.get_latest_observation(packet.timestamp_ms)
+            except Exception as shadow_exc:
+                logger.warning("Error during eye shadow observer ingestion: %s", shadow_exc)
+
             # Ingest frame into calibration session if active
             calib_info = None
             if calibration_session is not None and calibration_session.is_running:
@@ -894,6 +1074,15 @@ def run_benchmark(
                 quality=latest_quality,
             )
 
+            # Evaluate Alert State Manager & Dispatcher (Phase 8)
+            alert_transition = alert_manager.update(latest_assessment)
+            alert_dispatcher.dispatch(
+                transition=alert_transition,
+                current_state=alert_manager.current_state,
+                timestamp_ms=packet.timestamp_ms,
+                is_recovering=alert_manager.is_recovering,
+            )
+
             # Record synchronized video frame and telemetry row
             if session_recorder is not None and session_recorder.is_recording:
                 t_dict = {
@@ -921,10 +1110,19 @@ def run_benchmark(
                     "drowsiness_state": latest_assessment.state.value if latest_assessment else "NORMAL",
                     "drowsiness_severity": latest_assessment.severity if latest_assessment else 0,
                     "primary_reason": latest_assessment.primary_reason_text if latest_assessment is not None else "NONE",
+                    "alert_state": alert_manager.current_state.value,
+                    "alert_severity": alert_manager.severity,
+                    "is_recovering": alert_manager.is_recovering,
+                    "audio_warnings_enabled": alert_dispatcher.is_audio_enabled,
                     "luminance": latest_quality.mean_luminance if latest_quality else 0.0,
                     "blur_variance": latest_quality.blur_variance if latest_quality else 0.0,
                     "optical_status": latest_quality.status.value if latest_quality else "UNKNOWN",
                     "inference_latency_ms": latest_landmark.inference_latency_ms if latest_landmark else 0.0,
+                    "shadow_status": latest_shadow_obs.status_label if latest_shadow_obs else "DISABLED",
+                    "shadow_left_cnn": latest_shadow_obs.left_eye.cnn_predicted_class if latest_shadow_obs else None,
+                    "shadow_right_cnn": latest_shadow_obs.right_eye.cnn_predicted_class if latest_shadow_obs else None,
+                    "shadow_binoc_agreement": latest_shadow_obs.binocular_agreement if latest_shadow_obs else None,
+                    "shadow_latency_ms": latest_shadow_obs.inference_latency_ms if latest_shadow_obs else 0.0,
                 }
                 session_recorder.record_frame(
                     frame=packet.frame,
@@ -942,6 +1140,8 @@ def run_benchmark(
             # Render overlay if running in GUI mode
             if loop_now >= calibration_banner_until:
                 calibration_banner_text = None
+            if loop_now >= audio_feedback_banner_until:
+                audio_feedback_banner_text = None
 
             if not headless:
                 # 1. Render facial landmarks directly onto raw video frame
@@ -992,6 +1192,12 @@ def run_benchmark(
                         session_recorder.frame_count,
                     ) if session_recorder is not None else None,
                     show_position_guide=show_position_guide,
+                    alert_state=alert_manager.current_state,
+                    is_recovering=alert_manager.is_recovering,
+                    audio_warnings_enabled=alert_dispatcher.is_audio_enabled,
+                    audio_feedback_banner=audio_feedback_banner_text,
+                    shadow_telemetry=latest_shadow_obs,
+                    shadow_enabled=shadow_policy.enabled,
                 )
                 cv2.imshow(window_name, hud_frame)
 
@@ -999,6 +1205,29 @@ def run_benchmark(
                 if key in (27, ord("q"), ord("Q")):
                     logger.info("User requested termination.")
                     break
+                elif key in (ord("x"), ord("X")):
+                    shadow_policy.enabled = not shadow_policy.enabled
+                    audio_feedback_banner_text = (
+                        "CNN SHADOW: ENABLED" if shadow_policy.enabled else "CNN SHADOW: MUTED"
+                    )
+                    audio_feedback_banner_until = loop_now + 2.5
+                    logger.info(
+                        "Eye CNN Shadow Observer toggled to: %s",
+                        "ENABLED" if shadow_policy.enabled else "MUTED",
+                    )
+                elif key in (ord("a"), ord("A")):
+                    new_audio_state = alert_dispatcher.toggle_audio(
+                        active_state=alert_manager.current_state,
+                        timestamp_ms=packet.timestamp_ms,
+                    )
+                    audio_feedback_banner_text = (
+                        "AUDIO WARNINGS: ENABLED" if new_audio_state else "AUDIO WARNINGS: MUTED"
+                    )
+                    audio_feedback_banner_until = loop_now + 2.5
+                    logger.info(
+                        "Audio warnings toggled to: %s",
+                        "ENABLED" if new_audio_state else "MUTED",
+                    )
                 elif key in (ord("c"), ord("C")):
                     show_position_guide = False
                     if calibration_session is None or not calibration_session.is_running:
@@ -1060,6 +1289,10 @@ def run_benchmark(
                         )
 
     finally:
+        if "shadow_worker" in locals() and shadow_worker is not None:
+            shadow_worker.stop()
+        if "alert_dispatcher" in locals() and alert_dispatcher is not None:
+            alert_dispatcher.shutdown()
         if "session_recorder" in locals() and session_recorder is not None and session_recorder.is_recording:
             session_recorder.stop()
         total_time = time.monotonic() - start_time
@@ -1115,6 +1348,14 @@ def run_benchmark(
         if latest_features.blink.recent_blink_rcr is not None:
             print(f"Recent Blink Kinematics: Duration={latest_features.blink.recent_blink_duration_ms:.1f}ms, RCR={latest_features.blink.recent_blink_rcr:.2f}")
         print(f"Head Pose Orientation : Zone={latest_features.head_pose.zone.value} (Pitch={latest_features.head_pose.pitch_deg:+.1f}\xb0, Yaw={latest_features.head_pose.yaw_deg:+.1f}\xb0, Roll={latest_features.head_pose.roll_deg:+.1f}\xb0)")
+    if "shadow_worker" in locals() and shadow_worker is not None and shadow_worker._total_inferences_count > 0:
+        print("-" * 60)
+        print("      EYE CNN SHADOW OBSERVER (PHASE B1)")
+        print("-" * 60)
+        print(f"Shadow Worker Status  : {'AVAILABLE' if shadow_worker.is_available else 'UNAVAILABLE'}")
+        print(f"Total Inferences Run  : {shadow_worker._total_inferences_count}")
+        print(f"Dropped Frames        : {shadow_worker._dropped_jobs_count}")
+        print(f"Inference Errors      : {shadow_worker._error_count}")
     print("=" * 60 + "\n")
 
     if total_frames_displayed == 0:
@@ -1200,6 +1441,19 @@ def main() -> None:
         action="store_true",
         help="Record synchronized video (.mp4) and per-frame telemetry (.csv/.jsonl)",
     )
+    parser.add_argument(
+        "--cnn-shadow",
+        dest="cnn_shadow",
+        action="store_true",
+        default=False,
+        help="Enable MobileNetV3 eye-state CNN passive shadow observer (Phase B1 diagnostic)",
+    )
+    parser.add_argument(
+        "--cnn-shadow-hz",
+        type=float,
+        default=15.0,
+        help="Maximum inference frequency for CNN shadow observer in Hz (default: 15.0)",
+    )
 
     args = parser.parse_args()
 
@@ -1225,6 +1479,8 @@ def main() -> None:
             start_calibrating=args.calibrate,
             driver_id=args.driver_id,
             record_session=args.record_session,
+            cnn_shadow=args.cnn_shadow,
+            cnn_shadow_hz=args.cnn_shadow_hz,
         )
     )
 

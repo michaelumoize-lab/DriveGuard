@@ -77,7 +77,7 @@ class DrowsinessEngine:
         extended_closure_threshold_ms: float = 500.0,
         perclos_warning_threshold_pct: float = 15.0,
         perclos_attention_threshold_pct: float = 8.0,
-        prolonged_blink_threshold_ms: float = 350.0,
+        prolonged_blink_threshold_ms: float = 500.0,
         off_road_distraction_limit_ms: float = 3500.0,
         recovery_critical_ms: float = 2000.0,
         recovery_warning_ms: float = 1500.0,

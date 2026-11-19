@@ -1156,12 +1156,11 @@ class GuidedCalibrationSession:
                 # Allows camera placement off-center (e.g., A-pillar, center console)
                 # up to self.initial_center_max_yaw_deg and within [min_pitch, max_pitch].
                 if abs(yaw_deg) > self.initial_center_max_yaw_deg:
-                    return False, "Look straight ahead at center roadway"
-                if (
-                    pitch_deg < self.initial_center_min_pitch_deg
-                    or pitch_deg > self.initial_center_max_pitch_deg
-                ):
-                    return False, "Look straight ahead at center roadway"
+                    return False, f"Look straight ahead: turn face forward (yaw {yaw_deg:+.0f}° > ±{self.initial_center_max_yaw_deg:.0f}°)"
+                if pitch_deg > self.initial_center_max_pitch_deg:
+                    return False, f"Look straight ahead: tilt chin down slightly (pitch {pitch_deg:+.0f}° > +{self.initial_center_max_pitch_deg:.0f}°)"
+                if pitch_deg < self.initial_center_min_pitch_deg:
+                    return False, f"Look straight ahead: lift chin up slightly (pitch {pitch_deg:+.0f}° < {self.initial_center_min_pitch_deg:.0f}°)"
                 return True, "Holding Steady (Center Roadway)"
             else:
                 # Established reference (recalibration or subsequent step with established reference)
@@ -1184,11 +1183,10 @@ class GuidedCalibrationSession:
                     ref_pitch = 0.0
                 rel_yaw = yaw_deg - ref_yaw
                 rel_pitch = pitch_deg - ref_pitch
-                if (
-                    abs(rel_yaw) > self.recalibration_center_max_yaw_deg
-                    or abs(rel_pitch) > self.recalibration_center_max_pitch_deg
-                ):
-                    return False, "Look straight ahead at center roadway"
+                if abs(rel_yaw) > self.recalibration_center_max_yaw_deg:
+                    return False, f"Look straight ahead: turn face to center (rel yaw {rel_yaw:+.0f}°)"
+                if abs(rel_pitch) > self.recalibration_center_max_pitch_deg:
+                    return False, f"Look straight ahead: level head to center (rel pitch {rel_pitch:+.0f}°)"
                 return True, "Holding Steady (Center Roadway)"
 
         # Relative reference for peripheral zones
@@ -1215,22 +1213,22 @@ class GuidedCalibrationSession:
         if target_zone == PoseZone.LEFT_MIRROR:
             # Driver turning left yields positive relative yaw in front-facing camera frame
             if rel_yaw < 7.0:
-                return False, "Turn head toward Driver Mirror (Left)  <-"
+                return False, f"Turn head left toward Driver Mirror <- (need +7°, current {rel_yaw:+.0f}°)"
             return True, "Holding Steady (Driver Mirror)"
 
         elif target_zone == PoseZone.RIGHT_MIRROR:
             # Driver turning right yields negative relative yaw in front-facing camera frame
             if rel_yaw > -7.0:
-                return False, "Turn head toward Passenger Mirror (Right)  ->"
+                return False, f"Turn head right toward Passenger Mirror -> (need -7°, current {rel_yaw:+.0f}°)"
             return True, "Holding Steady (Passenger Mirror)"
 
         elif target_zone == PoseZone.DASHBOARD:
             # Require head yaw to be centered (|yaw| < 16.0 deg) and pitch to be intentionally down (<= -6.0 deg)
             # so returning from a side mirror cannot accidentally trigger it.
             if abs(rel_yaw) >= 16.0:
-                return False, "Center your head, then glance down at Dashboard"
+                return False, f"Center head before looking down (yaw {rel_yaw:+.0f}°)"
             if rel_pitch > -6.0:
-                return False, "Glance downward at Dashboard  v"
+                return False, f"Glance downward at Dashboard v (need -6° pitch, current {rel_pitch:+.0f}°)"
             return True, "Holding Steady (Dashboard)"
 
         return True, "Holding Steady"
@@ -1478,6 +1476,9 @@ class GuidedCalibrationSession:
         if time_expired and not should_advance:
             if current_samples >= min_required:
                 should_advance = True
+            elif is_aligned and current_samples >= (min_required // 2) and elapsed_sec < (step_budget_sec + 3.0):
+                # Active alignment grace extension: allow up to 3 extra seconds if driver is actively collecting samples
+                pass
             else:
                 self.quality_warnings.append(
                     f"POOR_VISIBILITY: Insufficient valid observations ({current_samples}/{min_required}) in "

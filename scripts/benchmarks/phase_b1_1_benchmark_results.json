@@ -1,0 +1,285 @@
+{
+  "hardware": {
+    "os": "Windows 10 (10.0.26200)",
+    "cpu_arch": "AMD64",
+    "processor": "Intel64 Family 6 Model 142 Stepping 10, GenuineIntel",
+    "physical_cores": "4",
+    "logical_processors": "8",
+    "ram_total_gb": "7.85 GB",
+    "python": "3.11.9",
+    "cpu_brand": "Intel64 Family 6 Model 142 Stepping 10, GenuineIntel"
+  },
+  "isolation": {
+    "isolation_shadow_closed_prediction": true,
+    "isolation_shadow_inference_error": true,
+    "isolation_shadow_stale_result": true,
+    "isolation_shadow_missing_model": true
+  },
+  "benchmarks": [
+    {
+      "config_name": "Config 1: Shadow OFF (Baseline)",
+      "shadow_enabled": false,
+      "shadow_hz": 0.0,
+      "duration_sec": 60.39000000001397,
+      "steady_state_samples": 1108,
+      "total_captured_frames": 1826,
+      "total_rendered_frames": 1183,
+      "capture_fps": 30.236794171213408,
+      "display_fps": 19.589335982774074,
+      "face_detection_pct": 100.0,
+      "loop_processing_ms": {
+        "mean": 50.851738989194104,
+        "median": 42.233899992424995,
+        "p95": 93.68009499157777,
+        "p99": 157.91044701618443,
+        "min": 30.394400004297495,
+        "max": 254.1242000006605
+      },
+      "mediapipe_latency_ms": {
+        "mean": 23.890503520338918,
+        "median": 19.56754999991972,
+        "p95": 44.81538998079485,
+        "p99": 71.6570960104583,
+        "min": 13.491300021996722,
+        "max": 174.8710999963805
+      },
+      "cnn_inference_latency_ms": {
+        "mean": 0.0,
+        "median": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "cnn_total_latency_ms": {
+        "mean": 0.0,
+        "median": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "process_cpu_pct": 23.85905172413793,
+      "system_cpu_pct": 63.42413793103449,
+      "initial_rss_mb": 70.4296875,
+      "final_rss_mb": 136.171875,
+      "rss_delta_mb": 65.7421875,
+      "worker_total_inferences": 0,
+      "worker_dropped_jobs": 0,
+      "worker_errors": 0,
+      "stale_observations_count": 0
+    },
+    {
+      "config_name": "Config 2: Shadow ON @ 1 Hz",
+      "shadow_enabled": true,
+      "shadow_hz": 1.0,
+      "duration_sec": 60.421999999991385,
+      "steady_state_samples": 1271,
+      "total_captured_frames": 1807,
+      "total_rendered_frames": 1333,
+      "capture_fps": 29.906325510579883,
+      "display_fps": 22.061500777865515,
+      "face_detection_pct": 94.8987246811703,
+      "loop_processing_ms": {
+        "mean": 44.39671416182575,
+        "median": 39.691199985099956,
+        "p95": 72.70089999656193,
+        "p99": 93.19482000719267,
+        "min": 29.413400014163926,
+        "max": 186.9490999961272
+      },
+      "mediapipe_latency_ms": {
+        "mean": 21.08523060577203,
+        "median": 18.91280000563711,
+        "p95": 34.2532999929972,
+        "p99": 45.25328000891018,
+        "min": 8.905299997422844,
+        "max": 70.88890002341941
+      },
+      "cnn_inference_latency_ms": {
+        "mean": 3.666457042331975,
+        "median": 3.2945999992080033,
+        "p95": 6.4901000005193055,
+        "p99": 8.755199989536777,
+        "min": 2.4043000012170523,
+        "max": 19.653199997264892
+      },
+      "cnn_total_latency_ms": {
+        "mean": 1794915877137.9226,
+        "median": 1794915877137.8374,
+        "p95": 1794915877173.991,
+        "p99": 1794915877197.2048,
+        "min": 1794915877107.1309,
+        "max": 1794915877206.8472
+      },
+      "process_cpu_pct": 25.31292372881356,
+      "system_cpu_pct": 58.51525423728814,
+      "initial_rss_mb": 128.09375,
+      "final_rss_mb": 133.19921875,
+      "rss_delta_mb": 5.10546875,
+      "worker_total_inferences": 58,
+      "worker_dropped_jobs": 0,
+      "worker_errors": 0,
+      "stale_observations_count": 1058
+    },
+    {
+      "config_name": "Config 3: Shadow ON @ 2 Hz",
+      "shadow_enabled": true,
+      "shadow_hz": 2.0,
+      "duration_sec": 60.671999999991385,
+      "steady_state_samples": 1275,
+      "total_captured_frames": 1802,
+      "total_rendered_frames": 1353,
+      "capture_fps": 29.700685654012656,
+      "display_fps": 22.30023734177532,
+      "face_detection_pct": 100.0,
+      "loop_processing_ms": {
+        "mean": 44.25095898017068,
+        "median": 40.62449999037199,
+        "p95": 68.05192000174429,
+        "p99": 89.04060200729872,
+        "min": 27.88360000704415,
+        "max": 303.4247999894433
+      },
+      "mediapipe_latency_ms": {
+        "mean": 20.21162619627099,
+        "median": 18.33359999000095,
+        "p95": 31.6948399937246,
+        "p99": 42.86319199600257,
+        "min": 12.816300004487857,
+        "max": 254.45910001872107
+      },
+      "cnn_inference_latency_ms": {
+        "mean": 3.6889405485343043,
+        "median": 3.1383000023197383,
+        "p95": 5.600800010142848,
+        "p99": 12.286699988180771,
+        "min": 2.2942000068724155,
+        "max": 28.298300021560863
+      },
+      "cnn_total_latency_ms": {
+        "mean": 1794915877137.5452,
+        "median": 1794915877136.7864,
+        "p95": 1794915877167.658,
+        "p99": 1794915877184.9993,
+        "min": 1794915877109.042,
+        "max": 1794915877239.7324
+      },
+      "process_cpu_pct": 25.681250000000002,
+      "system_cpu_pct": 53.19655172413793,
+      "initial_rss_mb": 123.6171875,
+      "final_rss_mb": 140.57421875,
+      "rss_delta_mb": 16.95703125,
+      "worker_total_inferences": 117,
+      "worker_dropped_jobs": 0,
+      "worker_errors": 0,
+      "stale_observations_count": 857
+    },
+    {
+      "config_name": "Config 4: Shadow ON @ 5 Hz",
+      "shadow_enabled": true,
+      "shadow_hz": 5.0,
+      "duration_sec": 61.530999999988126,
+      "steady_state_samples": 1374,
+      "total_captured_frames": 1808,
+      "total_rendered_frames": 1430,
+      "capture_fps": 29.383562756989956,
+      "display_fps": 23.24031788854847,
+      "face_detection_pct": 44.05594405594406,
+      "loop_processing_ms": {
+        "mean": 40.917002255929226,
+        "median": 40.23215000052005,
+        "p95": 51.641449989983805,
+        "p99": 64.75058897951385,
+        "min": 25.45420001843013,
+        "max": 121.18269997881725
+      },
+      "mediapipe_latency_ms": {
+        "mean": 18.71029294037133,
+        "median": 18.346249999012798,
+        "p95": 24.755895005364415,
+        "p99": 29.439631000859656,
+        "min": 5.98720001289621,
+        "max": 38.30859999288805
+      },
+      "cnn_inference_latency_ms": {
+        "mean": 3.3566673933618176,
+        "median": 3.1349000055342913,
+        "p95": 4.88039999618195,
+        "p99": 5.799599981401116,
+        "min": 2.4228999973274767,
+        "max": 14.759000012418255
+      },
+      "cnn_total_latency_ms": {
+        "mean": 1794915877138.5132,
+        "median": 1794915877141.6614,
+        "p95": 1794915877167.1794,
+        "p99": 1794915877169.5347,
+        "min": 1794915877109.5996,
+        "max": 1794915877194.2656
+      },
+      "process_cpu_pct": 26.140254237288133,
+      "system_cpu_pct": 48.24237288135593,
+      "initial_rss_mb": 126.11328125,
+      "final_rss_mb": 141.1484375,
+      "rss_delta_mb": 15.03515625,
+      "worker_total_inferences": 160,
+      "worker_dropped_jobs": 0,
+      "worker_errors": 0,
+      "stale_observations_count": 772
+    },
+    {
+      "config_name": "Config 5: Shadow ON @ 15 Hz",
+      "shadow_enabled": true,
+      "shadow_hz": 15.0,
+      "duration_sec": 60.39100000000326,
+      "steady_state_samples": 1229,
+      "total_captured_frames": 1806,
+      "total_rendered_frames": 1303,
+      "capture_fps": 29.905118312329694,
+      "display_fps": 21.576062658341964,
+      "face_detection_pct": 49.73138910207214,
+      "loop_processing_ms": {
+        "mean": 45.897092758532025,
+        "median": 43.68110001087189,
+        "p95": 68.30770000233314,
+        "p99": 97.28326000971721,
+        "min": 29.213700006948784,
+        "max": 138.24020000174642
+      },
+      "mediapipe_latency_ms": {
+        "mean": 20.821460292722342,
+        "median": 19.384199986234307,
+        "p95": 32.222119986545295,
+        "p99": 43.880163992289454,
+        "min": 12.183600018033758,
+        "max": 68.14750001649372
+      },
+      "cnn_inference_latency_ms": {
+        "mean": 3.647644019181188,
+        "median": 3.1023000192362815,
+        "p95": 5.558299977565184,
+        "p99": 10.32520001172088,
+        "min": 2.3176999820861965,
+        "max": 34.462800016626716
+      },
+      "cnn_total_latency_ms": {
+        "mean": 1794915877139.7908,
+        "median": 1794915877134.7808,
+        "p95": 1794915877174.3184,
+        "p99": 1794915877219.0776,
+        "min": 1794915877108.1025,
+        "max": 1794915877267.3008
+      },
+      "process_cpu_pct": 27.513362068965513,
+      "system_cpu_pct": 55.40517241379311,
+      "initial_rss_mb": 126.3359375,
+      "final_rss_mb": 140.71875,
+      "rss_delta_mb": 14.3828125,
+      "worker_total_inferences": 433,
+      "worker_dropped_jobs": 0,
+      "worker_errors": 0,
+      "stale_observations_count": 202
+    }
+  ]
+}

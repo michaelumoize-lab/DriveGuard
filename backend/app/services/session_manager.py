@@ -78,12 +78,29 @@ class SessionManager:
                     raise
 
                 if target_profile_dto is not None:
-                    engine.load_profile_dto(target_profile_dto)
-                    # Cache in local store for resilience across reconnects
                     try:
-                        profile_store.save_profile(target_profile_dto)
-                    except Exception:
-                        pass
+                        engine.load_profile_dto(target_profile_dto)
+                    except ValueError as p_err:
+                        import logging
+                        import numpy as np
+                        logging.getLogger("driveguard.session_manager").warning(
+                            f"[SessionManager] Profile for '{driver_id}' had threshold discrepancy: {p_err}. "
+                            f"Auto-normalizing to exact expected thresholds."
+                        )
+                        for zk, zb in target_profile_dto.zone_baselines.items():
+                            raw = min(zb.ear_median * 0.76, zb.ear_median - 2.3 * zb.ear_mad_scaled)
+                            zb.dynamic_closure_threshold = round(float(np.clip(raw, 0.12, 0.22)), 4)
+                        engine.load_profile_dto(target_profile_dto)
+                        try:
+                            profile_store.save_profile(target_profile_dto)
+                        except Exception:
+                            pass
+                    else:
+                        # Cache in local store for resilience across reconnects
+                        try:
+                            profile_store.save_profile(target_profile_dto)
+                        except Exception:
+                            pass
 
                 self._sessions[session_id] = engine
                 registered = True

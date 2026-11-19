@@ -21,6 +21,11 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
+from backend.app.ai.pdbp_calibration import (
+    DEFAULT_INITIAL_CENTER_MAX_PITCH_DEG,
+    DEFAULT_INITIAL_CENTER_MIN_PITCH_DEG,
+    DEFAULT_INITIAL_CENTER_MAX_YAW_DEG,
+)
 from backend.app.camera.frame_quality import FrameQualityResult, QualityStatus
 from backend.app.features.head_pose import HeadPoseResult
 from backend.app.vision.face_landmarker import FaceLandmarkResult
@@ -170,22 +175,22 @@ def evaluate_camera_position(
     roll = head_pose.roll_deg if head_pose else 0.0
 
     angle_issues = []
-    # Up to ±32.0° is optimal for oblique dash/vent mount
+    # Up to ±32.0° yaw and [-18°, +14°] pitch matches initial Center calibration
     if abs(roll) > 14.0:
         angle_status = "TILTED"
         angle_issues.append("Level phone mount horizontally (phone is rotated sideways).")
-    elif abs(yaw) > 32.0:
+    elif abs(yaw) > DEFAULT_INITIAL_CENTER_MAX_YAW_DEG:
         angle_status = "TOO_OBLIQUE"
-        angle_issues.append(f"Road angle is {yaw:+.0f}° (exceeds 32° limit). Rotate phone more toward driver.")
-    elif pitch > 26.0:
+        angle_issues.append(f"Road angle is {yaw:+.0f}° (exceeds {DEFAULT_INITIAL_CENTER_MAX_YAW_DEG:.0f}° limit). Rotate phone more toward driver.")
+    elif pitch > DEFAULT_INITIAL_CENTER_MAX_PITCH_DEG:
         angle_status = "TOO_STEEP"
-        angle_issues.append("Camera mounted too low pointing up chin. Mount higher on dashboard.")
-    elif pitch < -22.0:
+        angle_issues.append(f"Camera angled too far upward or chin tilted up ({pitch:+.0f}° > +{DEFAULT_INITIAL_CENTER_MAX_PITCH_DEG:.0f}°). Level head or angle phone forward.")
+    elif pitch < DEFAULT_INITIAL_CENTER_MIN_PITCH_DEG:
         angle_status = "TOO_STEEP"
-        angle_issues.append("Camera mounted too high pointing down. Mount lower near steering height.")
+        angle_issues.append(f"Camera angled too far downward or head tilted down ({pitch:+.0f}° < {DEFAULT_INITIAL_CENTER_MIN_PITCH_DEG:.0f}°). Angle phone up toward eye level.")
     else:
         angle_status = "OPTIMAL"
-        angle_issues.append(f"Roadway gaze angle is optimal ({yaw:+.0f}° oblique mount).")
+        angle_issues.append(f"Roadway gaze angle is optimal ({yaw:+.0f}° yaw, {pitch:+.0f}° pitch).")
 
     angle_feedback = " ".join(angle_issues)
 
@@ -293,8 +298,18 @@ def draw_positioning_guide(
         cv2.line(overlay, (x2, y2), (x2 - corner_len, y2), status_color, th, cv2.LINE_AA)
         cv2.line(overlay, (x2, y2), (x2, y2 - corner_len), status_color, th, cv2.LINE_AA)
 
-        # Floating angle badge right above face
-        badge_text = f"Road Gaze: {guide_res.yaw_deg:+.0f}\xb0 yaw"
+        # Floating angle badge right above face with live directional cue
+        if guide_res.pitch_deg > DEFAULT_INITIAL_CENTER_MAX_PITCH_DEG:
+            cue = " [TILT CHIN DOWN]"
+        elif guide_res.pitch_deg < DEFAULT_INITIAL_CENTER_MIN_PITCH_DEG:
+            cue = " [LIFT CHIN UP]"
+        elif abs(guide_res.yaw_deg) > DEFAULT_INITIAL_CENTER_MAX_YAW_DEG:
+            cue = " [FACE FORWARD]"
+        elif abs(guide_res.roll_deg) > 14.0:
+            cue = " [LEVEL MOUNT]"
+        else:
+            cue = " [ALIGNED]"
+        badge_text = f"Pose: Y:{guide_res.yaw_deg:+.0f}\xb0 P:{guide_res.pitch_deg:+.0f}\xb0{cue}"
         cv2.putText(overlay, badge_text, (x1, max(24, y1 - 8)), font, 0.40, status_color, 1, cv2.LINE_AA)
 
     # 2. Cockpit Safe-Zone Margins (Dashed subtle border)
@@ -330,7 +345,7 @@ def draw_positioning_guide(
 
     # Alignment mini-badges on right of Line 1
     dist_badge = f"Dist:{guide_res.distance_status}"
-    ang_badge = f"Angle:{guide_res.angle_status} ({guide_res.yaw_deg:+.0f}\xb0)"
+    ang_badge = f"Angle:{guide_res.angle_status} (Y:{guide_res.yaw_deg:+.0f}\xb0 P:{guide_res.pitch_deg:+.0f}\xb0)"
     b_txt = f"{dist_badge}  |  {ang_badge}"
     (bw, _), _ = cv2.getTextSize(b_txt, font, 0.38, 1)
     if width - 28 - bw > 400:
