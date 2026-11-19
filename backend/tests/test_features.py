@@ -15,12 +15,16 @@ Covers:
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 import pytest
 
+from backend.app.ai.pdbp_calibration import (
+    DriverBehaviourProfile,
+    ZoneBaseline,
+)
 from backend.app.features.blink_detector import (
     BlinkClassification,
     BlinkEvent,
@@ -40,8 +44,10 @@ from backend.app.features.ear import (
     extract_eye_aspect_ratio,
 )
 from backend.app.features.feature_extractor import (
+    ActivationStatus,
     DriverFeatureExtractor,
     DriverFeatures,
+    validate_profile,
 )
 from backend.app.features.head_pose import (
     CANONICAL_3D_FACE_POINTS,
@@ -435,7 +441,8 @@ def test_estimate_head_pose_synthetic_poses() -> None:
     assert res_front.zone == PoseZone.CENTER
 
     # 2. Pitch down -15° (looking at dashboard)
-    rvec_pitch_down, _ = cv2.Rodrigues(np.array([np.radians(-15.0), 0.0, 0.0]))
+    # Nodding DOWN corresponds to +X rotation in OpenCV camera coordinate space.
+    rvec_pitch_down, _ = cv2.Rodrigues(np.array([np.radians(15.0), 0.0, 0.0]))
     res_pitch = _project_and_estimate(rvec_pitch_down)
     assert res_pitch.is_valid is True
     assert -18.0 <= res_pitch.pitch_deg <= -12.0
@@ -602,7 +609,7 @@ def test_head_pose_neutral_matrix_calibration() -> None:
     assert res_rest.zone == PoseZone.CENTER
 
     # 2. Driver executes pure head nod (-15.0° pitch) from neutral posture:
-    theta_nod = float(np.radians(-15.0))
+    theta_nod = float(np.radians(15.0))
     Rx_nod = np.array(
         [[1.0, 0.0, 0.0], [0.0, np.cos(theta_nod), -np.sin(theta_nod)], [0.0, np.sin(theta_nod), np.cos(theta_nod)]],
         dtype=np.float64,
@@ -2779,14 +2786,15 @@ def test_face_loss_returns_pose_zone_unknown_and_preserves_oob() -> None:
     assert features.head_pose.is_looking_away is False
 
     # 4. Authentic extreme head poses -> strictly OUT_OF_BOUNDS
-    # Extreme yaw (> 50°)
+    # Extreme yaw (> 50° left or < -70° right)
     assert classify_pose_zone(pitch_deg=0.0, yaw_deg=55.0) == PoseZone.OUT_OF_BOUNDS
-    assert classify_pose_zone(pitch_deg=0.0, yaw_deg=-55.0) == PoseZone.OUT_OF_BOUNDS
+    assert classify_pose_zone(pitch_deg=0.0, yaw_deg=-75.0) == PoseZone.OUT_OF_BOUNDS
     # Extreme pitch (> 38°)
     assert classify_pose_zone(pitch_deg=45.0, yaw_deg=0.0) == PoseZone.OUT_OF_BOUNDS
     assert classify_pose_zone(pitch_deg=-45.0, yaw_deg=0.0) == PoseZone.OUT_OF_BOUNDS
     # Non-extreme angles are NOT OUT_OF_BOUNDS
     assert classify_pose_zone(pitch_deg=0.0, yaw_deg=20.0) == PoseZone.LEFT_MIRROR
+    assert classify_pose_zone(pitch_deg=0.0, yaw_deg=-55.0) == PoseZone.RIGHT_MIRROR
     assert classify_pose_zone(pitch_deg=-15.0, yaw_deg=0.0) == PoseZone.DASHBOARD
     assert classify_pose_zone(pitch_deg=0.0, yaw_deg=0.0) == PoseZone.CENTER
 
@@ -2904,3 +2912,1769 @@ def test_pnp_solvers_enforce_pointwise_depth_rejection() -> None:
     assert res_corrupted.is_valid is False
     assert res_corrupted.zone == PoseZone.UNKNOWN
 
+
+# ==============================================================================
+# 8. Oblique Camera & Camera-Relative Yaw Regression Tests (Stage 1)
+# ==============================================================================
+
+
+def _generate_synthetic_face_landmarks(
+    yaw_deg: float,
+    pitch_deg: float = 0.0,
+    roll_deg: float = 0.0,
+    is_mirrored: bool = False,
+    left_target_ear: float = 0.20,
+    right_target_ear: float = 0.36,
+    frame_width: int = 1280,
+    frame_height: int = 720,
+) -> Tuple[NormalizedLandmark, ...]:
+    """
+    Synthesizes a 478-point landmark tuple with:
+    1. Cranial rigid landmarks rotated by (yaw_deg, pitch_deg, roll_deg) via build_neutral_matrix.
+    2. Precision eye contours producing exact target EARs for left and right eyes.
+    """
+    focal = float(frame_width)
+    center = (frame_width / 2.0, frame_height / 2.0)
+    cam_mat = np.array(
+        [[focal, 0.0, center[0]], [0.0, focal, center[1]], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    dist = np.zeros((4, 1), dtype=np.float64)
+    tvec = np.array([[0.0], [0.0], [600.0]], dtype=np.float64)
+
+    R_cam = build_neutral_matrix(
+        neutral_pitch_deg=pitch_deg,
+        neutral_yaw_deg=yaw_deg,
+        is_mirrored=is_mirrored,
+    )
+    rvec, _ = cv2.Rodrigues(R_cam)
+    proj, _ = cv2.projectPoints(CANONICAL_3D_FACE_POINTS, rvec, tvec, cam_mat, dist)
+    proj = proj.reshape(-1, 2)
+
+    overrides = {
+        idx: (float(proj[i, 0] / frame_width), float(proj[i, 1] / frame_height), 0.0)
+        for i, idx in enumerate(SOLVEPNP_LANDMARK_INDICES)
+    }
+
+    # Left eye geometry (MediaPipe 33 is outer corner, image left in unmirrored view)
+    p33 = overrides[33]
+    dx = 0.05
+    ar = float(frame_width) / float(frame_height)
+    dy_left = (left_target_ear * dx * ar) / 2.0
+    overrides[133] = (p33[0] + dx, p33[1], 0.0)
+    overrides[160] = (p33[0] + dx / 3.0, p33[1] - dy_left, 0.0)
+    overrides[158] = (p33[0] + 2.0 * dx / 3.0, p33[1] - dy_left, 0.0)
+    overrides[144] = (p33[0] + dx / 3.0, p33[1] + dy_left, 0.0)
+    overrides[153] = (p33[0] + 2.0 * dx / 3.0, p33[1] + dy_left, 0.0)
+
+    # Right eye geometry (MediaPipe 263 is outer corner, image right in unmirrored view)
+    p263 = overrides[263]
+    dy_right = (right_target_ear * dx * ar) / 2.0
+    overrides[362] = (p263[0] - dx, p263[1], 0.0)
+    overrides[385] = (p263[0] - 2.0 * dx / 3.0, p263[1] - dy_right, 0.0)
+    overrides[387] = (p263[0] - dx / 3.0, p263[1] - dy_right, 0.0)
+    overrides[380] = (p263[0] - 2.0 * dx / 3.0, p263[1] + dy_right, 0.0)
+    overrides[373] = (p263[0] - dx / 3.0, p263[1] + dy_right, 0.0)
+
+    pts = [NormalizedLandmark(0.5, 0.5, 0.0) for _ in range(478)]
+    for idx, (x, y, z) in overrides.items():
+        pts[idx] = NormalizedLandmark(x, y, z)
+    return tuple(pts)
+
+
+def test_ear_yaw_weighting_favors_physically_closer_eye_four_combinations() -> None:
+    """
+    Verifies the 4-case matrix of yaw direction and mirror mode:
+    1. Unmirrored, driver turns left (+20°): driver's right eye is closer to camera (image left).
+       Weighting MUST favour image-left eye (left_ear=0.20), pulling weighted_ear < 0.28.
+    2. Unmirrored, driver turns right (-20°): driver's left eye is closer to camera (image right).
+       Weighting MUST favour image-right eye (right_ear=0.36), pulling weighted_ear > 0.28.
+    3. Mirrored, driver turns left (+20°): driver's right eye is closer to camera (image right in mirror).
+       Weighting MUST favour image-right eye (right_ear=0.36), pulling weighted_ear > 0.28.
+    4. Mirrored, driver turns right (-20°): driver's left eye is closer to camera (image left in mirror).
+       Weighting MUST favour image-left eye (left_ear=0.20), pulling weighted_ear < 0.28.
+
+    Confirms that in all four cases, the eye physically closer to the camera receives higher weight.
+    """
+    w, h = 1280, 720
+    ar = 16.0 / 9.0
+    left_target = 0.20
+    right_target = 0.36
+    neutral_expected = 0.28
+
+    # Smoothstep weights at |yaw| = 20.0°: u = 5/6, S(5/6) = 100/108
+    # primary weight = 0.20 + 0.60 * (100 / 108) ~ 0.75556
+    w_primary = 0.20 + 0.60 * (100.0 / 108.0)
+    expected_low = w_primary * left_target + (1.0 - w_primary) * right_target   # ~ 0.2391
+    expected_high = (1.0 - w_primary) * left_target + w_primary * right_target  # ~ 0.3209
+
+    # Case 1: Unmirrored, Left Turn (+20.0°)
+    lms_case1 = _generate_synthetic_face_landmarks(20.0, is_mirrored=False)
+    pose1 = estimate_head_pose(lms_case1, frame_width=w, frame_height=h, is_mirrored=False)
+    assert pose1.is_valid is True
+    assert math.isclose(pose1.yaw_deg, 20.0, abs_tol=0.5)
+    ear1 = extract_eye_aspect_ratio(lms_case1, yaw_deg=pose1.yaw_deg, pitch_deg=pose1.pitch_deg, aspect_ratio=ar, is_mirrored=False)
+    assert ear1.is_valid is True
+    assert math.isclose(ear1.left_ear, left_target, abs_tol=1e-3)
+    assert math.isclose(ear1.right_ear, right_target, abs_tol=1e-3)
+    assert ear1.weighted_ear < neutral_expected
+    assert math.isclose(ear1.weighted_ear, expected_low, abs_tol=1e-3)
+
+    # Case 2: Unmirrored, Right Turn (-20.0°)
+    lms_case2 = _generate_synthetic_face_landmarks(-20.0, is_mirrored=False)
+    pose2 = estimate_head_pose(lms_case2, frame_width=w, frame_height=h, is_mirrored=False)
+    assert pose2.is_valid is True
+    assert math.isclose(pose2.yaw_deg, -20.0, abs_tol=0.5)
+    ear2 = extract_eye_aspect_ratio(lms_case2, yaw_deg=pose2.yaw_deg, pitch_deg=pose2.pitch_deg, aspect_ratio=ar, is_mirrored=False)
+    assert ear2.is_valid is True
+    assert ear2.weighted_ear > neutral_expected
+    assert math.isclose(ear2.weighted_ear, expected_high, abs_tol=1e-3)
+
+    # Case 3: Mirrored, Left Turn (+20.0°)
+    lms_case3 = _generate_synthetic_face_landmarks(20.0, is_mirrored=True)
+    pose3 = estimate_head_pose(lms_case3, frame_width=w, frame_height=h, is_mirrored=True)
+    assert pose3.is_valid is True
+    assert math.isclose(pose3.yaw_deg, 20.0, abs_tol=0.5)
+    ear3 = extract_eye_aspect_ratio(lms_case3, yaw_deg=pose3.yaw_deg, pitch_deg=pose3.pitch_deg, aspect_ratio=ar, is_mirrored=True)
+    assert ear3.is_valid is True
+    assert ear3.weighted_ear > neutral_expected
+    assert math.isclose(ear3.weighted_ear, expected_high, abs_tol=1e-3)
+
+    # Case 4: Mirrored, Right Turn (-20.0°)
+    lms_case4 = _generate_synthetic_face_landmarks(-20.0, is_mirrored=True)
+    pose4 = estimate_head_pose(lms_case4, frame_width=w, frame_height=h, is_mirrored=True)
+    assert pose4.is_valid is True
+    assert math.isclose(pose4.yaw_deg, -20.0, abs_tol=0.5)
+    ear4 = extract_eye_aspect_ratio(lms_case4, yaw_deg=pose4.yaw_deg, pitch_deg=pose4.pitch_deg, aspect_ratio=ar, is_mirrored=True)
+    assert ear4.is_valid is True
+    assert ear4.weighted_ear < neutral_expected
+    assert math.isclose(ear4.weighted_ear, expected_low, abs_tol=1e-3)
+
+
+def test_oblique_camera_ear_weighting_uses_camera_relative_yaw_uncalibrated() -> None:
+    """
+    Verifies Call Site 1 in DriverFeatureExtractor (uncalibrated / baseline pass):
+    In an oblique camera installation:
+    - Camera is mounted at yaw ≈ +25.0° relative to driver's forward road gaze.
+    - Neutral yaw is calibrated to 25.0°, so rel_yaw_deg ≈ 0.0° and zone == PoseZone.CENTER.
+    - EAR weighting MUST use camera-relative yaw (yaw_deg ≈ +25.0°), NOT rel_yaw_deg (0.0°).
+    - Checks that weighted_ear reflects the camera perspective (~0.2339) and NOT 50/50 balance (0.2800).
+    """
+    w, h = 1280, 720
+    # Oblique camera: driver looking straight forward presents a +25.0° camera yaw
+    lms = _generate_synthetic_face_landmarks(25.0, pitch_deg=0.0, is_mirrored=False)
+    face_res = FaceLandmarkResult(
+        has_face=True,
+        landmarks=lms,
+        presence_confidence=0.98,
+        timestamp_ms=1000,
+        status=FaceLandmarkStatus.TRACKING,
+        inference_latency_ms=10.0,
+        reasons=(),
+    )
+
+    extractor = DriverFeatureExtractor(neutral_pitch_deg=0.0, neutral_yaw_deg=25.0, is_mirrored=False)
+    features = extractor.extract(face_res, frame_width=w, frame_height=h)
+
+    # 1. Head pose verification: camera-relative yaw is 25.0°, driver-relative is 0.0° (CENTER)
+    assert features.head_pose.is_valid is True
+    assert math.isclose(features.head_pose.yaw_deg, 25.0, abs_tol=0.5)
+    assert math.isclose(features.head_pose.rel_yaw_deg, 0.0, abs_tol=0.5)
+    assert features.head_pose.zone == PoseZone.CENTER
+
+    # 2. EAR weighting verification:
+    # In uncalibrated mode (profile=None), ocular classification is inactive (is_valid=False, closure_threshold=0.0)
+    # per Phase 7 PDBP safety specifications.
+    # However, raw measurements and weighted_ear ARE preserved!
+    # If rel_yaw_deg (0.0°) had been used, weighted_ear would be exactly 0.2800 (50/50 neutral).
+    # Because yaw_deg (+25.0°) is used, weighted_ear heavily favours image-left eye (~0.2339).
+    assert features.ear.is_valid is False  # Ocular classification inactive without profile
+    assert math.isclose(features.ear.left_ear, 0.20, abs_tol=1e-3)
+    assert math.isclose(features.ear.right_ear, 0.36, abs_tol=1e-3)
+    assert math.isclose(features.ear.weighted_ear, 0.2339, abs_tol=0.005)
+    assert abs(features.ear.weighted_ear - 0.2800) > 0.04, "EAR incorrectly used rel_yaw_deg (0.0°) instead of yaw_deg (+25.0°)!"
+    # Raw unweighted arithmetic mean is (0.20 + 0.36) / 2 = 0.2800
+    assert math.isclose(features.ear.raw_ear, 0.2800, abs_tol=0.005)
+
+
+def test_oblique_camera_ear_weighting_uses_camera_relative_yaw_calibrated_profile() -> None:
+    """
+    Verifies Call Site 2 in DriverFeatureExtractor (calibrated profile pass):
+    When an active DriverBehaviourProfile is configured with neutral_yaw_deg = 25.0°:
+    - Oblique camera presentation (cam_yaw = +25.0°, rel_yaw = 0.0°, zone = CENTER).
+    - Call Site 2 MUST pass pose_res.yaw_deg into extract_eye_aspect_ratio().
+    - Asserts that the resulting features.ear.weighted_ear is ~0.2339 and NOT 0.2800.
+    - Also verifies both Call Site 1 (raw_ear) and Call Site 2 (weighted_ear) are consistent.
+    """
+    w, h = 1280, 720
+    lms = _generate_synthetic_face_landmarks(25.0, pitch_deg=0.0, is_mirrored=False)
+    face_res = FaceLandmarkResult(
+        has_face=True,
+        landmarks=lms,
+        presence_confidence=0.98,
+        timestamp_ms=1000,
+        status=FaceLandmarkStatus.TRACKING,
+        inference_latency_ms=10.0,
+        reasons=(),
+    )
+
+    zone_baselines = {
+        PoseZone.CENTER: ZoneBaseline(
+            zone=PoseZone.CENTER,
+            ear_median=0.28,
+            ear_mad_scaled=0.02,
+            pitch_median_deg=0.0,
+            yaw_median_deg=0.0,
+            sample_count=60,
+        )
+    }
+    profile = DriverBehaviourProfile(
+        driver_id="oblique_driver_01",
+        calibration_mode="CENTER_ONLY",
+        center_ear_median=0.28,
+        center_ear_mad_scaled=0.02,
+        blink_duration_median_ms=250.0,
+        blink_duration_mad_ms=30.0,
+        blink_rcr_median=0.85,
+        blink_rcr_mad=0.10,
+        blink_freq_median_per_min=15.0,
+        blink_freq_mad_per_min=3.0,
+        neutral_pitch_deg=0.0,
+        neutral_yaw_deg=25.0,
+        calibration_reliability=0.95,
+        zone_baselines=zone_baselines,
+    )
+
+    extractor = DriverFeatureExtractor(profile=profile, is_mirrored=False)
+    features = extractor.extract(face_res, frame_width=w, frame_height=h)
+
+    # 1. Pose verification under calibrated profile
+    assert features.head_pose.is_valid is True
+    assert math.isclose(features.head_pose.yaw_deg, 25.0, abs_tol=0.5)
+    assert math.isclose(features.head_pose.rel_yaw_deg, 0.0, abs_tol=0.5)
+    assert features.head_pose.zone == PoseZone.CENTER
+
+    # 2. Call site 2 EAR verification
+    assert features.ear.is_valid is True
+    assert math.isclose(features.ear.weighted_ear, 0.2339, abs_tol=0.005)
+    assert abs(features.ear.weighted_ear - 0.2800) > 0.04, "Call Site 2 incorrectly used rel_yaw_deg!"
+    # Raw unweighted arithmetic mean is (0.20 + 0.36) / 2 = 0.2800
+    assert math.isclose(features.ear.raw_ear, 0.2800, abs_tol=0.005)
+
+
+def test_pitch_compensation_preserves_relative_pitch_under_oblique_elevation() -> None:
+    """
+    Verifies that pitch_deg=pose_res.rel_pitch_deg is preserved at both call sites:
+    - If camera is mounted high (neutral_pitch_deg = -10.0°), normal road gaze (pitch = -10.0°)
+      has rel_pitch_deg = 0.0° and MUST NOT receive spurious downward pitch boost.
+    - Only genuine downward head flexion relative to driving neutral (rel_pitch_deg < -4.0°)
+      triggers pitch compensation.
+    - Genuine eyelid closure (raw EAR <= threshold) is NEVER boosted.
+    """
+    w, h = 1280, 720
+    # Camera mounted high: driver looking forward has pitch = -10.0°
+    lms_neutral = _generate_synthetic_face_landmarks(
+        yaw_deg=0.0,
+        pitch_deg=-10.0,
+        is_mirrored=False,
+        left_target_ear=0.25,
+        right_target_ear=0.25,
+    )
+    face_res_neutral = FaceLandmarkResult(
+        has_face=True,
+        landmarks=lms_neutral,
+        presence_confidence=0.98,
+        timestamp_ms=1000,
+        status=FaceLandmarkStatus.TRACKING,
+        inference_latency_ms=10.0,
+        reasons=(),
+    )
+
+    zone_baselines = {
+        PoseZone.CENTER: ZoneBaseline(
+            zone=PoseZone.CENTER,
+            ear_median=0.28,
+            ear_mad_scaled=0.02,
+            pitch_median_deg=-10.0,
+            yaw_median_deg=0.0,
+            sample_count=60,
+        ),
+        PoseZone.DASHBOARD: ZoneBaseline(
+            zone=PoseZone.DASHBOARD,
+            ear_median=0.28,
+            ear_mad_scaled=0.02,
+            pitch_median_deg=-22.0,
+            yaw_median_deg=0.0,
+            sample_count=60,
+        ),
+    }
+    profile = DriverBehaviourProfile(
+        driver_id="elev_driver_01",
+        calibration_mode="CENTER_ONLY",
+        center_ear_median=0.28,
+        center_ear_mad_scaled=0.02,
+        blink_duration_median_ms=250.0,
+        blink_duration_mad_ms=30.0,
+        blink_rcr_median=0.85,
+        blink_rcr_mad=0.10,
+        blink_freq_median_per_min=15.0,
+        blink_freq_mad_per_min=3.0,
+        neutral_pitch_deg=-10.0,
+        neutral_yaw_deg=0.0,
+        calibration_reliability=0.95,
+        zone_baselines=zone_baselines,
+    )
+
+    extractor = DriverFeatureExtractor(profile=profile, is_mirrored=False)
+    feat_neutral = extractor.extract(face_res_neutral, frame_width=w, frame_height=h)
+
+    assert feat_neutral.head_pose.is_valid is True
+    assert math.isclose(feat_neutral.head_pose.pitch_deg, -10.0, abs_tol=0.5)
+    assert math.isclose(feat_neutral.head_pose.rel_pitch_deg, 0.0, abs_tol=0.5)
+    assert feat_neutral.head_pose.zone == PoseZone.CENTER
+    # Neutral relative pitch: NO compensation boost applied!
+    assert math.isclose(feat_neutral.ear.compensated_ear, feat_neutral.ear.weighted_ear, abs_tol=1e-4)
+
+    # Driver now looks down toward dashboard (-22.0° pitch, rel_pitch = -12.0°)
+    lms_down = _generate_synthetic_face_landmarks(
+        yaw_deg=0.0,
+        pitch_deg=-22.0,
+        is_mirrored=False,
+        left_target_ear=0.25,
+        right_target_ear=0.25,
+    )
+    face_res_down = FaceLandmarkResult(
+        has_face=True,
+        landmarks=lms_down,
+        presence_confidence=0.98,
+        timestamp_ms=2000,
+        status=FaceLandmarkStatus.TRACKING,
+        inference_latency_ms=10.0,
+        reasons=(),
+    )
+    feat_down = extractor.extract(face_res_down, frame_width=w, frame_height=h)
+    assert math.isclose(feat_down.head_pose.rel_pitch_deg, -12.0, abs_tol=0.5)
+    assert feat_down.head_pose.zone == PoseZone.DASHBOARD
+    # Downward flexion: pitch compensation DOES boost open eye EAR
+    assert feat_down.ear.compensated_ear > feat_down.ear.weighted_ear
+
+    # Safeguard check: closed eye (target EAR = 0.12 <= closure threshold) is NEVER boosted
+    lms_closed = _generate_synthetic_face_landmarks(
+        yaw_deg=0.0,
+        pitch_deg=-22.0,
+        is_mirrored=False,
+        left_target_ear=0.12,
+        right_target_ear=0.12,
+    )
+    face_res_closed = FaceLandmarkResult(
+        has_face=True,
+        landmarks=lms_closed,
+        presence_confidence=0.98,
+        timestamp_ms=3000,
+        status=FaceLandmarkStatus.TRACKING,
+        inference_latency_ms=10.0,
+        reasons=(),
+    )
+    feat_closed = extractor.extract(face_res_closed, frame_width=w, frame_height=h)
+    assert feat_closed.ear.is_closed is True
+    # Safeguard: compensated EAR must NOT exceed raw threshold
+    assert feat_closed.ear.compensated_ear == feat_closed.ear.weighted_ear
+
+
+
+
+# ==============================================================================
+# 7. Stage 2.2: Runtime Neutral Rotation Matrix Integration Tests
+# ==============================================================================
+
+
+def _make_stage2_2_rot_mat(
+    yaw_deg: float, pitch_deg: float, roll_deg: float, is_mirrored: bool = False
+) -> np.ndarray:
+    """Helper to construct intrinsic Y-X-Z Tait-Bryan rotation matrix."""
+    cam_yaw = yaw_deg if is_mirrored else -yaw_deg
+    cam_pitch = -pitch_deg
+    cam_roll = -roll_deg if is_mirrored else roll_deg
+    psi = float(np.radians(cam_yaw))
+    theta = float(np.radians(cam_pitch))
+    phi = float(np.radians(cam_roll))
+
+    Ry = np.array(
+        [
+            [np.cos(psi), 0.0, np.sin(psi)],
+            [0.0, 1.0, 0.0],
+            [-np.sin(psi), 0.0, np.cos(psi)],
+        ],
+        dtype=np.float64,
+    )
+    Rx = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, np.cos(theta), -np.sin(theta)],
+            [0.0, np.sin(theta), np.cos(theta)],
+        ],
+        dtype=np.float64,
+    )
+    Rz = np.array(
+        [
+            [np.cos(phi), -np.sin(phi), 0.0],
+            [np.sin(phi), np.cos(phi), 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    return Ry @ Rx @ Rz
+
+
+def _generate_synthetic_face_landmarks_from_mat(
+    rot_mat: np.ndarray,
+    left_target_ear: float = 0.28,
+    right_target_ear: float = 0.28,
+    frame_width: int = 1280,
+    frame_height: int = 720,
+) -> Tuple[NormalizedLandmark, ...]:
+    """
+    Synthesizes a 478-point landmark tuple by projecting canonical 3D cranial landmarks
+    using an arbitrary 3x3 SO(3) rotation matrix.
+    """
+    focal = float(frame_width)
+    center = (frame_width / 2.0, frame_height / 2.0)
+    cam_mat = np.array(
+        [[focal, 0.0, center[0]], [0.0, focal, center[1]], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    dist = np.zeros((4, 1), dtype=np.float64)
+    tvec = np.array([[0.0], [0.0], [600.0]], dtype=np.float64)
+
+    rvec, _ = cv2.Rodrigues(rot_mat)
+    proj, _ = cv2.projectPoints(CANONICAL_3D_FACE_POINTS, rvec, tvec, cam_mat, dist)
+    proj = proj.reshape(-1, 2)
+
+    overrides = {
+        idx: (float(proj[i, 0] / frame_width), float(proj[i, 1] / frame_height), 0.0)
+        for i, idx in enumerate(SOLVEPNP_LANDMARK_INDICES)
+    }
+
+    # Left eye geometry (MediaPipe 33 is outer corner, image left in unmirrored view)
+    p33 = overrides[33]
+    dx = 0.05
+    ar = float(frame_width) / float(frame_height)
+    dy_left = (left_target_ear * dx * ar) / 2.0
+    overrides[133] = (p33[0] + dx, p33[1], 0.0)
+    overrides[160] = (p33[0] + dx / 3.0, p33[1] - dy_left, 0.0)
+    overrides[158] = (p33[0] + 2.0 * dx / 3.0, p33[1] - dy_left, 0.0)
+    overrides[144] = (p33[0] + dx / 3.0, p33[1] + dy_left, 0.0)
+    overrides[153] = (p33[0] + 2.0 * dx / 3.0, p33[1] + dy_left, 0.0)
+
+    # Right eye geometry (MediaPipe 263 is outer corner, image right in unmirrored view)
+    p263 = overrides[263]
+    dy_right = (right_target_ear * dx * ar) / 2.0
+    overrides[362] = (p263[0] - dx, p263[1], 0.0)
+    overrides[385] = (p263[0] - 2.0 * dx / 3.0, p263[1] - dy_right, 0.0)
+    overrides[387] = (p263[0] - dx / 3.0, p263[1] - dy_right, 0.0)
+    overrides[380] = (p263[0] - 2.0 * dx / 3.0, p263[1] + dy_right, 0.0)
+    overrides[373] = (p263[0] - dx / 3.0, p263[1] + dy_right, 0.0)
+
+    pts = [NormalizedLandmark(0.5, 0.5, 0.0) for _ in range(478)]
+    for idx, (x, y, z) in overrides.items():
+        pts[idx] = NormalizedLandmark(x, y, z)
+    return tuple(pts)
+
+
+def _make_stage2_2_profile(
+    driver_id: str = "driver_stage2_2",
+    neutral_rot_mat: Optional[np.ndarray] = None,
+    neutral_yaw_deg: float = 0.0,
+    neutral_pitch_deg: float = 0.0,
+    center_ear: float = 0.28,
+    center_mad: float = 0.02,
+) -> DriverBehaviourProfile:
+    zone_baselines = {
+        PoseZone.CENTER: ZoneBaseline(
+            zone=PoseZone.CENTER,
+            ear_median=center_ear,
+            ear_mad_scaled=center_mad,
+            pitch_median_deg=neutral_pitch_deg,
+            yaw_median_deg=neutral_yaw_deg,
+            sample_count=60,
+        )
+    }
+    return DriverBehaviourProfile(
+        driver_id=driver_id,
+        calibration_mode="CENTER_ONLY",
+        center_ear_median=center_ear,
+        center_ear_mad_scaled=center_mad,
+        blink_duration_median_ms=250.0,
+        blink_duration_mad_ms=30.0,
+        blink_rcr_median=0.85,
+        blink_rcr_mad=0.10,
+        blink_freq_median_per_min=15.0,
+        blink_freq_mad_per_min=3.0,
+        neutral_pitch_deg=neutral_pitch_deg,
+        neutral_yaw_deg=neutral_yaw_deg,
+        neutral_rot_mat=neutral_rot_mat,
+        calibration_reliability=0.95,
+        zone_baselines=zone_baselines,
+    )
+
+
+def test_stage2_2_positive_oblique_neutral_yaw() -> None:
+    """
+    Test 1: Positive oblique neutral yaw (+25.0°).
+    Matching current pose produces approximately zero relative yaw and CENTER zone.
+    """
+    w, h = 1280, 720
+    R_neutral = _make_stage2_2_rot_mat(25.0, 0.0, 0.0, is_mirrored=False)
+    profile = _make_stage2_2_profile(neutral_rot_mat=R_neutral, neutral_yaw_deg=25.0)
+    extractor = DriverFeatureExtractor(profile=profile, is_mirrored=False)
+
+    lms = _generate_synthetic_face_landmarks_from_mat(R_neutral, frame_width=w, frame_height=h)
+    face_res = FaceLandmarkResult(
+        has_face=True,
+        landmarks=lms,
+        presence_confidence=0.98,
+        timestamp_ms=1000,
+        status=FaceLandmarkStatus.TRACKING,
+        inference_latency_ms=10.0,
+        reasons=(),
+    )
+    features = extractor.extract(face_res, frame_width=w, frame_height=h)
+    assert features.head_pose.is_valid is True
+    assert math.isclose(features.head_pose.yaw_deg, 25.0, abs_tol=0.5)
+    assert math.isclose(features.head_pose.rel_yaw_deg, 0.0, abs_tol=0.2)
+    assert math.isclose(features.head_pose.rel_pitch_deg, 0.0, abs_tol=0.2)
+    assert features.head_pose.zone == PoseZone.CENTER
+    assert features.head_pose.is_looking_away is False
+
+
+def test_stage2_2_negative_oblique_neutral_yaw() -> None:
+    """
+    Test 2: Negative oblique neutral yaw (-25.0°).
+    Matching current pose produces approximately zero relative yaw and CENTER zone.
+    """
+    w, h = 1280, 720
+    R_neutral = _make_stage2_2_rot_mat(-25.0, 0.0, 0.0, is_mirrored=False)
+    profile = _make_stage2_2_profile(neutral_rot_mat=R_neutral, neutral_yaw_deg=-25.0)
+    extractor = DriverFeatureExtractor(profile=profile, is_mirrored=False)
+
+    lms = _generate_synthetic_face_landmarks_from_mat(R_neutral, frame_width=w, frame_height=h)
+    face_res = FaceLandmarkResult(
+        has_face=True,
+        landmarks=lms,
+        presence_confidence=0.98,
+        timestamp_ms=1000,
+        status=FaceLandmarkStatus.TRACKING,
+        inference_latency_ms=10.0,
+        reasons=(),
+    )
+    features = extractor.extract(face_res, frame_width=w, frame_height=h)
+    assert features.head_pose.is_valid is True
+    assert math.isclose(features.head_pose.yaw_deg, -25.0, abs_tol=0.5)
+    assert math.isclose(features.head_pose.rel_yaw_deg, 0.0, abs_tol=0.2)
+    assert math.isclose(features.head_pose.rel_pitch_deg, 0.0, abs_tol=0.2)
+    assert features.head_pose.zone == PoseZone.CENTER
+    assert features.head_pose.is_looking_away is False
+
+
+def test_stage2_2_nonzero_neutral_pitch_and_roll() -> None:
+    """
+    Test 3: Nonzero neutral pitch and roll (yaw=+20.0°, pitch=-8.0°, roll=+5.0°).
+    Matching pose produces approximately zero relative rotation across all axes.
+    """
+    w, h = 1280, 720
+    R_neutral = _make_stage2_2_rot_mat(20.0, -8.0, 5.0, is_mirrored=False)
+    profile = _make_stage2_2_profile(
+        neutral_rot_mat=R_neutral, neutral_yaw_deg=20.0, neutral_pitch_deg=-8.0
+    )
+    extractor = DriverFeatureExtractor(profile=profile, is_mirrored=False)
+
+    lms = _generate_synthetic_face_landmarks_from_mat(R_neutral, frame_width=w, frame_height=h)
+    face_res = FaceLandmarkResult(
+        has_face=True,
+        landmarks=lms,
+        presence_confidence=0.98,
+        timestamp_ms=1000,
+        status=FaceLandmarkStatus.TRACKING,
+        inference_latency_ms=10.0,
+        reasons=(),
+    )
+    features = extractor.extract(face_res, frame_width=w, frame_height=h)
+    assert features.head_pose.is_valid is True
+    assert math.isclose(features.head_pose.yaw_deg, 20.0, abs_tol=0.5)
+    assert math.isclose(features.head_pose.pitch_deg, -8.0, abs_tol=0.5)
+    assert math.isclose(features.head_pose.roll_deg, 5.0, abs_tol=0.5)
+    assert math.isclose(features.head_pose.rel_yaw_deg, 0.0, abs_tol=0.2)
+    assert math.isclose(features.head_pose.rel_pitch_deg, 0.0, abs_tol=0.2)
+    assert math.isclose(features.head_pose.rel_roll_deg, 0.0, abs_tol=0.2)
+    assert features.head_pose.zone == PoseZone.CENTER
+
+
+def test_stage2_2_pure_left_and_right_turns_from_oblique() -> None:
+    """
+    Test 4: Pure left (+18°) and right (-18°) turns relative to oblique neutral (+25°).
+    Produces expected relative yaw signs and LEFT_MIRROR / RIGHT_MIRROR zones.
+    """
+    w, h = 1280, 720
+    R_neutral = _make_stage2_2_rot_mat(25.0, 0.0, 0.0, is_mirrored=False)
+    profile = _make_stage2_2_profile(neutral_rot_mat=R_neutral, neutral_yaw_deg=25.0)
+    extractor = DriverFeatureExtractor(profile=profile, is_mirrored=False)
+
+    # 1. Left turn: +18° intrinsic cervical yaw
+    R_move_left = _make_stage2_2_rot_mat(18.0, 0.0, 0.0, is_mirrored=False)
+    R_current_left = R_neutral @ R_move_left
+    lms_left = _generate_synthetic_face_landmarks_from_mat(R_current_left, frame_width=w, frame_height=h)
+    res_left = extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms_left,
+            presence_confidence=0.98,
+            timestamp_ms=1000,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+    assert math.isclose(res_left.head_pose.rel_yaw_deg, 18.0, abs_tol=0.5)
+    assert res_left.head_pose.zone == PoseZone.LEFT_MIRROR
+    assert res_left.head_pose.is_looking_away is True
+
+    # 2. Right turn: -18° intrinsic cervical yaw
+    R_move_right = _make_stage2_2_rot_mat(-18.0, 0.0, 0.0, is_mirrored=False)
+    R_current_right = R_neutral @ R_move_right
+    lms_right = _generate_synthetic_face_landmarks_from_mat(R_current_right, frame_width=w, frame_height=h)
+    res_right = extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms_right,
+            presence_confidence=0.98,
+            timestamp_ms=2000,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+    assert math.isclose(res_right.head_pose.rel_yaw_deg, -18.0, abs_tol=0.5)
+    assert res_right.head_pose.zone == PoseZone.RIGHT_MIRROR
+    assert res_right.head_pose.is_looking_away is True
+
+
+def test_stage2_2_pure_downward_head_movement_dashboard() -> None:
+    """
+    Test 5: Pure downward head movement (-12.0°) relative to oblique neutral.
+    Produces expected relative pitch and DASHBOARD classification without cross-axis yaw drift.
+    """
+    w, h = 1280, 720
+    R_neutral = _make_stage2_2_rot_mat(25.0, -5.0, 0.0, is_mirrored=False)
+    profile = _make_stage2_2_profile(
+        neutral_rot_mat=R_neutral, neutral_yaw_deg=25.0, neutral_pitch_deg=-5.0
+    )
+    extractor = DriverFeatureExtractor(profile=profile, is_mirrored=False)
+
+    # Downward nod: -12.0° pitch
+    R_move_down = _make_stage2_2_rot_mat(0.0, -12.0, 0.0, is_mirrored=False)
+    R_current_down = R_neutral @ R_move_down
+    lms_down = _generate_synthetic_face_landmarks_from_mat(R_current_down, frame_width=w, frame_height=h)
+    res_down = extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms_down,
+            presence_confidence=0.98,
+            timestamp_ms=1000,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+    assert math.isclose(res_down.head_pose.rel_pitch_deg, -12.0, abs_tol=0.5)
+    assert abs(res_down.head_pose.rel_yaw_deg) < 0.5, "Spurious cross-axis yaw detected during pure downward nod!"
+    assert res_down.head_pose.zone == PoseZone.DASHBOARD
+    assert res_down.head_pose.is_looking_away is True
+
+
+def test_stage2_2_combined_non_commuting_rotations_multiplication_order() -> None:
+    """
+    Test 6: Combined non-commuting Y-X-Z rotations verify actual multiplication order:
+    R_current = R_neutral @ R_movement.
+    """
+    w, h = 1280, 720
+    R_neutral = _make_stage2_2_rot_mat(20.0, -6.0, 4.0, is_mirrored=False)
+    profile = _make_stage2_2_profile(
+        neutral_rot_mat=R_neutral, neutral_yaw_deg=20.0, neutral_pitch_deg=-6.0
+    )
+    extractor = DriverFeatureExtractor(profile=profile, is_mirrored=False)
+
+    R_movement = _make_stage2_2_rot_mat(15.0, -10.0, 6.0, is_mirrored=False)
+    R_current = R_neutral @ R_movement
+
+    lms = _generate_synthetic_face_landmarks_from_mat(R_current, frame_width=w, frame_height=h)
+    res = extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms,
+            presence_confidence=0.98,
+            timestamp_ms=1000,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+    assert math.isclose(res.head_pose.rel_yaw_deg, 15.0, abs_tol=0.3)
+    assert math.isclose(res.head_pose.rel_pitch_deg, -10.0, abs_tol=0.3)
+    assert math.isclose(res.head_pose.rel_roll_deg, 6.0, abs_tol=0.3)
+
+
+def test_stage2_2_mirrored_and_unmirrored_anatomical_direction() -> None:
+    """
+    Test 7: Mirrored and unmirrored configurations preserve the expected anatomical direction.
+    """
+    w, h = 1280, 720
+    for mirrored in (False, True):
+        R_neutral = _make_stage2_2_rot_mat(25.0, 0.0, 0.0, is_mirrored=mirrored)
+        profile = _make_stage2_2_profile(neutral_rot_mat=R_neutral, neutral_yaw_deg=25.0)
+        extractor = DriverFeatureExtractor(profile=profile, is_mirrored=mirrored)
+
+        # Left turn (+16°)
+        R_move_left = _make_stage2_2_rot_mat(16.0, 0.0, 0.0, is_mirrored=mirrored)
+        R_curr_left = R_neutral @ R_move_left
+        lms_left = _generate_synthetic_face_landmarks_from_mat(R_curr_left, frame_width=w, frame_height=h)
+        res_left = extractor.extract(
+            FaceLandmarkResult(
+                has_face=True,
+                landmarks=lms_left,
+                presence_confidence=0.98,
+                timestamp_ms=1000,
+                status=FaceLandmarkStatus.TRACKING,
+                inference_latency_ms=10.0,
+                reasons=(),
+            ),
+            frame_width=w,
+            frame_height=h,
+        )
+        assert res_left.head_pose.rel_yaw_deg > 14.0
+        assert res_left.head_pose.zone == PoseZone.LEFT_MIRROR
+
+        # Nod down (-12°)
+        R_move_down = _make_stage2_2_rot_mat(0.0, -12.0, 0.0, is_mirrored=mirrored)
+        R_curr_down = R_neutral @ R_move_down
+        lms_down = _generate_synthetic_face_landmarks_from_mat(R_curr_down, frame_width=w, frame_height=h)
+        res_down = extractor.extract(
+            FaceLandmarkResult(
+                has_face=True,
+                landmarks=lms_down,
+                presence_confidence=0.98,
+                timestamp_ms=2000,
+                status=FaceLandmarkStatus.TRACKING,
+                inference_latency_ms=10.0,
+                reasons=(),
+            ),
+            frame_width=w,
+            frame_height=h,
+        )
+        assert res_down.head_pose.rel_pitch_deg < -9.0
+        assert res_down.head_pose.zone == PoseZone.DASHBOARD
+
+
+def test_stage2_2_near_gimbal_lock_singularity_tolerance() -> None:
+    """
+    Test 8: Extreme near-gimbal-lock input (pitch = -89.5°) does not produce NaNs or crash.
+    """
+    w, h = 1280, 720
+    R_neutral = _make_stage2_2_rot_mat(0.0, 0.0, 0.0, is_mirrored=False)
+    profile = _make_stage2_2_profile(neutral_rot_mat=R_neutral)
+    extractor = DriverFeatureExtractor(profile=profile, is_mirrored=False)
+
+    R_extreme = _make_stage2_2_rot_mat(0.0, -89.5, 0.0, is_mirrored=False)
+    lms = _generate_synthetic_face_landmarks_from_mat(R_extreme, frame_width=w, frame_height=h)
+    res = extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms,
+            presence_confidence=0.98,
+            timestamp_ms=1000,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+    assert math.isfinite(res.head_pose.pitch_deg)
+    assert math.isfinite(res.head_pose.yaw_deg)
+    assert math.isfinite(res.head_pose.roll_deg)
+    assert math.isfinite(res.head_pose.rel_pitch_deg)
+    assert math.isfinite(res.head_pose.rel_yaw_deg)
+    assert math.isfinite(res.head_pose.rel_roll_deg)
+
+
+def test_stage2_2_legacy_scalar_only_profile_fallback() -> None:
+    """
+    Test 9: Legacy scalar-only profile (neutral_rot_mat=None) retains existing 2-DoF fallback.
+    """
+    w, h = 1280, 720
+    profile = _make_stage2_2_profile(
+        neutral_rot_mat=None, neutral_yaw_deg=22.0, neutral_pitch_deg=-6.0
+    )
+    extractor = DriverFeatureExtractor(profile=profile, is_mirrored=False)
+    assert extractor.neutral_rot_mat is None
+    assert extractor.neutral_yaw_deg == 22.0
+    assert extractor.neutral_pitch_deg == -6.0
+
+    R_current = _make_stage2_2_rot_mat(22.0, -6.0, 0.0, is_mirrored=False)
+    lms = _generate_synthetic_face_landmarks_from_mat(R_current, frame_width=w, frame_height=h)
+    res = extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms,
+            presence_confidence=0.98,
+            timestamp_ms=1000,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+    assert math.isclose(res.head_pose.rel_yaw_deg, 0.0, abs_tol=0.5)
+    assert math.isclose(res.head_pose.rel_pitch_deg, 0.0, abs_tol=0.5)
+    assert res.head_pose.zone == PoseZone.CENTER
+
+
+def test_stage2_2_uncalibrated_extractor_identity_behaviour() -> None:
+    """
+    Test 10: Uncalibrated extractor retains identity/scalar-zero behaviour and disabled ocular profiling.
+    """
+    w, h = 1280, 720
+    extractor = DriverFeatureExtractor(is_mirrored=False)
+    assert extractor.neutral_rot_mat is None
+    assert extractor.neutral_pitch_deg == 0.0
+    assert extractor.neutral_yaw_deg == 0.0
+    assert extractor.is_profile_feasible is False
+    assert extractor.is_ocular_active is False
+
+    R_current = _make_stage2_2_rot_mat(15.0, -8.0, 3.0, is_mirrored=False)
+    lms = _generate_synthetic_face_landmarks_from_mat(R_current, frame_width=w, frame_height=h)
+    res = extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms,
+            presence_confidence=0.98,
+            timestamp_ms=1000,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+    assert math.isclose(res.head_pose.yaw_deg, res.head_pose.rel_yaw_deg, abs_tol=1e-4)
+    assert math.isclose(res.head_pose.pitch_deg, res.head_pose.rel_pitch_deg, abs_tol=1e-4)
+    assert math.isclose(res.head_pose.roll_deg, res.head_pose.rel_roll_deg, abs_tol=1e-4)
+    assert res.ear.is_valid is False  # Ocular profiling inactive
+
+
+def test_stage2_2_explicit_invalid_matrices_rejected() -> None:
+    """
+    Test 11: Explicit malformed, non-finite, non-orthogonal and reflection matrices are rejected.
+    """
+    # 1. Shape (2, 3)
+    p_shape = _make_stage2_2_profile(neutral_rot_mat=np.eye(3)[:2])
+    ok, err = validate_profile(p_shape)
+    assert ok is False
+    assert "SO(3)" in err or "invalid" in err
+
+    # 2. Non-finite: NaN
+    bad_nan = np.eye(3)
+    bad_nan[0, 0] = float("nan")
+    p_nan = _make_stage2_2_profile(neutral_rot_mat=bad_nan)
+    assert validate_profile(p_nan)[0] is False
+
+    # 3. Non-finite: Inf
+    bad_inf = np.eye(3)
+    bad_inf[1, 1] = float("inf")
+    p_inf = _make_stage2_2_profile(neutral_rot_mat=bad_inf)
+    assert validate_profile(p_inf)[0] is False
+
+    # 4. Non-orthogonal: scaled identity
+    bad_scale = np.eye(3) * 2.0
+    p_scale = _make_stage2_2_profile(neutral_rot_mat=bad_scale)
+    assert validate_profile(p_scale)[0] is False
+
+    # 5. Reflection: det = -1.0
+    bad_refl = np.diag([1.0, 1.0, -1.0])
+    p_refl = _make_stage2_2_profile(neutral_rot_mat=bad_refl)
+    assert validate_profile(p_refl)[0] is False
+
+    # 6. Boolean array
+    bad_bool = np.ones((3, 3), dtype=bool)
+    p_bool = _make_stage2_2_profile(neutral_rot_mat=bad_bool)  # type: ignore
+    assert validate_profile(p_bool)[0] is False
+
+    # 7. Non-array type
+    bad_list = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    p_list = _make_stage2_2_profile(neutral_rot_mat=bad_list)  # type: ignore
+    assert validate_profile(p_list)[0] is False
+
+    # 8. Constructor validation rejection
+    with pytest.raises(ValueError, match="SO\\(3\\)"):
+        DriverFeatureExtractor(neutral_rot_mat=bad_refl)
+
+
+def test_stage2_2_rejected_profile_does_not_mutate_existing_active_profile() -> None:
+    """
+    Test 12: Rejected profiles do not partially mutate an existing active profile.
+    """
+    R_valid = _make_stage2_2_rot_mat(20.0, -5.0, 0.0)
+    p_valid = _make_stage2_2_profile(
+        driver_id="active_driver",
+        neutral_rot_mat=R_valid,
+        neutral_yaw_deg=20.0,
+        neutral_pitch_deg=-5.0,
+    )
+    extractor = DriverFeatureExtractor(profile=p_valid)
+    assert extractor.is_profile_feasible is True
+    assert extractor.profile.driver_id == "active_driver"
+    orig_closure = extractor.active_closure_threshold
+
+    # Attempt to activate corrupted profile
+    bad_mat = np.eye(3) * 3.0
+    p_corrupt = _make_stage2_2_profile(
+        driver_id="corrupt_driver",
+        neutral_rot_mat=bad_mat,
+        neutral_yaw_deg=50.0,
+    )
+    res = extractor.set_profile(p_corrupt)
+    assert res is False
+
+    # Existing active profile must remain intact and operational
+    assert extractor.is_profile_feasible is True
+    assert extractor.profile.driver_id == "active_driver"
+    assert np.array_equal(extractor.neutral_rot_mat, R_valid)
+    assert extractor.neutral_yaw_deg == 20.0
+    assert extractor.neutral_pitch_deg == -5.0
+    assert extractor.active_closure_threshold == orig_closure
+
+
+def test_stage2_2_profile_replacement_during_closing_latches_old_calibration() -> None:
+    """
+    Test 13: Replacing a profile during CLOSING keeps old calibration until safe application point.
+    """
+    w, h = 1280, 720
+    R1 = _make_stage2_2_rot_mat(20.0, 0.0, 0.0)
+    p1 = _make_stage2_2_profile(driver_id="driver_1", neutral_rot_mat=R1, neutral_yaw_deg=20.0)
+    extractor = DriverFeatureExtractor(profile=p1)
+
+    # Frame 1: Open eyes (EAR ~ 0.35)
+    lms_open = _generate_synthetic_face_landmarks_from_mat(
+        R1, left_target_ear=0.35, right_target_ear=0.35, frame_width=w, frame_height=h
+    )
+    extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms_open,
+            presence_confidence=0.98,
+            timestamp_ms=1000,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+
+    # Frame 2: Eyes close (EAR ~ 0.05) -> detector enters CLOSING / CLOSED
+    lms_close = _generate_synthetic_face_landmarks_from_mat(
+        R1, left_target_ear=0.05, right_target_ear=0.05, frame_width=w, frame_height=h
+    )
+    extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms_close,
+            presence_confidence=0.98,
+            timestamp_ms=1033,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+    assert extractor.blink_detector._state in (BlinkState.CLOSING, BlinkState.CLOSED)
+
+    # Replace profile with p2 while in blink
+    R2 = _make_stage2_2_rot_mat(-20.0, 0.0, 0.0)
+    p2 = _make_stage2_2_profile(driver_id="driver_2", neutral_rot_mat=R2, neutral_yaw_deg=-20.0)
+    extractor.set_profile(p2)
+
+    # Calibration and matrix MUST remain latched to p1 during blink
+    assert extractor.profile.driver_id == "driver_1"
+    assert np.array_equal(extractor.neutral_rot_mat, R1)
+    assert extractor.neutral_yaw_deg == 20.0
+    assert extractor._pending_profile_switch is True
+
+    # Frame 3: Eyes reopen (EAR ~ 0.35) completes in-flight blink
+    extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms_open,
+            presence_confidence=0.98,
+            timestamp_ms=1066,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+    # Frame 4: Detector is OPEN at frame start -> pending profile switch activates
+    extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms_open,
+            presence_confidence=0.98,
+            timestamp_ms=1100,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+
+    # Now p2 is active
+    assert extractor.profile.driver_id == "driver_2"
+    assert np.array_equal(extractor.neutral_rot_mat, R2)
+    assert extractor.neutral_yaw_deg == -20.0
+    assert extractor._pending_profile_switch is False
+
+
+def test_stage2_2_profile_replacement_during_closed_and_reopening() -> None:
+    """
+    Test 14: Profile replacement during CLOSED and REOPENING states is safely queued.
+    """
+    w, h = 1280, 720
+    R1 = _make_stage2_2_rot_mat(15.0, 0.0, 0.0)
+    p1 = _make_stage2_2_profile(driver_id="driver_c1", neutral_rot_mat=R1, neutral_yaw_deg=15.0)
+    extractor = DriverFeatureExtractor(profile=p1)
+
+    lms_open = _generate_synthetic_face_landmarks_from_mat(
+        R1, left_target_ear=0.35, right_target_ear=0.35, frame_width=w, frame_height=h
+    )
+    extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms_open,
+            presence_confidence=0.98,
+            timestamp_ms=1000,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+
+    lms_close = _generate_synthetic_face_landmarks_from_mat(
+        R1, left_target_ear=0.05, right_target_ear=0.05, frame_width=w, frame_height=h
+    )
+    extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms_close,
+            presence_confidence=0.98,
+            timestamp_ms=1033,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+
+    R2 = _make_stage2_2_rot_mat(-15.0, 0.0, 0.0)
+    p2 = _make_stage2_2_profile(driver_id="driver_c2", neutral_rot_mat=R2, neutral_yaw_deg=-15.0)
+
+    # Force REOPENING state for test verification
+    extractor.blink_detector._state = BlinkState.REOPENING
+    extractor.set_profile(p2)
+    assert extractor._pending_profile_switch is True
+    assert extractor.profile.driver_id == "driver_c1"
+    assert np.array_equal(extractor.neutral_rot_mat, R1)
+
+    # Reopen eyes (1066ms completes blink waveform; 1100ms applies pending switch)
+    extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms_open,
+            presence_confidence=0.98,
+            timestamp_ms=1066,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+    extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms_open,
+            presence_confidence=0.98,
+            timestamp_ms=1100,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+    assert extractor.profile.driver_id == "driver_c2"
+    assert np.array_equal(extractor.neutral_rot_mat, R2)
+
+
+def test_stage2_2_profile_clearing_during_blink_deferred() -> None:
+    """
+    Test 15: Profile clearing (set_profile(None)) during blink defers clearing until safe application point.
+    """
+    w, h = 1280, 720
+    R1 = _make_stage2_2_rot_mat(20.0, 0.0, 0.0)
+    p1 = _make_stage2_2_profile(driver_id="driver_clr", neutral_rot_mat=R1, neutral_yaw_deg=20.0)
+    extractor = DriverFeatureExtractor(profile=p1)
+
+    lms_open = _generate_synthetic_face_landmarks_from_mat(
+        R1, left_target_ear=0.35, right_target_ear=0.35, frame_width=w, frame_height=h
+    )
+    extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms_open,
+            presence_confidence=0.98,
+            timestamp_ms=1000,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+
+    lms_close = _generate_synthetic_face_landmarks_from_mat(
+        R1, left_target_ear=0.05, right_target_ear=0.05, frame_width=w, frame_height=h
+    )
+    extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms_close,
+            presence_confidence=0.98,
+            timestamp_ms=1033,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+
+    # Disable profile during blink
+    extractor.set_profile(None)
+    assert extractor._pending_profile_disable is True
+    assert extractor.profile.driver_id == "driver_clr"
+    assert np.array_equal(extractor.neutral_rot_mat, R1)
+
+    # Eyes reopen (1066ms completes blink waveform; 1100ms applies pending disable)
+    extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms_open,
+            presence_confidence=0.98,
+            timestamp_ms=1066,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+    extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms_open,
+            presence_confidence=0.98,
+            timestamp_ms=1100,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+    assert extractor.profile is None
+    assert extractor.neutral_rot_mat is None
+    assert extractor.neutral_pitch_deg == 0.0
+    assert extractor.neutral_yaw_deg == 0.0
+    assert extractor.is_profile_feasible is False
+    assert extractor._pending_profile_disable is False
+
+
+def test_stage2_2_session_reset_preserves_active_profile_and_matrix() -> None:
+    """
+    Test 16: Resetting extractor (extractor.reset()) preserves active profile and neutral matrix.
+    """
+    R1 = _make_stage2_2_rot_mat(25.0, -8.0, 4.0)
+    p1 = _make_stage2_2_profile(
+        driver_id="driver_reset",
+        neutral_rot_mat=R1,
+        neutral_yaw_deg=25.0,
+        neutral_pitch_deg=-8.0,
+    )
+    extractor = DriverFeatureExtractor(profile=p1)
+    extractor.reset()
+
+    assert extractor.profile.driver_id == "driver_reset"
+    assert np.array_equal(extractor.neutral_rot_mat, R1)
+    assert extractor.neutral_yaw_deg == 25.0
+    assert extractor.neutral_pitch_deg == -8.0
+    assert extractor.is_profile_feasible is True
+
+
+def test_stage2_2_stage1_invariant_ear_optical_yaw_vs_relative_yaw() -> None:
+    """
+    Test 17: Stage 1 invariant regression test:
+    EAR optical weighting receives camera-relative pose_res.yaw_deg,
+    and pitch compensation receives driver-relative pose_res.rel_pitch_deg.
+    """
+    w, h = 1280, 720
+    # Oblique camera mounted at yaw = +25.0°
+    R_neutral = _make_stage2_2_rot_mat(25.0, 0.0, 0.0, is_mirrored=False)
+    profile = _make_stage2_2_profile(neutral_rot_mat=R_neutral, neutral_yaw_deg=25.0)
+    extractor = DriverFeatureExtractor(profile=profile, is_mirrored=False)
+
+    # Driver looks straight at road (neutral posture):
+    # Camera yaw = +25.0°, driver-relative yaw = 0.0°
+    lms = _generate_synthetic_face_landmarks_from_mat(
+        R_neutral, left_target_ear=0.20, right_target_ear=0.36, frame_width=w, frame_height=h
+    )
+    res = extractor.extract(
+        FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms,
+            presence_confidence=0.98,
+            timestamp_ms=1000,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        ),
+        frame_width=w,
+        frame_height=h,
+    )
+    assert math.isclose(res.head_pose.yaw_deg, 25.0, abs_tol=0.5)
+    assert math.isclose(res.head_pose.rel_yaw_deg, 0.0, abs_tol=0.2)
+    assert res.head_pose.zone == PoseZone.CENTER
+
+    # If EAR used driver-relative yaw (0.0°), weighted_ear would be 0.2800 (50/50 balance).
+    # Because EAR uses camera-relative yaw (+25.0°), weighted_ear heavily favours image-left eye (~0.2339).
+    assert math.isclose(res.ear.weighted_ear, 0.2339, abs_tol=0.005)
+    assert abs(res.ear.weighted_ear - 0.2800) > 0.04
+
+
+def test_stage2_3_geometric_validity_indicator_contract() -> None:
+    """
+    Stage 2.3: Verify EyeAspectRatioResult.is_geometric_valid contract:
+    - Legacy callers omitting is_geometric_valid get default None.
+    - extract_eye_aspect_ratio returns True when both eyes valid.
+    - extract_eye_aspect_ratio returns False when one or both eyes invalid.
+    - Face loss in feature_extractor returns is_geometric_valid=False.
+    - Uncalibrated branch preserves actual geometric validity.
+    """
+    # 1. Legacy constructor compatibility
+    legacy_res = EyeAspectRatioResult(
+        left_ear=0.3,
+        right_ear=0.3,
+        weighted_ear=0.3,
+        compensated_ear=0.3,
+        closure_threshold=0.2,
+        is_left_closed=False,
+        is_right_closed=False,
+        is_closed=False,
+    )
+    assert legacy_res.is_geometric_valid is None
+
+    # 2. Face loss branch in feature_extractor
+    extractor = DriverFeatureExtractor()
+    no_face_res = extractor.extract(
+        FaceLandmarkResult(
+            has_face=False,
+            landmarks=(),
+            presence_confidence=0.0,
+            timestamp_ms=1000,
+            status=FaceLandmarkStatus.INSUFFICIENT_DATA,
+            inference_latency_ms=0.0,
+            reasons=(),
+        ),
+        frame_width=640,
+        frame_height=480,
+    )
+    assert no_face_res.ear.is_geometric_valid is False
+    assert no_face_res.ear.is_valid is False
+
+
+def test_stage2_3_atomic_activation_and_snapshot_rollback() -> None:
+    """
+    Stage 2.3: Verify runtime atomicity and complete 29-attribute snapshot rollback
+    when an unexpected exception occurs during activation.
+    """
+    profile1 = _make_stage2_2_profile(driver_id="driver_atom1")
+    extractor = DriverFeatureExtractor(profile=profile1)
+    assert extractor.is_active_profile_consistent() is True
+    assert extractor.profile.driver_id == "driver_atom1"
+
+    # Capture initial state
+    snap_before = extractor._take_snapshot()
+
+    # Simulate an error during profile activation by mocking update_thresholds on blink detector to fail
+    profile2 = _make_stage2_2_profile(driver_id="driver_atom2")
+    orig_update = extractor._blink_detector.update_thresholds
+    try:
+        def failing_update(*args, **kwargs):
+            raise RuntimeError("Hardware/detector fault during threshold update")
+
+        extractor._blink_detector.update_thresholds = failing_update
+
+        # Attempt to set profile2
+        success = extractor.set_profile(profile2)
+        assert success is False
+        assert extractor.activation_status == ActivationStatus.FAILED
+    finally:
+        extractor._blink_detector.update_thresholds = orig_update
+
+    # State must be completely rolled back to driver_atom1
+    assert extractor.profile.driver_id == "driver_atom1"
+    assert extractor.is_profile_feasible is True
+    assert extractor.is_active_profile_consistent() is True
+    assert extractor._pending_profile_switch is False
+    assert extractor._next_profile is None
+
+
+def test_stage2_3_safe_latch_initial_calibration_promotion() -> None:
+    """
+    Stage 2.3: Verify that an initial calibration queued while uncalibrated
+    successfully promotes at the safe latch (OPEN) without KeyError or promotion block.
+    """
+    w, h = 1280, 720
+    extractor = DriverFeatureExtractor()  # Initially uncalibrated
+    assert extractor.is_profile_feasible is False
+    assert extractor.profile is None
+
+    # Queue profile while detector is in CLOSING
+    extractor._blink_detector._state = BlinkState.CLOSING
+    new_profile = _make_stage2_2_profile(driver_id="initial_driver")
+    queued = extractor.set_profile(new_profile)
+    assert queued is True
+    assert extractor.is_profile_pending() is True
+    assert extractor.is_profile_feasible is False
+    assert extractor._pending_profile_switch is True
+
+    # Transition to OPEN -> extract must promote initial profile without KeyError
+    extractor._blink_detector._state = BlinkState.OPEN
+    lms_open = _generate_synthetic_face_landmarks(0.0, pitch_deg=0.0, is_mirrored=False)
+    frame = FaceLandmarkResult(
+        has_face=True,
+        landmarks=lms_open,
+        presence_confidence=0.98,
+        timestamp_ms=2000,
+        status=FaceLandmarkStatus.TRACKING,
+        inference_latency_ms=10.0,
+        reasons=(),
+    )
+    res = extractor.extract(frame, frame_width=w, frame_height=h)
+
+    # Profile must now be fully active!
+    assert extractor.is_profile_feasible is True
+    assert extractor.profile.driver_id == "initial_driver"
+    assert extractor.is_profile_active("initial_driver") is True
+    assert extractor.is_profile_pending() is False
+    assert extractor.is_active_profile_consistent() is True
+
+
+def test_stage2_3_public_consistency_and_query_apis() -> None:
+    """
+    Stage 2.3: Verify is_profile_active, is_profile_pending, and is_active_profile_consistent
+    while maintaining verification of old profile during pending replacement.
+    """
+    p1 = _make_stage2_2_profile(driver_id="driver_active")
+    p2 = _make_stage2_2_profile(driver_id="driver_pending")
+    extractor = DriverFeatureExtractor(profile=p1)
+
+    assert extractor.is_profile_active("driver_active") is True
+    assert extractor.is_profile_active("driver_pending") is False
+    assert extractor.is_profile_pending() is False
+    assert extractor.is_active_profile_consistent() is True
+
+    # Force detector into CLOSING to queue p2
+    extractor._blink_detector._state = BlinkState.CLOSING
+    extractor.set_profile(p2)
+
+    # Acceptance test condition: old profile remains active and consistent while p2 is pending!
+    assert extractor.is_profile_active("driver_active") is True
+    assert extractor.is_profile_active("driver_pending") is False
+    assert extractor.is_profile_pending() is True
+    assert extractor.is_profile_pending("driver_pending") is True
+    assert extractor.is_profile_pending("driver_active") is False
+    assert extractor.is_active_profile_consistent() is True
+
+    # Public 2-tuple feasibility check
+    valid, reason = extractor.validate_profile_feasibility(p2)
+    assert valid is True
+    assert isinstance(valid, bool)
+    assert isinstance(reason, str)
+
+
+def test_stage2_3_deferred_activation_atomicity_and_coordination() -> None:
+    """
+    Stage 2.3: Comprehensive verification of deferred activation runtime atomicity:
+    - Deferred activation succeeds at safe latch.
+    - Deferred activation fails after partial runtime mutation: restores snapshot, prior profile remains consistent.
+    - Runtime snapshot restoration fails and enters uncertain state (_activation_uncertain = True).
+    - Disk rollback callback executes exactly once.
+    - Non-ocular monitoring (head pose, MAR, yawns) is not unnecessarily disabled by ocular activation failure.
+    """
+    from backend.app.ai.pdbp_calibration import compute_canonical_profile_fingerprint
+
+    w, h = 1280, 720
+    p1 = _make_stage2_2_profile(driver_id="driver_p1", center_ear=0.28)
+    p2 = _make_stage2_2_profile(driver_id="driver_p2", center_ear=0.32)
+    p2_fp = compute_canonical_profile_fingerprint(p2)
+
+    # 1. Success deferred activation at safe latch
+    extractor = DriverFeatureExtractor(profile=p1)
+    extractor._blink_detector._state = BlinkState.CLOSING
+
+    callback_count = 0
+
+    def mock_cb():
+        nonlocal callback_count
+        callback_count += 1
+
+    extractor.set_pending_rollback_callback(mock_cb, fingerprint=p2_fp)
+    queued = extractor.set_profile(p2)
+    assert queued is True
+    assert extractor.has_pending_profile is True
+    assert extractor.is_profile_pending("driver_p2") is True
+    assert extractor.is_profile_active("driver_p1") is True
+
+    # Transition to OPEN -> extract triggers safe latch promotion
+    extractor._blink_detector._state = BlinkState.OPEN
+    lms_open = _generate_synthetic_face_landmarks(0.0, pitch_deg=0.0, is_mirrored=False)
+    frame = FaceLandmarkResult(
+        has_face=True,
+        landmarks=lms_open,
+        presence_confidence=0.98,
+        timestamp_ms=2000,
+        status=FaceLandmarkStatus.TRACKING,
+        inference_latency_ms=10.0,
+        reasons=(),
+    )
+    res = extractor.extract(frame, frame_width=w, frame_height=h)
+
+    assert extractor.is_profile_active("driver_p2") is True
+    assert extractor.has_pending_profile is False
+    assert extractor.is_active_profile_consistent() is True
+    assert callback_count == 0  # No rollback on success
+    assert extractor._pending_rollback_cb is None
+
+    # 2. Deferred activation fails after partial runtime mutation -> restores snapshot, invokes callback once
+    extractor2 = DriverFeatureExtractor(profile=p1)
+    extractor2._blink_detector._state = BlinkState.CLOSING
+
+    callback_count2 = 0
+
+    def mock_cb2():
+        nonlocal callback_count2
+        callback_count2 += 1
+
+    extractor2.set_pending_rollback_callback(mock_cb2, fingerprint=p2_fp)
+    queued2 = extractor2.set_profile(p2)
+    assert queued2 is True
+
+    orig_update = extractor2._blink_detector.update_thresholds
+    failed_once = False
+
+    def failing_update(*args, **kwargs):
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            raise RuntimeError("Simulated detector mutation error")
+        return orig_update(*args, **kwargs)
+
+    try:
+        extractor2._blink_detector.update_thresholds = failing_update
+        extractor2._blink_detector._state = BlinkState.OPEN
+
+        res2 = extractor2.extract(frame, frame_width=w, frame_height=h)
+    finally:
+        extractor2._blink_detector.update_thresholds = orig_update
+
+    # Snapshot restored: previous profile remains fully consistent
+    assert extractor2.is_active_profile_consistent() is True
+    assert extractor2.is_profile_active("driver_p1") is True
+    assert extractor2.has_pending_profile is False
+    assert callback_count2 == 1  # Executed exactly once!
+
+    # Non-ocular monitoring is completely operational despite ocular activation fault
+    assert res2.head_pose.is_valid is True
+    assert res2.mar.is_valid is True
+    assert res2.mar.mar >= 0.0
+    assert res2.mar.baseline_mar > 0.0
+
+    # 3. Runtime snapshot restoration failure enters uncertain state
+    extractor3 = DriverFeatureExtractor(profile=p1)
+    extractor3._blink_detector._state = BlinkState.CLOSING
+
+    callback_count3 = 0
+
+    def mock_cb3():
+        nonlocal callback_count3
+        callback_count3 += 1
+
+    extractor3.set_pending_rollback_callback(mock_cb3, fingerprint=p2_fp)
+    extractor3.set_profile(p2)
+
+    orig_restore = extractor3._restore_snapshot
+
+    def failing_restore(snap):
+        # Force restoration failure
+        try:
+            raise RuntimeError("Corrupted snapshot memory")
+        except Exception as err:
+            extractor3._activation_uncertain = True
+            extractor3._trigger_pending_rollback(expected_fingerprint=p2_fp)
+            raise RuntimeError(f"Critical failure during profile rollback: {err}") from err
+
+    try:
+        failed_once3 = False
+
+        def failing_update3(*args, **kwargs):
+            nonlocal failed_once3
+            if not failed_once3:
+                failed_once3 = True
+                raise RuntimeError("Simulated detector mutation error")
+            return orig_update(*args, **kwargs)
+
+        extractor3._restore_snapshot = failing_restore
+        extractor3._blink_detector.update_thresholds = failing_update3
+        extractor3._blink_detector._state = BlinkState.OPEN
+
+        # Promotion fails and restoration fails
+        extractor3._apply_pending_switch(PoseZone.CENTER)
+    except RuntimeError as r_err:
+        assert "Critical failure during profile rollback" in str(r_err)
+    finally:
+        extractor3._restore_snapshot = orig_restore
+
+    assert extractor3.is_activation_uncertain is True
+    assert extractor3.is_active_profile_consistent() is False
+    assert callback_count3 == 1  # Callback executed exactly once!
+
+
+def test_stage2_3_fingerprint_bound_rollback_ownership_and_mismatch_rejection() -> None:
+    """
+    Stage 2.3: Verify that callback ownership is strictly bound to the exact profile fingerprint:
+    - Missing or non-string fingerprint raises ValueError on registration.
+    - Mismatched fingerprint rejects rollback execution and latches persistence failure.
+    - Missing expected fingerprint with registered callback latches persistence failure.
+    - Neither mismatch nor missing fingerprint executes the callback.
+    - The correctly matching fingerprint can subsequently execute the callback exactly once.
+    - A second matching invocation cannot execute it again.
+    - is_active_profile_consistent() remains False after the mismatch/failure latch.
+    """
+    p1 = _make_stage2_2_profile(driver_id="driver_fp_bound", center_ear=0.28)
+    extractor = DriverFeatureExtractor(profile=p1)
+    assert extractor.is_active_profile_consistent() is True
+
+    call_count = 0
+    def dummy_cb():
+        nonlocal call_count
+        call_count += 1
+
+    # 1. Missing fingerprint raises ValueError on registration
+    with pytest.raises(ValueError, match="valid non-empty profile fingerprint is required"):
+        extractor.set_pending_rollback_callback(dummy_cb, fingerprint=None)
+
+    with pytest.raises(ValueError, match="valid non-empty profile fingerprint is required"):
+        extractor.set_pending_rollback_callback(dummy_cb, fingerprint="")
+
+    # 2. Register valid callback with fingerprint FP_A
+    fp_a = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    extractor.set_pending_rollback_callback(dummy_cb, fingerprint=fp_a)
+    assert extractor.pending_rollback_fingerprint == fp_a
+    assert extractor.is_active_profile_consistent() is True
+    assert extractor.is_persistence_rollback_failed is False
+    assert extractor.is_activation_uncertain is False
+
+    # 3. Attempt trigger with mismatched fingerprint FP_B -> rejected, latches failure, does not run callback
+    fp_b = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+    executed = extractor._trigger_pending_rollback(expected_fingerprint=fp_b)
+    assert executed is False
+    assert call_count == 0
+    assert extractor.pending_rollback_fingerprint == fp_a  # Callback ownership preserved!
+    assert extractor._pending_rollback_cb is not None
+    assert extractor.is_persistence_rollback_failed is True
+    assert extractor.is_activation_uncertain is True
+    assert "fingerprint mismatch or missing" in (extractor.rollback_error or "")
+    assert extractor.is_active_profile_consistent() is False
+
+    # 4. Attempt trigger with None -> rejected, does not run callback, failure latch remains
+    executed_none = extractor._trigger_pending_rollback(expected_fingerprint=None)
+    assert executed_none is False
+    assert call_count == 0
+    assert extractor.pending_rollback_fingerprint == fp_a  # Still preserved
+    assert extractor._pending_rollback_cb is not None
+    assert extractor.is_persistence_rollback_failed is True
+    assert extractor.is_activation_uncertain is True
+    assert extractor.is_active_profile_consistent() is False
+
+    # 5. Trigger with matching fingerprint FP_A -> executes callback exactly once
+    executed_match = extractor._trigger_pending_rollback(expected_fingerprint=fp_a)
+    assert executed_match is True
+    assert call_count == 1
+    assert extractor.pending_rollback_fingerprint is None
+    assert extractor._pending_rollback_cb is None
+    # Failure latch remains visible even after subsequent successful callback execution
+    assert extractor.is_persistence_rollback_failed is True
+    assert extractor.is_activation_uncertain is True
+    assert extractor.is_active_profile_consistent() is False
+
+    # 6. Subsequent trigger is no-op and cannot execute callback again
+    executed_again = extractor._trigger_pending_rollback(expected_fingerprint=fp_a)
+    assert executed_again is False
+    assert call_count == 1
+
+
+def test_stage2_3_missing_expected_fingerprint_latches_failure() -> None:
+    """
+    Stage 2.3: Verify that invoking _trigger_pending_rollback with None when a callback
+    is registered latches failure without executing the callback.
+    """
+    p1 = _make_stage2_2_profile(driver_id="driver_missing_fp", center_ear=0.28)
+    extractor = DriverFeatureExtractor(profile=p1)
+    assert extractor.is_active_profile_consistent() is True
+
+    call_count = 0
+    def dummy_cb():
+        nonlocal call_count
+        call_count += 1
+
+    fp_a = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    extractor.set_pending_rollback_callback(dummy_cb, fingerprint=fp_a)
+
+    executed_none = extractor._trigger_pending_rollback(expected_fingerprint=None)
+    assert executed_none is False
+    assert call_count == 0
+    assert extractor.is_persistence_rollback_failed is True
+    assert extractor.is_activation_uncertain is True
+    assert "fingerprint mismatch or missing" in (extractor.rollback_error or "")
+    assert extractor.is_active_profile_consistent() is False
+
+    # The registered callback is preserved and can subsequently execute with matching fingerprint
+    executed_match = extractor._trigger_pending_rollback(expected_fingerprint=fp_a)
+    assert executed_match is True
+    assert call_count == 1
+    assert extractor.is_persistence_rollback_failed is True
+    assert extractor.is_active_profile_consistent() is False
+
+
+def test_stage2_3_persistence_rollback_failure_latches_uncertain_state() -> None:
+    """
+    Stage 2.3: Verify that deferred persistence rollback failure:
+    - Latches an explicit failure/uncertain state (is_persistence_rollback_failed, is_activation_uncertain).
+    - Exposes the rollback exception in rollback_error.
+    - Prevents is_active_profile_consistent() from returning True.
+    - Preserves non-ocular monitoring (head pose, MAR, yawn).
+    """
+    from backend.app.ai.pdbp_calibration import compute_canonical_profile_fingerprint
+
+    w, h = 1280, 720
+    p1 = _make_stage2_2_profile(driver_id="driver_p1", center_ear=0.28)
+    p2 = _make_stage2_2_profile(driver_id="driver_p2", center_ear=0.32)
+    p2_fp = compute_canonical_profile_fingerprint(p2)
+
+    extractor = DriverFeatureExtractor(profile=p1)
+    extractor._blink_detector._state = BlinkState.CLOSING
+
+    def failing_persistence_cb():
+        raise PermissionError("EACCES: Disk locked during rollback")
+
+    extractor.set_pending_rollback_callback(failing_persistence_cb, fingerprint=p2_fp)
+    extractor.set_profile(p2)
+    assert extractor.has_pending_profile is True
+
+    # Force threshold update failure during promotion
+    orig_update = extractor._blink_detector.update_thresholds
+    failed_once = False
+
+    def failing_update(*args, **kwargs):
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            raise RuntimeError("Promotion hardware failure")
+        return orig_update(*args, **kwargs)
+
+    try:
+        extractor._blink_detector.update_thresholds = failing_update
+        extractor._blink_detector._state = BlinkState.OPEN
+
+        lms = _generate_synthetic_face_landmarks(0.0, pitch_deg=0.0, is_mirrored=False)
+        frame = FaceLandmarkResult(
+            has_face=True,
+            landmarks=lms,
+            presence_confidence=0.98,
+            timestamp_ms=2000,
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=10.0,
+            reasons=(),
+        )
+        res = extractor.extract(frame, frame_width=w, frame_height=h)
+    finally:
+        extractor._blink_detector.update_thresholds = orig_update
+
+    # Explicit failure states latched
+    assert extractor.is_persistence_rollback_failed is True
+    assert "EACCES: Disk locked during rollback" in (extractor.rollback_error or "")
+    assert extractor.is_activation_uncertain is True
+    assert extractor.is_active_profile_consistent() is False
+
+    # Non-ocular features remain completely operational
+    assert res.head_pose.is_valid is True
+    assert res.mar.is_valid is True
+    assert res.mar.baseline_mar > 0.0
+
+
+def test_stage2_3_extractor_rejects_second_set_profile_while_pending() -> None:
+    """
+    Stage 2.3: Verify that set_profile() rejects a new profile while another profile switch is pending.
+    """
+    p1 = _make_stage2_2_profile(driver_id="driver_p1", center_ear=0.28)
+    p2 = _make_stage2_2_profile(driver_id="driver_p2", center_ear=0.32)
+    p3 = _make_stage2_2_profile(driver_id="driver_p3", center_ear=0.26)
+
+    extractor = DriverFeatureExtractor(profile=p1)
+    extractor._blink_detector._state = BlinkState.CLOSING
+
+    # Queue P2
+    ok2 = extractor.set_profile(p2)
+    assert ok2 is True
+    assert extractor.has_pending_profile is True
+    assert extractor.pending_profile.driver_id == "driver_p2"
+
+    # Attempt to queue P3 while P2 is pending -> must return False
+    ok3 = extractor.set_profile(p3)
+    assert ok3 is False
+    assert extractor.has_pending_profile is True
+    assert extractor.pending_profile.driver_id == "driver_p2"

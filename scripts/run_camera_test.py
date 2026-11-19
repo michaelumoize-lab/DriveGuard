@@ -45,11 +45,14 @@ from backend.app.ai.geometry import PoseZone
 from backend.app.ai.pdbp_calibration import (
     DriverBehaviourProfile,
     GuidedCalibrationSession,
+    create_immutable_profile_snapshot,
 )
 from backend.app.ai.profile_adapter import dto_to_profile, profile_to_dto
 from backend.app.camera.camera_config import make_filename_safe, sanitize_source_identifier
 from backend.app.camera.camera_manager import create_camera, discover_local_devices
 from backend.app.camera.frame_quality import FrameQualityAnalyzer, FrameQualityResult, QualityStatus
+from backend.app.camera.positioning_guide import draw_positioning_guide, evaluate_camera_position
+from backend.app.camera.session_recorder import SessionRecorder
 from backend.app.features import DriverFeatureExtractor, DriverFeatures
 from backend.app.intelligence import (
     DrowsinessAssessment,
@@ -122,6 +125,91 @@ def put_fitted_text(
     return cv2.getTextSize(truncated, font, scale, thickness)[0][0]
 
 
+def commit_and_activate_profile(
+    profile: DriverBehaviourProfile,
+    feature_extractor: DriverFeatureExtractor,
+    store: Optional[ProfileStore] = None,
+) -> Tuple[bool, str]:
+    """
+    Coordinated transaction: validates feasibility, persists atomically to disk,
+    and activates on the runtime feature extractor with automatic disk rollback on activation failure.
+    If a valid profile already existed, rolls back to exact previous content; otherwise unlinks new file.
+    Rejects any new commit while another profile transaction is pending safe-latch activation.
+    """
+    target_store = store or profile_store
+
+    # 1. Reject conflicting recalibration transactions while one is pending
+    if getattr(feature_extractor, "has_pending_profile", False):
+        return False, (
+            f"Cannot commit profile for driver '{profile.driver_id}': "
+            "another profile transaction is currently pending safe-latch activation."
+        )
+
+    # 2. Validate feasibility
+    is_feasible, reason = feature_extractor.validate_profile_feasibility(profile)
+    if not is_feasible:
+        return False, f"Infeasible profile: {reason}"
+
+    # 3. Immutable snapshot and DTO preparation
+    try:
+        snapshot = create_immutable_profile_snapshot(profile)
+        dto = profile_to_dto(profile)
+    except Exception as prep_err:
+        return False, f"Profile preparation error: {prep_err}"
+
+    # 4. Read previous persisted content if it exists, to support exact restoration
+    # Since any pending switch was rejected above, existing disk content is true baseline
+    previous_content: Optional[str] = None
+    try:
+        target_path = target_store._file_path(profile.driver_id)
+        if target_path.is_file():
+            previous_content = target_path.read_text(encoding="utf-8")
+    except Exception as read_err:
+        logger.warning(f"Could not read previous profile for '{profile.driver_id}': {read_err}")
+
+    # 5. Disk persistence
+    try:
+        target_store.save_profile(dto)
+    except Exception as save_err:
+        return False, f"Persistence error: {save_err}"
+
+    # One-time rollback helper
+    rollback_executed = False
+
+    def do_rollback() -> None:
+        nonlocal rollback_executed
+        if not rollback_executed:
+            rollback_executed = True
+            target_store.rollback_new_profile(profile.driver_id, previous_content=previous_content)
+
+    # 6. Runtime activation with fingerprint-bound disk rollback on failure
+    try:
+        # Register fingerprint-bound rollback callback for deferred safe-latch activation
+        feature_extractor.set_pending_rollback_callback(
+            do_rollback,
+            fingerprint=snapshot.fingerprint,
+        )
+        activated = feature_extractor.set_profile(snapshot)
+        if not activated:
+            do_rollback()
+            feature_extractor.set_pending_rollback_callback(None)
+            return False, "Runtime activation rejected profile; disk persistence rolled back."
+    except Exception as act_err:
+        try:
+            do_rollback()
+        except Exception as rb_err:
+            logger.critical(f"Critical failure during persistence rollback: {rb_err}")
+            feature_extractor.set_pending_rollback_callback(None)
+            return False, f"Activation error: {act_err}; Rollback failed: {rb_err}"
+        feature_extractor.set_pending_rollback_callback(None)
+        return False, f"Runtime activation error: {act_err}; disk persistence rolled back."
+
+    if getattr(feature_extractor, "has_pending_profile", False):
+        return True, "Profile persisted and queued for deferred activation at next safe latch."
+
+    return True, "Profile successfully persisted and activated."
+
+
 def draw_pill(
     canvas: np.ndarray,
     text: str,
@@ -178,6 +266,8 @@ def draw_diagnostic_hud(
     calibration_info: Optional[tuple] = None,
     calibration_banner: Optional[str] = None,
     calibrated_profile_name: Optional[str] = None,
+    recording_info: Optional[Tuple[bool, float, int]] = None,
+    show_position_guide: bool = False,
 ) -> np.ndarray:
     """
     Renders a semi-transparent diagnostic overlay with real-time performance indicators,
@@ -214,6 +304,17 @@ def draw_diagnostic_hud(
 
     # Dynamic Right-to-Left Status Badges
     cur_x = width - 16
+
+    # 0. Recording Badge (if recording active)
+    if recording_info is not None and recording_info[0]:
+        rec_active, rec_elapsed, rec_frames = recording_info
+        rec_m = int(rec_elapsed // 60)
+        rec_s = int(rec_elapsed % 60)
+        rec_text = f"[REC {rec_m:02d}:{rec_s:02d} | {rec_frames}f]" if width >= 800 else f"[REC {rec_m:02d}:{rec_s:02d}]"
+        rec_color = (239, 68, 68)  # Red-500
+        rec_bg = (50, 10, 10)
+        bx0, _, _, _ = draw_pill(canvas, rec_text, cur_x, y_row1, rec_color, rec_bg, rec_color, 0.40, 1, 7, 3, "right")
+        cur_x = bx0 - 8
 
     # 1. FPS Badge
     if ingestion_fps >= 25.0:
@@ -329,12 +430,17 @@ def draw_diagnostic_hud(
         blink = driver_features.blink
         perclos = driver_features.perclos
 
+        if calibrated_profile_name:
+            pose_str = f"Pose: {pose.zone.value} (rel: P:{pose.rel_pitch_deg:+.0f}\xb0 Y:{pose.rel_yaw_deg:+.0f}\xb0 | raw: P:{pose.pitch_deg:+.0f}\xb0 Y:{pose.yaw_deg:+.0f}\xb0)"
+        else:
+            pose_str = f"Pose: {pose.zone.value} (P:{pose.pitch_deg:+.0f}\xb0 Y:{pose.yaw_deg:+.0f}\xb0)"
+
         telemetry_line_3 = (
             f"EAR: {ear.compensated_ear:.2f} (thr:{ear.closure_threshold:.2f} L:{ear.left_ear:.2f} R:{ear.right_ear:.2f}) | "
             f"PERCLOS: {perclos.perclos_pct:.1f}% | "
             f"Blinks: {blink.total_blink_count} | "
             f"MAR: {mar.mar:.2f} (Yawns: {mar.total_yawn_count}) | "
-            f"Pose: {pose.zone.value} (P:{pose.pitch_deg:+.0f}\xb0 Y:{pose.yaw_deg:+.0f}\xb0)"
+            f"{pose_str}"
         )
         features_color = (56, 189, 248)  # Sky-400
     elif driver_features is not None:
@@ -386,8 +492,10 @@ def draw_diagnostic_hud(
     y_row6 = 144
     mesh_str = "ON" if draw_mesh else "OFF"
     eyes_str = "ON" if draw_eyes else "OFF"
+    rec_str = "ON" if (recording_info and recording_info[0]) else "OFF"
+    guide_str = "ON" if show_position_guide else "OFF"
     controls_line = (
-        f"Controls: [q] Exit  [c] 4-Zone Calibrate  [m] Mirror  [w] Wireframe:{mesh_str}  [e] Eyes:{eyes_str}  [s] Snapshot"
+        f"Controls: [q] Exit  [c] Calibrate  [p] Guide:{guide_str}  [r] Rec:{rec_str}  [m] Mirror  [w] Mesh:{mesh_str}  [e] Eyes:{eyes_str}  [s] Snapshot"
     )
     put_fitted_text(canvas, controls_line, 16, y_row6, font, 0.39, (100, 116, 139), width - 32, 1)
 
@@ -502,6 +610,7 @@ def run_benchmark(
     profile_arg: Optional[str] = None,
     start_calibrating: bool = False,
     driver_id: str = "driver_default",
+    record_session: bool = False,
 ) -> int:
     """
     Executes the camera capture verification loop for webcams or phone streams.
@@ -563,6 +672,17 @@ def run_benchmark(
                     except Exception as e:
                         logger.warning("Failed to convert profile DTO '%s': %s", profile_arg, e)
 
+        # Auto-load existing driver profile from profile store if not explicitly supplied
+        if profile_loaded is None and driver_id:
+            profile_dto = profile_store.get_profile(driver_id)
+            if profile_dto is not None:
+                try:
+                    profile_loaded = dto_to_profile(profile_dto)
+                    calibrated_label = profile_dto.driver_id
+                    logger.info("Auto-loaded saved driver profile for '%s' from profile store.", driver_id)
+                except Exception as e:
+                    logger.warning("Failed to auto-convert profile DTO for '%s': %s", driver_id, e)
+
         # Initialize feature extractor with profile (evaluates mathematical feasibility)
         feature_extractor = DriverFeatureExtractor(profile=profile_loaded)
         if profile_loaded is not None:
@@ -603,6 +723,7 @@ def run_benchmark(
         # Visualization toggles (Phase 4)
         draw_mesh: bool = False
         draw_eyes: bool = True
+        show_position_guide: bool = not start_calibrating
 
         # Performance tracking metrics
         start_time = time.monotonic()
@@ -619,6 +740,24 @@ def run_benchmark(
         latest_assessment: Optional[DrowsinessAssessment] = None
 
         logger.info("Starting live capture loop. Press 'q' or ESC to terminate, 'c' to calibrate.")
+
+        # Synchronized Session Recorder (Video + Telemetry)
+        session_recorder: Optional[SessionRecorder] = None
+        if record_session:
+            f_w = actual_res[0] if actual_res[0] > 0 else target_width
+            f_h = actual_res[1] if actual_res[1] > 0 else target_height
+            session_recorder = SessionRecorder(
+                driver_id=driver_id,
+                frame_width=f_w,
+                frame_height=f_h,
+                fps=camera.get_actual_fps() or float(target_fps),
+                source_identifier=safe_identifier,
+                profile_metadata={"profile_label": calibrated_label},
+            )
+            if session_recorder.start():
+                logger.info("Auto-started session recording on launch in: %s", session_recorder.session_dir)
+            else:
+                logger.warning("Failed to auto-start session recorder.")
 
         while True:
             loop_now = time.monotonic()
@@ -696,7 +835,7 @@ def run_benchmark(
                     is_closed_for_calib = (
                         latest_features.ear.is_closed
                         if feature_extractor.is_profile_feasible
-                        else False
+                        else None
                     )
                     completed_profile = calibration_session.ingest_frame(
                         timestamp_ms=packet.timestamp_ms,
@@ -710,41 +849,36 @@ def run_benchmark(
                         left_ear=latest_features.ear.left_ear,
                         right_ear=latest_features.ear.right_ear,
                         landmark_confidence=latest_landmark.presence_confidence,
+                        rot_mat=latest_features.head_pose.rot_mat,
+                        ear_geometric_valid=latest_features.ear.is_geometric_valid,
                     )
                     if completed_profile is not None:
-                        # Validate mathematical feasibility via feature_extractor._evaluate_profile_feasibility
-                        is_feasible = feature_extractor._evaluate_profile_feasibility(completed_profile)
-                        if not is_feasible:
-                            logger.warning(
-                                "Completed calibration profile for '%s' is mathematically infeasible. Calibration rejected.",
-                                completed_profile.driver_id,
-                            )
+                        success, status_msg = commit_and_activate_profile(
+                            profile=completed_profile,
+                            feature_extractor=feature_extractor,
+                            store=profile_store,
+                        )
+                        if success:
+                            calibrated_label = completed_profile.driver_id
+                            c_ctr = feature_extractor.active_closure_threshold
+                            r_ctr = feature_extractor.active_reopening_threshold
                             calibration_banner_text = (
-                                f"CALIBRATION FAILED: Infeasible EAR baseline ({completed_profile.center_ear_median:.3f})"
+                                f"CALIBRATION COMPLETE: '{completed_profile.driver_id}' active! "
+                                f"Thresholds: Center c={c_ctr:.3f}/r={r_ctr:.3f}"
                             )
                             calibration_banner_until = loop_now + 5.0
+                            logger.info(
+                                "Calibration successfully completed, persisted, and hot-reloaded for driver '%s'.",
+                                completed_profile.driver_id,
+                            )
                         else:
-                            # Convert to DTO, persist atomically via profile_store, and hot-reload pipeline
-                            try:
-                                dto = profile_to_dto(completed_profile)
-                                profile_store.save_profile(dto)
-                                feature_extractor.set_profile(completed_profile)
-                                calibrated_label = completed_profile.driver_id
-                                c_ctr = feature_extractor.active_closure_threshold
-                                r_ctr = feature_extractor.active_reopening_threshold
-                                calibration_banner_text = (
-                                    f"CALIBRATION COMPLETE: '{completed_profile.driver_id}' active! "
-                                    f"Thresholds: Center c={c_ctr:.3f}/r={r_ctr:.3f}"
-                                )
-                                calibration_banner_until = loop_now + 5.0
-                                logger.info(
-                                    "Calibration successfully completed, persisted, and hot-reloaded for driver '%s'.",
-                                    completed_profile.driver_id,
-                                )
-                            except Exception as save_err:
-                                logger.error("Failed to persist calibrated profile: %s", save_err)
-                                calibration_banner_text = f"CALIBRATION FAILED: Persistence error ({save_err})"
-                                calibration_banner_until = loop_now + 5.0
+                            logger.warning(
+                                "Calibration commit/activation failed for '%s': %s",
+                                completed_profile.driver_id,
+                                status_msg,
+                            )
+                            calibration_banner_text = f"CALIBRATION FAILED: {status_msg}"
+                            calibration_banner_until = loop_now + 5.0
                         calibration_session = None
                     elif not calibration_session.is_running:
                         # Session ended without a completed profile (rejected or timed out)
@@ -759,6 +893,44 @@ def run_benchmark(
                 features=latest_features,
                 quality=latest_quality,
             )
+
+            # Record synchronized video frame and telemetry row
+            if session_recorder is not None and session_recorder.is_recording:
+                t_dict = {
+                    "face_detected": latest_landmark.has_face if latest_landmark else False,
+                    "face_status": latest_landmark.status.value if latest_landmark else "UNKNOWN",
+                    "presence_confidence": latest_landmark.presence_confidence if latest_landmark else 0.0,
+                    "pose_zone": latest_features.head_pose.zone.value if latest_features else "UNKNOWN",
+                    "pitch_deg": latest_features.head_pose.pitch_deg if latest_features else 0.0,
+                    "yaw_deg": latest_features.head_pose.yaw_deg if latest_features else 0.0,
+                    "roll_deg": latest_features.head_pose.roll_deg if latest_features else 0.0,
+                    "rel_pitch_deg": latest_features.head_pose.rel_pitch_deg if latest_features else 0.0,
+                    "rel_yaw_deg": latest_features.head_pose.rel_yaw_deg if latest_features else 0.0,
+                    "rel_roll_deg": latest_features.head_pose.rel_roll_deg if latest_features else 0.0,
+                    "ear_left": latest_features.ear.left_ear if latest_features else 0.0,
+                    "ear_right": latest_features.ear.right_ear if latest_features else 0.0,
+                    "ear_compensated": latest_features.ear.compensated_ear if latest_features else 0.0,
+                    "ear_closure_threshold": latest_features.ear.closure_threshold if latest_features else 0.20,
+                    "is_eye_closed": latest_features.ear.is_closed if latest_features else False,
+                    "is_geometric_valid": latest_features.ear.is_geometric_valid if latest_features else False,
+                    "mar": latest_features.mar.mar if latest_features else 0.0,
+                    "is_yawning": bool(getattr(latest_features.mar, "is_yawn_in_progress", False)) if latest_features else False,
+                    "total_blinks": latest_features.blink.total_blink_count if latest_features else 0,
+                    "total_yawns": latest_features.mar.total_yawn_count if latest_features else 0,
+                    "perclos_pct": latest_features.perclos.perclos_pct if latest_features else 0.0,
+                    "drowsiness_state": latest_assessment.state.value if latest_assessment else "NORMAL",
+                    "drowsiness_severity": latest_assessment.severity if latest_assessment else 0,
+                    "primary_reason": latest_assessment.primary_reason_text if latest_assessment is not None else "NONE",
+                    "luminance": latest_quality.mean_luminance if latest_quality else 0.0,
+                    "blur_variance": latest_quality.blur_variance if latest_quality else 0.0,
+                    "optical_status": latest_quality.status.value if latest_quality else "UNKNOWN",
+                    "inference_latency_ms": latest_landmark.inference_latency_ms if latest_landmark else 0.0,
+                }
+                session_recorder.record_frame(
+                    frame=packet.frame,
+                    timestamp_ms=packet.timestamp_ms,
+                    telemetry=t_dict,
+                )
 
             # Measure consumer display FPS every 0.5s
             elapsed = loop_now - fps_timer
@@ -780,6 +952,22 @@ def run_benchmark(
                     draw_eyes=draw_eyes,
                     draw_irises=True,
                 )
+
+                # Optional Camera Positioning & Framing Guide Overlay
+                if show_position_guide and (calibration_session is None or not calibration_session.is_running):
+                    pos_res = evaluate_camera_position(
+                        landmark_result=latest_landmark,
+                        head_pose=latest_features.head_pose if latest_features else None,
+                        quality=latest_quality,
+                        frame_width=f_w,
+                        frame_height=f_h,
+                    )
+                    rendered_frame = draw_positioning_guide(
+                        canvas=rendered_frame,
+                        guide_res=pos_res,
+                        is_calibrating=False,
+                    )
+
                 # 2. Render diagnostic HUD cleanly on top of landmarks with zero overlap
                 hud_frame = draw_diagnostic_hud(
                     frame=rendered_frame,
@@ -798,6 +986,12 @@ def run_benchmark(
                     calibration_info=calib_info,
                     calibration_banner=calibration_banner_text,
                     calibrated_profile_name=calibrated_label,
+                    recording_info=(
+                        session_recorder.is_recording,
+                        session_recorder.elapsed_sec,
+                        session_recorder.frame_count,
+                    ) if session_recorder is not None else None,
+                    show_position_guide=show_position_guide,
                 )
                 cv2.imshow(window_name, hud_frame)
 
@@ -806,6 +1000,7 @@ def run_benchmark(
                     logger.info("User requested termination.")
                     break
                 elif key in (ord("c"), ord("C")):
+                    show_position_guide = False
                     if calibration_session is None or not calibration_session.is_running:
                         calibration_session = GuidedCalibrationSession(
                             driver_id=driver_id,
@@ -819,6 +1014,9 @@ def run_benchmark(
                         calibration_banner_text = "CALIBRATION FAILED: Cancelled by user"
                         calibration_banner_until = loop_now + 5.0
                         logger.info("Cancelled ongoing calibration.")
+                elif key in (ord("p"), ord("P")):
+                    show_position_guide = not show_position_guide
+                    logger.info("Camera positioning guide toggled: %s", show_position_guide)
                 elif key in (ord("m"), ord("M")):
                     if hasattr(camera, "toggle_flip_horizontal"):
                         camera.toggle_flip_horizontal()
@@ -839,8 +1037,31 @@ def run_benchmark(
                             "Failed to save snapshot to %s (cv2.imwrite returned False).",
                             snapshot_filename,
                         )
+                elif key in (ord("r"), ord("R")):
+                    if session_recorder is None or not session_recorder.is_recording:
+                        f_w = actual_res[0] if actual_res[0] > 0 else target_width
+                        f_h = actual_res[1] if actual_res[1] > 0 else target_height
+                        session_recorder = SessionRecorder(
+                            driver_id=driver_id,
+                            frame_width=f_w,
+                            frame_height=f_h,
+                            fps=camera.get_actual_fps() or float(target_fps),
+                            source_identifier=safe_identifier,
+                            profile_metadata={"profile_label": calibrated_label},
+                        )
+                        if session_recorder.start():
+                            logger.info("Started session recording in: %s", session_recorder.session_dir)
+                    else:
+                        summary = session_recorder.stop()
+                        logger.info(
+                            "Stopped session recording: %d frames saved in %s",
+                            summary.get("total_frames", 0),
+                            session_recorder.session_dir,
+                        )
 
     finally:
+        if "session_recorder" in locals() and session_recorder is not None and session_recorder.is_recording:
+            session_recorder.stop()
         total_time = time.monotonic() - start_time
         buffer_stats = camera.get_buffer_stats()
         hardware_fps = camera.get_actual_fps()
@@ -973,6 +1194,12 @@ def main() -> None:
         default="driver_default",
         help="Driver identifier for calibration profile saving (default: driver_default)",
     )
+    parser.add_argument(
+        "--record",
+        dest="record_session",
+        action="store_true",
+        help="Record synchronized video (.mp4) and per-frame telemetry (.csv/.jsonl)",
+    )
 
     args = parser.parse_args()
 
@@ -997,6 +1224,7 @@ def main() -> None:
             profile_arg=args.profile,
             start_calibrating=args.calibrate,
             driver_id=args.driver_id,
+            record_session=args.record_session,
         )
     )
 

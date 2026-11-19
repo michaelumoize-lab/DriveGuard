@@ -175,5 +175,57 @@ class ProfileStore:
 
             return deleted
 
+    def rollback_new_profile(
+        self,
+        driver_id: str,
+        previous_content: Optional[str | bytes] = None,
+    ) -> bool:
+        """
+        Roll back a newly persisted profile file by driver_id under thread lock.
+        - If previous_content is None (new profile creation failed), unlinks the primary profile.
+        - If previous_content is provided (profile replacement failed), restores exact previous contents.
+        - Strictly preserves any existing quarantined corrupt files (.json.corrupt).
+        - If rollback fails, raises an exception and logs diagnostic error; never claims success.
+        """
+        with self._lock:
+            try:
+                p = self._file_path(driver_id)
+            except ValueError as err:
+                logger.error(f"[ProfileStore] Path resolution error during rollback for driver '{driver_id}': {err}")
+                return False
+
+            if previous_content is None:
+                if p.is_file():
+                    try:
+                        p.unlink()
+                        logger.info(f"[ProfileStore] Successfully unlinked newly created profile for driver '{driver_id}'.")
+                        return True
+                    except Exception as exc:
+                        logger.critical(f"[ProfileStore] Failed to unlink profile {p} during rollback: {exc}")
+                        raise RuntimeError(f"Rollback failed to unlink new profile: {exc}") from exc
+                return False
+            else:
+                try:
+                    payload = previous_content if isinstance(previous_content, str) else previous_content.decode("utf-8")
+                    temp_file = tempfile.NamedTemporaryFile(
+                        dir=self.storage_dir,
+                        prefix="prof_rb_",
+                        suffix=".tmp",
+                        delete=False,
+                        mode="w",
+                        encoding="utf-8",
+                    )
+                    temp_path = Path(temp_file.name)
+                    temp_file.write(payload)
+                    temp_file.flush()
+                    os.fsync(temp_file.fileno())
+                    temp_file.close()
+                    os.replace(temp_path, p)
+                    logger.info(f"[ProfileStore] Successfully restored previous persisted profile for driver '{driver_id}'.")
+                    return True
+                except Exception as exc:
+                    logger.critical(f"[ProfileStore] Failed to restore previous profile for driver '{driver_id}': {exc}")
+                    raise RuntimeError(f"Rollback failed to restore previous profile: {exc}") from exc
+
 
 profile_store = ProfileStore()

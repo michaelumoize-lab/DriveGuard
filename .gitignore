@@ -60,5 +60,6 @@ Thumbs.db
 snapshot_*.png
 skills-lock.json
 
-# Diagnostic camera snapshots (Privacy by Default)
-snapshot_*.png
+# Local recordings, user datasets & cockpit test captures
+data/
+
