@@ -1,15 +1,15 @@
 """
 DriveGuard — Phase 6, Task 2: Prolonged Blink Threshold Alignment Unit Tests.
 
-Comprehensive validation of the aligned 350 ms prolonged-blink boundary:
-1. 349 ms: completed blink is NORMAL; temporal prolonged count is zero.
-2. Exactly 350 ms: completed blink is NORMAL; temporal prolonged count is zero.
-3. 350.1 ms: completed blink is PROLONGED; temporal prolonged count is one.
+Comprehensive validation of the aligned 500 ms prolonged-blink boundary:
+1. 499 ms: completed blink is NORMAL; temporal prolonged count is zero.
+2. Exactly 500 ms: completed blink is NORMAL; temporal prolonged count is zero.
+3. 500.1 ms: completed blink is PROLONGED; temporal prolonged count is one.
 4. Exactly 800 ms: completed blink is MICROSLEEP_CANDIDATE; temporal prolonged count includes it.
-5. Kinematic reliability separation: a valid 400 ms completed blink with is_kinematics_reliable=False
+5. Kinematic reliability separation: a valid 600 ms completed blink with is_kinematics_reliable=False
    remains classified and counted as prolonged, contributes to mean blink duration, but is excluded
    from mean RCR.
-6. Average-duration rule: three completed 350 ms blinks remain individually NORMAL, with prolonged
+6. Average-duration rule: three completed 500 ms blinks remain individually NORMAL, with prolonged
    count zero, but the existing DecisionEngine average-duration rule still triggers at its documented boundary.
 7. Rolling window: a prolonged blink expires from prolonged_blink_count_60s after it leaves the 60-second window.
 8. Invalid configuration: a prolonged threshold greater than or equal to the microsleep threshold
@@ -17,7 +17,7 @@ Comprehensive validation of the aligned 350 ms prolonged-blink boundary:
 9. Left-censored closure: a closure interrupted by a sampling gap must not produce a fabricated
    completed prolonged blink when the eye reopens.
 10. Ongoing closure boundary: verify that the ongoing closure enters PROLONGED_CLOSURE at the configured
-    threshold, without incorrectly creating a completed blink.
+    threshold (500 ms), without incorrectly creating a completed blink.
 """
 
 from __future__ import annotations
@@ -167,10 +167,10 @@ def generate_detector_blink(
 # Unit Tests (1-10)
 # ==============================================================================
 
-def test_1_blink_349ms_completed_is_normal_and_count_zero() -> None:
-    """1. 349 ms: completed blink is NORMAL; temporal prolonged count is zero."""
-    blink, snap, _ = generate_detector_blink(349.0, start_time_offset=1000.0)
-    assert round(blink.duration_ms, 2) == 349.0
+def test_1_blink_499ms_completed_is_normal_and_count_zero() -> None:
+    """1. 499 ms: completed blink is NORMAL; temporal prolonged count is zero."""
+    blink, snap, _ = generate_detector_blink(499.0, start_time_offset=1000.0)
+    assert round(blink.duration_ms, 2) == 499.0
     assert blink.classification == BlinkClassification.NORMAL
     assert snap.prolonged_blink_count == 0
 
@@ -180,13 +180,13 @@ def test_1_blink_349ms_completed_is_normal_and_count_zero() -> None:
 
     assert metrics.prolonged_blink_count_60s == 0
     assert metrics.blink_count_60s == 1
-    assert round(metrics.mean_blink_duration_ms_60s, 2) == 349.0
+    assert round(metrics.mean_blink_duration_ms_60s, 2) == 499.0
 
 
-def test_2_blink_exactly_350ms_completed_is_normal_and_count_zero() -> None:
-    """2. Exactly 350 ms: completed blink is NORMAL; temporal prolonged count is zero."""
-    blink, snap, _ = generate_detector_blink(350.0, start_time_offset=1000.0)
-    assert round(blink.duration_ms, 2) == 350.0
+def test_2_blink_exactly_500ms_completed_is_normal_and_count_zero() -> None:
+    """2. Exactly 500 ms: completed blink is NORMAL; temporal prolonged count is zero."""
+    blink, snap, _ = generate_detector_blink(500.0, start_time_offset=1000.0)
+    assert round(blink.duration_ms, 2) == 500.0
     assert blink.classification == BlinkClassification.NORMAL
     assert snap.prolonged_blink_count == 0
 
@@ -196,13 +196,13 @@ def test_2_blink_exactly_350ms_completed_is_normal_and_count_zero() -> None:
 
     assert metrics.prolonged_blink_count_60s == 0
     assert metrics.blink_count_60s == 1
-    assert round(metrics.mean_blink_duration_ms_60s, 2) == 350.0
+    assert round(metrics.mean_blink_duration_ms_60s, 2) == 500.0
 
 
-def test_3_blink_350_1ms_completed_is_prolonged_and_count_one() -> None:
-    """3. 350.1 ms: completed blink is PROLONGED; temporal prolonged count is one."""
-    blink, snap, _ = generate_detector_blink(350.1, start_time_offset=1000.0)
-    assert abs(blink.duration_ms - 350.1) < 1e-3
+def test_3_blink_500_1ms_completed_is_prolonged_and_count_one() -> None:
+    """3. 500.1 ms: completed blink is PROLONGED; temporal prolonged count is one."""
+    blink, snap, _ = generate_detector_blink(500.1, start_time_offset=1000.0)
+    assert abs(blink.duration_ms - 500.1) < 1e-3
     assert blink.classification == BlinkClassification.PROLONGED
     assert snap.prolonged_blink_count == 1
 
@@ -212,7 +212,7 @@ def test_3_blink_350_1ms_completed_is_prolonged_and_count_one() -> None:
 
     assert metrics.prolonged_blink_count_60s == 1
     assert metrics.blink_count_60s == 1
-    assert abs(metrics.mean_blink_duration_ms_60s - 350.1) < 1e-3
+    assert abs(metrics.mean_blink_duration_ms_60s - 500.1) < 1e-3
 
 
 def test_4_blink_exactly_800ms_completed_is_microsleep_candidate_and_counted_in_prolonged() -> None:
@@ -226,7 +226,7 @@ def test_4_blink_exactly_800ms_completed_is_microsleep_candidate_and_counted_in_
     features = make_test_features(timestamp_ms=blink.end_ts_ms, blink_snapshot=snap)
     metrics = analyzer.update(features)
 
-    # Microsleep candidates are prolonged by definition (>=800ms > 350ms) and MUST be counted
+    # Microsleep candidates are prolonged by definition (>=800ms > 500ms) and MUST be counted
     assert metrics.prolonged_blink_count_60s == 1
     assert metrics.blink_count_60s == 1
     assert round(metrics.mean_blink_duration_ms_60s, 2) == 800.0
@@ -234,24 +234,24 @@ def test_4_blink_exactly_800ms_completed_is_microsleep_candidate_and_counted_in_
 
 def test_5_kinematic_reliability_separation() -> None:
     """
-    5. Kinematic reliability separation: a valid 400 ms completed blink with
+    5. Kinematic reliability separation: a valid 600 ms completed blink with
     is_kinematics_reliable=False remains classified and counted as prolonged,
     contributes to mean blink duration, but is excluded from mean RCR.
     """
-    # Drive detector to produce 400ms duration with reopen_dt <= 5ms
+    # Drive detector to produce 600ms duration with reopen_dt <= 5ms
     det = BlinkKinematicsDetector()
     det.update(timestamp_ms=1000.0, left_ear=0.30, right_ear=0.30, ear=0.30)
     det.update(timestamp_ms=1050.0, left_ear=0.15, right_ear=0.15, ear=0.15)
-    for t in range(1100, 1400, 50):
+    for t in range(1100, 1600, 50):
         det.update(timestamp_ms=float(t), left_ear=0.15, right_ear=0.15, ear=0.15)
-    det.update(timestamp_ms=1416.0, left_ear=0.10, right_ear=0.10, ear=0.10)
-    # Fast reopen step in 5.71ms: ratio=0.7 => t_end=1420.0, duration=400.0ms, reopen_dt=4.0ms <= 5ms
-    curr_t = 1416.0 + 4.0 / 0.7
+    det.update(timestamp_ms=1616.0, left_ear=0.10, right_ear=0.10, ear=0.10)
+    # Fast reopen step in 5.71ms: ratio=0.7 => t_end=1620.0, duration=600.0ms, reopen_dt=4.0ms <= 5ms
+    curr_t = 1616.0 + 4.0 / 0.7
     snap_unreliable = det.update(timestamp_ms=curr_t, left_ear=0.30, right_ear=0.30, ear=0.30)
     b_unreliable = snap_unreliable.completed_blink
 
     assert b_unreliable is not None
-    assert round(b_unreliable.duration_ms, 2) == 400.0
+    assert round(b_unreliable.duration_ms, 2) == 600.0
     assert b_unreliable.is_kinematics_reliable is False
     assert b_unreliable.rcr == 0.0
     assert b_unreliable.classification == BlinkClassification.PROLONGED
@@ -261,7 +261,7 @@ def test_5_kinematic_reliability_separation() -> None:
     m1 = analyzer.update(f1)
 
     assert m1.prolonged_blink_count_60s == 1
-    assert round(m1.mean_blink_duration_ms_60s, 2) == 400.0
+    assert round(m1.mean_blink_duration_ms_60s, 2) == 600.0
     # Because kinematics was unreliable, RCR of 0.0 was excluded from rolling mean RCR
     assert m1.mean_rcr_60s == 1.0
 
@@ -285,16 +285,16 @@ def test_5_kinematic_reliability_separation() -> None:
     m2 = analyzer.update(f2)
 
     assert m2.prolonged_blink_count_60s == 1
-    assert round(m2.mean_blink_duration_ms_60s, 2) == 300.0  # (400 + 200)/2
+    assert round(m2.mean_blink_duration_ms_60s, 2) == 400.0  # (600 + 200)/2
     # Only the reliable blink's RCR (0.85) is included in mean_rcr_60s
     assert round(m2.mean_rcr_60s, 2) == 0.85
 
 
 def test_6_average_duration_rule_triggers_warning_at_documented_boundary() -> None:
     """
-    6. Average-duration rule: three completed 350 ms blinks remain individually NORMAL,
+    6. Average-duration rule: three completed 500 ms blinks remain individually NORMAL,
     with prolonged count zero, but the existing DecisionEngine average-duration rule still
-    triggers at its documented boundary (mean_blink_duration_ms_60s >= 350.0 with >= 3 blinks).
+    triggers at its documented boundary (mean_blink_duration_ms_60s >= 500.0 with >= 3 blinks).
     """
     engine = DrowsinessEngine()
 
@@ -302,12 +302,12 @@ def test_6_average_duration_rule_triggers_warning_at_documented_boundary() -> No
     assessment = None
     for i in range(3):
         ts += 2000.0
-        # Exactly 350.0 ms duration, classified as NORMAL
+        # Exactly 500.0 ms duration, classified as NORMAL
         b = BlinkEvent(
-            start_ts_ms=ts - 350.0,
-            min_ts_ms=ts - 175.0,
+            start_ts_ms=ts - 500.0,
+            min_ts_ms=ts - 250.0,
             end_ts_ms=ts,
-            duration_ms=350.0,
+            duration_ms=500.0,
             open_ear_before=0.30,
             min_ear=0.10,
             amplitude=0.20,
@@ -322,25 +322,25 @@ def test_6_average_duration_rule_triggers_warning_at_documented_boundary() -> No
         assessment = engine.evaluate(f)
 
     assert assessment is not None
-    # Discrete counter is 0 because all 3 blinks were individually NORMAL (<= 350.0ms)
+    # Discrete counter is 0 because all 3 blinks were individually NORMAL (<= 500.0ms)
     assert assessment.temporal_metrics.prolonged_blink_count_60s == 0
-    assert assessment.temporal_metrics.mean_blink_duration_ms_60s == 350.0
+    assert assessment.temporal_metrics.mean_blink_duration_ms_60s == 500.0
     assert assessment.temporal_metrics.blink_count_60s == 3
     # Aggregate sluggishness rule in DecisionEngine triggers DROWSINESS_WARNING
     assert assessment.state == DrowsinessState.DROWSINESS_WARNING
     assert any(r.code == ReasonCode.PROLONGED_BLINK for r in assessment.decision.reasons)
 
-    # Control verification: 3 blinks averaging 340.0 ms do NOT trigger the warning
+    # Control verification: 3 blinks averaging 480.0 ms do NOT trigger the warning
     control_engine = DrowsinessEngine()
     ts_ctrl = 1000.0
     ctrl_assessment = None
     for i in range(3):
         ts_ctrl += 2000.0
         b_ctrl = BlinkEvent(
-            start_ts_ms=ts_ctrl - 340.0,
-            min_ts_ms=ts_ctrl - 170.0,
+            start_ts_ms=ts_ctrl - 480.0,
+            min_ts_ms=ts_ctrl - 240.0,
             end_ts_ms=ts_ctrl,
-            duration_ms=340.0,
+            duration_ms=480.0,
             open_ear_before=0.30,
             min_ear=0.10,
             amplitude=0.20,
@@ -355,7 +355,7 @@ def test_6_average_duration_rule_triggers_warning_at_documented_boundary() -> No
         ctrl_assessment = control_engine.evaluate(f_ctrl)
 
     assert ctrl_assessment is not None
-    assert ctrl_assessment.temporal_metrics.mean_blink_duration_ms_60s == 340.0
+    assert ctrl_assessment.temporal_metrics.mean_blink_duration_ms_60s == 480.0
     assert ctrl_assessment.state == DrowsinessState.NORMAL
     assert not any(r.code == ReasonCode.PROLONGED_BLINK for r in ctrl_assessment.decision.reasons)
 
@@ -457,32 +457,32 @@ def test_9_left_censored_closure_interrupted_by_gap() -> None:
 def test_10_ongoing_closure_boundary() -> None:
     """
     10. Ongoing closure boundary: verify that the ongoing closure enters PROLONGED_CLOSURE
-    at the configured threshold (350 ms), without incorrectly creating a completed blink.
+    at the configured threshold (500 ms), without incorrectly creating a completed blink.
     """
-    det = BlinkKinematicsDetector(prolonged_duration_ms=350.0)
+    det = BlinkKinematicsDetector(prolonged_duration_ms=500.0)
     det.update(timestamp_ms=1000.0, left_ear=0.30, right_ear=0.30, ear=0.30)
     det.update(timestamp_ms=1050.0, left_ear=0.10, right_ear=0.10, ear=0.10)
     closure_start = det._closure_start_ts
     assert closure_start is not None
 
     # Stream intermediate closed frames
-    t_349 = closure_start + 349.0
+    t_499 = closure_start + 499.0
     t = 1100.0
-    while t < t_349 - 25.0:
+    while t < t_499 - 25.0:
         det.update(timestamp_ms=t, left_ear=0.10, right_ear=0.10, ear=0.10)
         t += 50.0
 
-    # At 349.0 ms of ongoing closure: still CLOSED
-    s_before = det.update(timestamp_ms=t_349, left_ear=0.10, right_ear=0.10, ear=0.10)
+    # At 499.0 ms of ongoing closure: still CLOSED
+    s_before = det.update(timestamp_ms=t_499, left_ear=0.10, right_ear=0.10, ear=0.10)
     assert s_before.state == BlinkState.CLOSED
-    assert s_before.current_closure_duration_ms == 349.0
+    assert s_before.current_closure_duration_ms == 499.0
     assert s_before.completed_blink is None
     assert s_before.is_eye_closed is True
 
-    # At exactly 350.0 ms of ongoing closure: transitions to PROLONGED_CLOSURE
-    t_350 = closure_start + 350.0
-    s_at = det.update(timestamp_ms=t_350, left_ear=0.10, right_ear=0.10, ear=0.10)
+    # At exactly 500.0 ms of ongoing closure: transitions to PROLONGED_CLOSURE
+    t_500 = closure_start + 500.0
+    s_at = det.update(timestamp_ms=t_500, left_ear=0.10, right_ear=0.10, ear=0.10)
     assert s_at.state == BlinkState.PROLONGED_CLOSURE
-    assert s_at.current_closure_duration_ms == 350.0
+    assert s_at.current_closure_duration_ms == 500.0
     assert s_at.completed_blink is None
     assert s_at.is_eye_closed is True

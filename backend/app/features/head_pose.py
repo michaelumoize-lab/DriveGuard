@@ -234,7 +234,7 @@ def build_neutral_matrix(
         return neutral_rot_mat.astype(np.float64)
 
     cam_yaw = neutral_yaw_deg if is_mirrored else -neutral_yaw_deg
-    cam_pitch = neutral_pitch_deg
+    cam_pitch = -neutral_pitch_deg
     psi = float(np.radians(cam_yaw))
     theta = float(np.radians(cam_pitch))
 
@@ -308,10 +308,10 @@ def classify_pose_zone(
     Classify continuous 3D Euler angles into discrete cockpit zones relative to driver neutral posture.
 
     Calibrated according to Euro NCAP DMS 2026 and SAE J941 automotive ergonomics with strict priority:
-    1. OUT_OF_BOUNDS: |rel_yaw| > 50° OR |rel_pitch| > 38° (extreme head turn outside cabin envelope)
+    1. OUT_OF_BOUNDS: rel_yaw > 50° OR rel_yaw < -70° OR |rel_pitch| > 38° (extreme head turn outside cabin envelope)
     2. LEFT_MIRROR: rel_yaw >= 14.0° (driver-side wing mirror check, taking precedence over downward tilt)
-    3. RIGHT_MIRROR: rel_yaw <= -14.0° (center rearview or passenger mirror check, -50° to -14°)
-    4. DASHBOARD: rel_pitch <= -9.0° CONSTRAINED to forward yaw cone (|rel_yaw| < 14.0°)
+    3. RIGHT_MIRROR: rel_yaw <= -14.0° (center rearview or passenger mirror check, -70° to -14°)
+    4. DASHBOARD: rel_pitch <= -6.0° CONSTRAINED to forward yaw cone (|rel_yaw| < 16.0°)
     5. CENTER: forward road view through windshield
 
     Includes transition hysteresis deadband (default 1.5°) to prevent boundary chattering when
@@ -321,8 +321,10 @@ def classify_pose_zone(
     rel_yaw = yaw_deg - neutral_yaw_deg
 
     # 1. OUT_OF_BOUNDS: Extreme head orientation check
+    # Euro NCAP DMS 2026 / SAE J941: Near-side mirror glances are bounded within +50°,
+    # while far-side (passenger) mirror glances on oblique/vent mounts extend to -68° relative yaw.
     oob_h = hysteresis_deg if current_zone == PoseZone.OUT_OF_BOUNDS else 0.0
-    if abs(rel_yaw) > (50.0 - oob_h) or abs(rel_pitch) > (38.0 - oob_h):
+    if rel_yaw > (50.0 - oob_h) or rel_yaw < (-70.0 + oob_h) or abs(rel_pitch) > (38.0 - oob_h):
         return PoseZone.OUT_OF_BOUNDS
 
     # 2. LEFT_MIRROR: Lateral driver-side glance
@@ -337,7 +339,7 @@ def classify_pose_zone(
 
     # 4. DASHBOARD: Downward glance CONSTRAINED within the forward road yaw cone
     dash_h = hysteresis_deg if current_zone == PoseZone.DASHBOARD else 0.0
-    if rel_pitch <= (-9.0 + dash_h) and abs(rel_yaw) < 14.0:
+    if rel_pitch <= (-6.0 + dash_h) and abs(rel_yaw) < 16.0:
         return PoseZone.DASHBOARD
 
     # 5. CENTER: Nominal forward road orientation
@@ -549,16 +551,70 @@ def estimate_head_pose(
                 )
                 if valid:
                     rvec, tvec = rvec_cand, tvec_cand
-                else:
-                    return invalid_result
-            else:
-                return invalid_result
         except cv2.error:
-            return invalid_result
+            pass
 
-    # Convert rotation vector to 3x3 rotation matrix
-    rot_mat, _ = cv2.Rodrigues(rvec)
-    if not is_valid_rotation_matrix(rot_mat):
+    if rvec is not None and tvec is not None:
+        # Convert rotation vector to 3x3 rotation matrix
+        rot_mat, _ = cv2.Rodrigues(rvec)
+        if not is_valid_rotation_matrix(rot_mat):
+            rvec, tvec = None, None
+
+    if rvec is None or tvec is None:
+        # 2D Landmark Profile Fallback: When 3D PnP fails due to severe yaw foreshortening/far-eye occlusion
+        # (e.g. driver looking out wing mirror at 50°-65° profile relative to an oblique camera):
+        # Estimate lateral orientation from horizontal landmark asymmetry (nose vs eye corners).
+        if len(image_pts) >= len(SOLVEPNP_LANDMARK_INDICES):
+            try:
+                nose_pt = image_pts[0]       # idx 1: nose tip
+                chin_pt = image_pts[1]       # idx 152: chin
+                left_eye_pt = image_pts[2]   # idx 33: left outer corner
+                right_eye_pt = image_pts[3]  # idx 263: right outer corner
+                sellion_pt = image_pts[6]    # idx 6: sellion / bridge
+
+                # Anatomical sanity check: reject corrupted/non-face landmark geometries
+                is_anatomically_plausible = (
+                    sellion_pt[1] < nose_pt[1] < chin_pt[1]
+                    and abs(nose_pt[0] - sellion_pt[0]) < 0.15 * frame_width
+                )
+                if is_anatomically_plausible:
+                    eye_span_x = float(right_eye_pt[0] - left_eye_pt[0])
+                    if abs(eye_span_x) > 10.0:
+                        nose_ratio = float((nose_pt[0] - left_eye_pt[0]) / eye_span_x)
+                        approx_rel_yaw = None
+                        if is_mirrored:
+                            if nose_ratio < 0.12:
+                                approx_rel_yaw = 28.0
+                            elif nose_ratio > 0.88:
+                                approx_rel_yaw = -28.0
+                        else:
+                            if nose_ratio > 0.88:
+                                approx_rel_yaw = 28.0
+                            elif nose_ratio < 0.12:
+                                approx_rel_yaw = -28.0
+
+                        if approx_rel_yaw is not None:
+                            fallback_zone = classify_pose_zone(
+                                pitch_deg=0.0,
+                                yaw_deg=approx_rel_yaw + neutral_yaw_deg,
+                                neutral_pitch_deg=neutral_pitch_deg,
+                                neutral_yaw_deg=neutral_yaw_deg,
+                                current_zone=current_zone,
+                            )
+                            return HeadPoseResult(
+                                pitch_deg=0.0,
+                                yaw_deg=approx_rel_yaw + neutral_yaw_deg,
+                                roll_deg=0.0,
+                                zone=fallback_zone,
+                                is_looking_away=True,
+                                is_valid=True,
+                                rel_pitch_deg=0.0,
+                                rel_yaw_deg=approx_rel_yaw,
+                                rel_roll_deg=0.0,
+                                rot_mat=np.eye(3, dtype=np.float64),
+                            )
+            except (IndexError, ZeroDivisionError, TypeError):
+                pass
         return invalid_result
 
     # Build calibrated neutral matrix: R_neutral
@@ -586,17 +642,17 @@ def estimate_head_pose(
     # On a mirrored camera (selfie/flip), the horizontal axis is already inverted.
     if is_mirrored:
         yaw = abs_raw_yaw
-        pitch = abs_raw_pitch
+        pitch = -abs_raw_pitch
         roll = -abs_raw_roll
         rel_yaw = rel_raw_yaw
-        rel_pitch = rel_raw_pitch
+        rel_pitch = -rel_raw_pitch
         rel_roll = -rel_raw_roll
     else:
         yaw = -abs_raw_yaw
-        pitch = abs_raw_pitch
+        pitch = -abs_raw_pitch
         roll = abs_raw_roll
         rel_yaw = -rel_raw_yaw
-        rel_pitch = rel_raw_pitch
+        rel_pitch = -rel_raw_pitch
         rel_roll = rel_raw_roll
 
     zone = classify_pose_zone(

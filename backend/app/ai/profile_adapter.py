@@ -76,6 +76,11 @@ def profile_to_dto(profile: DriverBehaviourProfile) -> DriverProfileDTO:
         neutral_pitch_deg=round(profile.neutral_pitch_deg, 2),
         neutral_yaw_deg=round(profile.neutral_yaw_deg, 2),
         calibration_reliability=round(profile.calibration_reliability, 3),
+        neutral_rot_mat=(
+            [[round(float(val), 6) for val in row] for row in profile.neutral_rot_mat]
+            if getattr(profile, "neutral_rot_mat", None) is not None
+            else None
+        ),
     )
 
 
@@ -152,4 +157,9 @@ def dto_to_profile(dto: DriverProfileDTO) -> DriverBehaviourProfile:
         sensitivity_level=getattr(dto, "sensitivity_level", "STANDARD") or "STANDARD",
         version=dto.version,
         calibrated_at=dto.calibrated_at,
+        neutral_rot_mat=(
+            np.asarray(dto.neutral_rot_mat, dtype=np.float64)
+            if getattr(dto, "neutral_rot_mat", None) is not None
+            else None
+        ),
     )

@@ -456,11 +456,11 @@ def test_12_timer2_initiation_rejects_unreliable_confidence():
 
 
 # ==============================================================================
-# 5. Timer 2 Continuation & Blinking Under 350ms
+# 5. Timer 2 Continuation & Blinking Under 500ms
 # ==============================================================================
 
-def test_13_normal_blinks_under_350ms_continue_timer2():
-    """Normal physiological blinks (< 350ms) do NOT reset or cancel Timer 2."""
+def test_13_normal_blinks_under_500ms_continue_timer2():
+    """Normal physiological blinks (< 500ms) do NOT reset or cancel Timer 2."""
     engine = DecisionEngine()
     conf = make_conf(True)
 
@@ -477,14 +477,14 @@ def test_13_normal_blinks_under_350ms_continue_timer2():
         engine.evaluate(make_metrics(timestamp_ms=float(t), is_eye_closed=False), conf)
     assert engine._alert_recovery_start_ts_ms == 100.0
 
-    # t=600ms: Normal blink begins (closure duration 100ms < 350ms)
+    # t=600ms: Normal blink begins (closure duration 100ms < 500ms)
     m2 = make_metrics(timestamp_ms=600.0, active_closure_ms=100.0, is_eye_closed=True)
     r2 = engine.evaluate(m2, conf)
     assert r2.alert_active is True
     # Crucial assertion: timer must continue, NOT restart to 600.0 and NOT become None
     assert engine._alert_recovery_start_ts_ms == 100.0
 
-    # t=700ms: Normal blink peak (closure duration 200ms < 350ms)
+    # t=700ms: Normal blink peak (closure duration 200ms < 500ms)
     m3 = make_metrics(timestamp_ms=700.0, active_closure_ms=200.0, is_eye_closed=True)
     r3 = engine.evaluate(m3, conf)
     assert r3.alert_active is True
@@ -511,8 +511,8 @@ def test_13_normal_blinks_under_350ms_continue_timer2():
 # 6. Timer 2 Cancellation Scenarios
 # ==============================================================================
 
-def test_14_prolonged_blink_ge_350ms_cancels_timer2():
-    """Prolonged blink (active_closure_ms >= 350ms) cancels Timer 2."""
+def test_14_prolonged_blink_ge_500ms_cancels_timer2():
+    """Prolonged blink (active_closure_ms >= 500ms) cancels Timer 2."""
     engine = DecisionEngine()
     conf = make_conf(True)
 
@@ -523,17 +523,27 @@ def test_14_prolonged_blink_ge_350ms_cancels_timer2():
     engine.evaluate(make_metrics(timestamp_ms=100.0, is_eye_closed=False), conf)
     assert engine._alert_recovery_start_ts_ms == 100.0
 
-    # t=500ms: Closure reaches exactly 350.0ms (prolonged blink threshold)
-    m2 = make_metrics(timestamp_ms=500.0, active_closure_ms=350.0, is_eye_closed=True)
+    # Stream intermediate frames so max_sampling_gap_ms (250ms) is not exceeded
+    engine.evaluate(make_metrics(timestamp_ms=200.0, active_closure_ms=100.0, is_eye_closed=True), conf)
+    assert engine._alert_recovery_start_ts_ms == 100.0
+
+    engine.evaluate(make_metrics(timestamp_ms=300.0, active_closure_ms=200.0, is_eye_closed=True), conf)
+    assert engine._alert_recovery_start_ts_ms == 100.0
+
+    engine.evaluate(make_metrics(timestamp_ms=500.0, active_closure_ms=400.0, is_eye_closed=True), conf)
+    assert engine._alert_recovery_start_ts_ms == 100.0
+
+    # t=600ms: Closure reaches exactly 500.0ms (prolonged blink threshold)
+    m2 = make_metrics(timestamp_ms=600.0, active_closure_ms=500.0, is_eye_closed=True)
     r2 = engine.evaluate(m2, conf)
     assert r2.alert_active is True
     # Timer 2 must be canceled
     assert engine._alert_recovery_start_ts_ms is None
 
-    # t=600ms: Eyes open again, recovery must start fresh from 600.0ms
-    m3 = make_metrics(timestamp_ms=600.0, is_eye_closed=False)
+    # t=700ms: Eyes open again, recovery must start fresh from 700.0ms
+    m3 = make_metrics(timestamp_ms=700.0, is_eye_closed=False)
     engine.evaluate(m3, conf)
-    assert engine._alert_recovery_start_ts_ms == 600.0
+    assert engine._alert_recovery_start_ts_ms == 700.0
 
 
 def test_15_unknown_eye_state_cancels_timer2():

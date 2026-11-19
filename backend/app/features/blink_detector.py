@@ -9,7 +9,7 @@ DriveGuard — Temporal Blink Kinematics & Sub-Frame Event Detector (Phase 5).
 2. Why it exists:
    Blink duration and velocity are critical physiological indicators of drowsiness:
    - Alert blinks: Snappy, short (100–250 ms), with high reopening-to-closing ratio.
-   - Drowsy blinks: Sluggish eyelid reopening (prolonged duration > 350 ms, low RCR).
+   - Drowsy blinks: Sluggish eyelid reopening (prolonged duration > 500 ms, low RCR).
    - Microsleeps: Unbroken closure >= 800 ms.
    Sub-frame interpolation prevents quantisation error from discrete frame rates.
 
@@ -54,8 +54,8 @@ class BlinkState(str, Enum):
 
 class BlinkClassification(str, Enum):
     """Deterministic classification of observed blinks and closures."""
-    NORMAL = "NORMAL"                         # 40ms <= duration <= 350ms
-    PROLONGED = "PROLONGED"                   # 350ms < duration < 800ms
+    NORMAL = "NORMAL"                         # 40ms <= duration <= 500ms
+    PROLONGED = "PROLONGED"                   # 500ms < duration < 800ms
     MICROSLEEP_CANDIDATE = "MICROSLEEP"       # Unbroken closure >= 800ms
     UNCERTAIN = "UNCERTAIN"                   # Incomplete or contaminated by gap
 
@@ -119,7 +119,7 @@ class BlinkKinematicsDetector:
         closure_threshold: float = 0.205,
         reopen_threshold: float = 0.240,
         min_blink_duration_ms: float = 40.0,
-        prolonged_duration_ms: float = 350.0,
+        prolonged_duration_ms: float = 500.0,
         microsleep_duration_ms: float = 800.0,
         min_amplitude: float = 0.04,
         max_sampling_gap_ms: float = 250.0,

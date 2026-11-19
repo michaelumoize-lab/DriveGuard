@@ -64,7 +64,7 @@ class DecisionEngine:
         perclos_warning_threshold_pct: float = 15.0,
         perclos_attention_threshold_pct: float = 8.0,
         severe_perclos_threshold_pct: float = 30.0,
-        prolonged_blink_threshold_ms: float = 350.0,
+        prolonged_blink_threshold_ms: float = 500.0,
         off_road_distraction_limit_ms: float = 3500.0,
         recovery_critical_ms: float = 2000.0,
         recovery_warning_ms: float = 1500.0,
@@ -510,7 +510,7 @@ class DecisionEngine:
                 ):
                     self._alert_recovery_start_ts_ms = ts_ms
             else:
-                # Continuation allows normal blinks (< 350ms) but cancels on prolonged blink, ATTENTION+, face lost, etc.
+                # Continuation allows normal blinks (< 500ms) but cancels on prolonged blink, ATTENTION+, face lost, etc.
                 completed_blink = metrics.completed_blink
                 has_completed_prolonged_blink = (
                     completed_blink is not None

@@ -16,16 +16,21 @@ Implements:
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
-from dataclasses import asdict, dataclass, field
+import math
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+import struct
+from types import MappingProxyType
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
 from backend.app.ai.blink_kinematics import BlinkEvent
 from backend.app.ai.geometry import PoseZone
 from backend.app.core.time_utils import validate_iso_timestamp
+from backend.app.features.head_pose import is_valid_rotation_matrix
 
 
 def compute_median_and_scaled_mad(
@@ -108,6 +113,7 @@ class DriverBehaviourProfile:
     sensitivity_level: str = "STANDARD"
     version: int = 1
     calibrated_at: Optional[str] = None
+    neutral_rot_mat: Optional[np.ndarray] = None
 
     def __post_init__(self) -> None:
         if self.active_center_ear_median is None:
@@ -182,7 +188,12 @@ class DriverBehaviourProfile:
         """Persist the driver's profile to JSON."""
         out_path = Path(path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
+        data = asdict(self)
+        if data.get("neutral_rot_mat") is not None:
+            data["neutral_rot_mat"] = [
+                [round(float(v), 6) for v in row] for row in data["neutral_rot_mat"]
+            ]
+        out_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     @classmethod
     def load_json(cls, path: str | Path) -> "DriverBehaviourProfile":
@@ -227,8 +238,11 @@ class DriverBehaviourProfile:
             "temporal_window_sec",
             "sensitivity_level",
             "version",
+            "neutral_rot_mat",
         }
         clean_data = {k: v for k, v in data.items() if k in valid_profile_keys}
+        if clean_data.get("neutral_rot_mat") is not None:
+            clean_data["neutral_rot_mat"] = np.asarray(clean_data["neutral_rot_mat"], dtype=np.float64)
         clean_data["calibrated_at"] = validate_iso_timestamp(data.get("calibrated_at"))
         return cls(**clean_data, zone_baselines=zones)
 
@@ -263,6 +277,605 @@ class DriverBehaviourProfile:
             temporal_blinks_sampled=0,
             temporal_window_sec=120.0,
         )
+
+
+def _pack_float(v: Optional[float], field_name: str) -> bytes:
+    if v is None:
+        return b"\x00"
+    if type(v) is bool:
+        raise TypeError(f"Field '{field_name}' must be float, got bool {v!r}")
+    try:
+        f_val = float(v)
+    except (TypeError, ValueError) as e:
+        raise TypeError(f"Field '{field_name}' must be numeric: {e}")
+    if not math.isfinite(f_val):
+        raise ValueError(f"Field '{field_name}' contains non-finite float: {f_val}")
+    if f_val == 0.0:
+        f_val = 0.0
+    return b"\x01" + struct.pack(">d", f_val)
+
+
+def _pack_int(v: int, field_name: str) -> bytes:
+    if type(v) is bool:
+        raise TypeError(f"Field '{field_name}' must be int, got bool {v!r}")
+    if not isinstance(v, (int, np.integer)):
+        raise TypeError(f"Field '{field_name}' must be int, got {type(v).__name__}")
+    return struct.pack(">q", int(v))
+
+
+def _pack_str(v: Optional[str], field_name: str) -> bytes:
+    if v is None:
+        return b"\x00"
+    if not isinstance(v, str):
+        raise TypeError(f"Field '{field_name}' must be str, got {type(v).__name__}")
+    encoded = v.encode("utf-8")
+    return struct.pack(">I", len(encoded)) + encoded
+
+
+def _pack_bool(v: bool, field_name: str) -> bytes:
+    if type(v) is not bool and not isinstance(v, (bool, np.bool_)):
+        raise TypeError(f"Field '{field_name}' must be bool, got {type(v).__name__}")
+    return b"\x01" if bool(v) else b"\x00"
+
+
+def _pack_matrix(mat: Any, field_name: str) -> bytes:
+    if mat is None:
+        return b"\x00"
+    try:
+        arr = np.asarray(mat, dtype=np.float64)
+    except Exception as e:
+        raise ValueError(f"Field '{field_name}' matrix conversion error: {e}")
+    if arr.shape != (3, 3):
+        raise ValueError(f"Field '{field_name}' must be 3x3, got {arr.shape}")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"Field '{field_name}' contains non-finite numbers")
+    out = [b"\x01"]
+    for row in arr:
+        for val in row:
+            f = float(val)
+            if f == 0.0:
+                f = 0.0
+            out.append(struct.pack(">d", f))
+    return b"".join(out)
+
+
+def compute_canonical_profile_fingerprint(
+    profile: Union[DriverBehaviourProfile, "ImmutableProfileSnapshot", Any]
+) -> str:
+    """
+    Compute strict, deterministic 64-character SHA-256 fingerprint over all 24 profile fields
+    and 11 zone fields, using big-endian IEEE 754 encoding and canonical key ordering.
+    """
+    h = hashlib.sha256()
+
+    # 1. version: int
+    h.update(_pack_int(profile.version, "version"))
+
+    # 2. driver_id: str
+    h.update(_pack_str(profile.driver_id, "driver_id"))
+
+    # 3. calibrated_at: Optional[str]
+    h.update(_pack_str(profile.calibrated_at, "calibrated_at"))
+
+    # 4. is_calibrated: bool
+    is_cal = getattr(profile, "is_calibrated", None)
+    cal_mode = getattr(profile, "calibration_mode", None)
+    if is_cal is None:
+        is_cal = (cal_mode is not None and cal_mode != "UNCALIBRATED_DEFAULT")
+    h.update(_pack_bool(is_cal, "is_calibrated"))
+
+    # 5. calibration_mode: str
+    cal_mode_str = cal_mode or ("4ZONE" if is_cal else "UNCALIBRATED_DEFAULT")
+    h.update(_pack_str(cal_mode_str, "calibration_mode"))
+
+    # 6-15. float statistics
+    h.update(_pack_float(profile.center_ear_median, "center_ear_median"))
+    h.update(_pack_float(profile.center_ear_mad_scaled, "center_ear_mad_scaled"))
+    h.update(_pack_float(profile.blink_duration_median_ms, "blink_duration_median_ms"))
+    h.update(_pack_float(profile.blink_duration_mad_ms, "blink_duration_mad_ms"))
+    h.update(_pack_float(profile.blink_rcr_median, "blink_rcr_median"))
+    h.update(_pack_float(profile.blink_rcr_mad, "blink_rcr_mad"))
+    h.update(_pack_float(profile.blink_freq_median_per_min, "blink_freq_median_per_min"))
+    h.update(_pack_float(profile.blink_freq_mad_per_min, "blink_freq_mad_per_min"))
+    h.update(_pack_float(profile.baseline_perclos_pct, "baseline_perclos_pct"))
+    h.update(_pack_float(profile.blink_amplitude_median, "blink_amplitude_median"))
+
+    # 16. temporal_blinks_sampled: int
+    h.update(_pack_int(profile.temporal_blinks_sampled, "temporal_blinks_sampled"))
+
+    # 17. temporal_window_sec: float
+    h.update(_pack_float(profile.temporal_window_sec, "temporal_window_sec"))
+
+    # 18. sensitivity_level: str
+    h.update(_pack_str(profile.sensitivity_level, "sensitivity_level"))
+
+    # 19-21. pose and reliability
+    h.update(_pack_float(profile.neutral_pitch_deg, "neutral_pitch_deg"))
+    h.update(_pack_float(profile.neutral_yaw_deg, "neutral_yaw_deg"))
+    h.update(_pack_float(profile.calibration_reliability, "calibration_reliability"))
+
+    # 22. active_center_ear_median: Optional[float]
+    act_ear = getattr(profile, "active_center_ear_median", None)
+    h.update(_pack_float(act_ear, "active_center_ear_median"))
+
+    # 23. neutral_rot_mat
+    rot_mat = getattr(profile, "neutral_rot_mat", None)
+    if rot_mat is None and hasattr(profile, "_neutral_rot_mat_tuple"):
+        rot_mat = profile._neutral_rot_mat_tuple
+    h.update(_pack_matrix(rot_mat, "neutral_rot_mat"))
+
+    # 24. zone_baselines
+    zb_dict = profile.zone_baselines
+    if not isinstance(zb_dict, (dict, Mapping)):
+        raise TypeError(f"zone_baselines must be a mapping, got {type(zb_dict).__name__}")
+
+    zone_keys = sorted(str(k.value if isinstance(k, PoseZone) else k) for k in zb_dict.keys())
+    h.update(_pack_int(len(zone_keys), "zone_baselines_count"))
+    for zk in zone_keys:
+        zb = zb_dict[zk] if zk in zb_dict else zb_dict[PoseZone(zk)]
+        h.update(_pack_str(zk, f"zone_key_{zk}"))
+        h.update(_pack_str(zb.zone, f"{zk}.zone"))
+        h.update(_pack_float(zb.ear_median, f"{zk}.ear_median"))
+        h.update(_pack_float(zb.ear_mad_scaled, f"{zk}.ear_mad_scaled"))
+        h.update(_pack_float(zb.pitch_median_deg, f"{zk}.pitch_median_deg"))
+        h.update(_pack_float(zb.yaw_median_deg, f"{zk}.yaw_median_deg"))
+        h.update(_pack_int(zb.sample_count, f"{zk}.sample_count"))
+        h.update(_pack_float(zb.ear_left_median, f"{zk}.ear_left_median"))
+        h.update(_pack_float(zb.ear_right_median, f"{zk}.ear_right_median"))
+        h.update(_pack_float(zb.blendshape_open_median, f"{zk}.blendshape_open_median"))
+        h.update(_pack_float(zb.confidence_median, f"{zk}.confidence_median"))
+        h.update(_pack_float(zb.dynamic_closure_threshold, f"{zk}.dynamic_closure_threshold"))
+
+    return h.hexdigest()
+
+
+@dataclass(frozen=True)
+class ImmutableZoneBaseline:
+    """Immutable snapshot of a single spatial zone baseline."""
+
+    zone: str
+    ear_median: float
+    ear_mad_scaled: float
+    pitch_median_deg: float
+    yaw_median_deg: float
+    sample_count: int
+    ear_left_median: Optional[float] = None
+    ear_right_median: Optional[float] = None
+    blendshape_open_median: Optional[float] = None
+    confidence_median: Optional[float] = None
+
+    @property
+    def dynamic_closure_threshold(self) -> float:
+        raw = min(self.ear_median * 0.76, self.ear_median - 2.3 * self.ear_mad_scaled)
+        return float(np.clip(raw, 0.12, 0.22))
+
+
+@dataclass(frozen=True)
+class ImmutableProfileSnapshot:
+    """
+    Immutable, deeply frozen snapshot of a DriverBehaviourProfile.
+    Guarantees that caller-owned profile mutations cannot modify queued or active runtime states.
+    """
+
+    driver_id: str
+    calibration_mode: str
+    center_ear_median: float
+    center_ear_mad_scaled: float
+    blink_duration_median_ms: float
+    blink_duration_mad_ms: float
+    blink_rcr_median: float
+    blink_rcr_mad: float
+    blink_freq_median_per_min: float
+    blink_freq_mad_per_min: float
+    neutral_pitch_deg: float
+    neutral_yaw_deg: float
+    calibration_reliability: float
+    zone_baselines: Mapping[str, ImmutableZoneBaseline]
+    active_center_ear_median: Optional[float] = None
+    baseline_perclos_pct: float = 3.5
+    blink_amplitude_median: float = 0.14
+    temporal_blinks_sampled: int = 0
+    temporal_window_sec: float = 120.0
+    sensitivity_level: str = "STANDARD"
+    version: int = 1
+    calibrated_at: Optional[str] = None
+    is_calibrated: bool = True
+    _neutral_rot_mat_tuple: Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]] = None
+    fingerprint: str = ""
+
+    @property
+    def neutral_rot_mat(self) -> Optional[np.ndarray]:
+        if self._neutral_rot_mat_tuple is None:
+            return None
+        return np.asarray(self._neutral_rot_mat_tuple, dtype=np.float64)
+
+    def get_zone_baseline(self, zone: Union[PoseZone, str]) -> ImmutableZoneBaseline:
+        """Return the baseline for `zone`, falling back to scaled CENTER if missing."""
+        if isinstance(zone, PoseZone):
+            zone_enum = zone
+        elif isinstance(zone, str):
+            try:
+                zone_enum = PoseZone(zone)
+            except ValueError:
+                raise ValueError(
+                    f"Invalid zone string: '{zone}'. Must be one of {[z.value for z in PoseZone]}."
+                )
+        else:
+            raise TypeError(
+                f"Zone must be a PoseZone enum or string, got {type(zone).__name__}: {zone!r}"
+            )
+
+        zone_key = zone_enum.value
+        if zone_key in self.zone_baselines:
+            return self.zone_baselines[zone_key]
+
+        scale = 1.0
+        if zone_enum in (PoseZone.LEFT_MIRROR, PoseZone.RIGHT_MIRROR):
+            scale = 0.92
+        elif zone_enum == PoseZone.DASHBOARD:
+            scale = 0.88
+
+        return ImmutableZoneBaseline(
+            zone=zone_key,
+            ear_median=self.center_ear_median * scale,
+            ear_mad_scaled=max(self.center_ear_mad_scaled, 0.015),
+            pitch_median_deg=self.neutral_pitch_deg + (-12.0 if zone_enum == PoseZone.DASHBOARD else 0.0),
+            yaw_median_deg=self.neutral_yaw_deg
+            + (20.0 if zone_enum == PoseZone.LEFT_MIRROR else (-20.0 if zone_enum == PoseZone.RIGHT_MIRROR else 0.0)),
+            sample_count=0,
+        )
+
+    def to_domain(self) -> DriverBehaviourProfile:
+        """Convert this immutable snapshot into a mutable DriverBehaviourProfile domain object."""
+        return DriverBehaviourProfile(
+            driver_id=self.driver_id,
+            calibration_mode=self.calibration_mode,
+            center_ear_median=self.center_ear_median,
+            center_ear_mad_scaled=self.center_ear_mad_scaled,
+            blink_duration_median_ms=self.blink_duration_median_ms,
+            blink_duration_mad_ms=self.blink_duration_mad_ms,
+            blink_rcr_median=self.blink_rcr_median,
+            blink_rcr_mad=self.blink_rcr_mad,
+            blink_freq_median_per_min=self.blink_freq_median_per_min,
+            blink_freq_mad_per_min=self.blink_freq_mad_per_min,
+            neutral_pitch_deg=self.neutral_pitch_deg,
+            neutral_yaw_deg=self.neutral_yaw_deg,
+            calibration_reliability=self.calibration_reliability,
+            zone_baselines={
+                k: ZoneBaseline(
+                    zone=v.zone,
+                    ear_median=v.ear_median,
+                    ear_mad_scaled=v.ear_mad_scaled,
+                    pitch_median_deg=v.pitch_median_deg,
+                    yaw_median_deg=v.yaw_median_deg,
+                    sample_count=v.sample_count,
+                    ear_left_median=v.ear_left_median,
+                    ear_right_median=v.ear_right_median,
+                    blendshape_open_median=v.blendshape_open_median,
+                    confidence_median=v.confidence_median,
+                )
+                for k, v in self.zone_baselines.items()
+            },
+            active_center_ear_median=self.active_center_ear_median,
+            baseline_perclos_pct=self.baseline_perclos_pct,
+            blink_amplitude_median=self.blink_amplitude_median,
+            temporal_blinks_sampled=self.temporal_blinks_sampled,
+            temporal_window_sec=self.temporal_window_sec,
+            sensitivity_level=self.sensitivity_level,
+            version=self.version,
+            calibrated_at=self.calibrated_at,
+            neutral_rot_mat=(
+                np.asarray(self._neutral_rot_mat_tuple, dtype=np.float64)
+                if self._neutral_rot_mat_tuple is not None
+                else None
+            ),
+        )
+
+
+def create_immutable_profile_snapshot(profile: DriverBehaviourProfile) -> ImmutableProfileSnapshot:
+    """
+    Construct a verified, deeply immutable snapshot from a DriverBehaviourProfile.
+    """
+    if not isinstance(profile, DriverBehaviourProfile):
+        raise TypeError(f"Expected DriverBehaviourProfile instance, got {type(profile).__name__}")
+
+    imm_zones: Dict[str, ImmutableZoneBaseline] = {}
+    for zk, zb in profile.zone_baselines.items():
+        zk_name = zk.value if isinstance(zk, PoseZone) else str(zk)
+        imm_zones[zk_name] = ImmutableZoneBaseline(
+            zone=zb.zone,
+            ear_median=float(zb.ear_median),
+            ear_mad_scaled=float(zb.ear_mad_scaled),
+            pitch_median_deg=float(zb.pitch_median_deg),
+            yaw_median_deg=float(zb.yaw_median_deg),
+            sample_count=int(zb.sample_count),
+            ear_left_median=float(zb.ear_left_median) if zb.ear_left_median is not None else None,
+            ear_right_median=float(zb.ear_right_median) if zb.ear_right_median is not None else None,
+            blendshape_open_median=float(zb.blendshape_open_median) if zb.blendshape_open_median is not None else None,
+            confidence_median=float(zb.confidence_median) if zb.confidence_median is not None else None,
+        )
+
+    rot_tuple: Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]] = None
+    if profile.neutral_rot_mat is not None:
+        arr = np.asarray(profile.neutral_rot_mat, dtype=np.float64)
+        if arr.shape != (3, 3):
+            raise ValueError(f"neutral_rot_mat must have shape (3, 3), got {arr.shape}")
+        if not np.all(np.isfinite(arr)):
+            raise ValueError("neutral_rot_mat contains non-finite numbers")
+        rot_tuple = (
+            (float(arr[0, 0]), float(arr[0, 1]), float(arr[0, 2])),
+            (float(arr[1, 0]), float(arr[1, 1]), float(arr[1, 2])),
+            (float(arr[2, 0]), float(arr[2, 1]), float(arr[2, 2])),
+        )
+
+    is_cal = (profile.calibration_mode != "UNCALIBRATED_DEFAULT")
+    fp = compute_canonical_profile_fingerprint(profile)
+
+    return ImmutableProfileSnapshot(
+        driver_id=profile.driver_id,
+        calibration_mode=profile.calibration_mode,
+        center_ear_median=float(profile.center_ear_median),
+        center_ear_mad_scaled=float(profile.center_ear_mad_scaled),
+        blink_duration_median_ms=float(profile.blink_duration_median_ms),
+        blink_duration_mad_ms=float(profile.blink_duration_mad_ms),
+        blink_rcr_median=float(profile.blink_rcr_median),
+        blink_rcr_mad=float(profile.blink_rcr_mad),
+        blink_freq_median_per_min=float(profile.blink_freq_median_per_min),
+        blink_freq_mad_per_min=float(profile.blink_freq_mad_per_min),
+        neutral_pitch_deg=float(profile.neutral_pitch_deg),
+        neutral_yaw_deg=float(profile.neutral_yaw_deg),
+        calibration_reliability=float(profile.calibration_reliability),
+        zone_baselines=MappingProxyType(imm_zones),
+        active_center_ear_median=float(profile.active_center_ear_median) if profile.active_center_ear_median is not None else None,
+        baseline_perclos_pct=float(profile.baseline_perclos_pct),
+        blink_amplitude_median=float(profile.blink_amplitude_median),
+        temporal_blinks_sampled=int(profile.temporal_blinks_sampled),
+        temporal_window_sec=float(profile.temporal_window_sec),
+        sensitivity_level=str(profile.sensitivity_level),
+        version=int(profile.version),
+        calibrated_at=profile.calibrated_at,
+        is_calibrated=is_cal,
+        _neutral_rot_mat_tuple=rot_tuple,
+        fingerprint=fp,
+    )
+
+
+@dataclass(frozen=True)
+class NeutralRotationResult:
+    """
+    Structured outcome of standalone neutral rotation aggregation.
+
+    Metric units:
+        - inlier_rms_deg: Root-mean-square geodesic residual of inliers [degrees]
+        - inlier_mad_deg: Scaled Median Absolute Deviation of inlier residuals [degrees] (diagnostic)
+        - pre_filter_mad_deg: Scaled Median Absolute Deviation of all candidate residuals from medoid [degrees] (diagnostic)
+        - inlier_ratio: Fraction of candidates accepted as inliers in [0.0, 1.0] [dimensionless]
+        - total_candidates, inlier_count: Sample counts [dimensionless]
+    """
+
+    is_accepted: bool
+    """True if both dominant-cluster count and inlier dispersion bounds are satisfied."""
+
+    neutral_rot_mat: Optional[np.ndarray]
+    """3x3 orthonormal SO(3) rotation matrix (det == +1.0). None if is_accepted is False."""
+
+    inlier_count: int
+    """Number of candidate rotations within geodesic neighborhood (residual <= max_residual_deg)."""
+
+    total_candidates: int
+    """Total valid candidate rotations supplied to aggregation (N >= 18)."""
+
+    inlier_ratio: float
+    """Ratio of inlier_count to total_candidates in [0.0, 1.0]."""
+
+    medoid_idx: Optional[int]
+    """0-based index of chosen geodesic medoid in input sequence (None if medoid cannot be calculated)."""
+
+    inlier_rms_deg: float
+    """Root-mean-square geodesic residual of all inliers relative to medoid [degrees]."""
+
+    inlier_mad_deg: float
+    """Scaled Median Absolute Deviation (1.4826 * MAD) of inlier residuals [degrees] (diagnostic)."""
+
+    pre_filter_mad_deg: float
+    """Scaled Median Absolute Deviation (1.4826 * MAD) of all candidate residuals from medoid [degrees] (diagnostic)."""
+
+    rejection_reason: Optional[str]
+    """None if accepted; structured rejection code string if rejected."""
+
+
+def project_onto_so3(M: np.ndarray) -> np.ndarray:
+    """
+    Project a 3x3 real matrix M onto SO(3) using SVD with Kabsch reflection guard.
+
+    Solves:
+        argmin_{R in SO(3)} || R - M ||_F^2
+
+    Guarantees det(R) == +1.0 even if det(U @ Vt) == -1.0.
+    """
+    U, s, Vt = np.linalg.svd(M)
+    d = float(np.linalg.det(U @ Vt))
+    sign = 1.0 if d >= 0.0 else -1.0
+    S = np.diag([1.0, 1.0, sign])
+    return U @ S @ Vt
+
+
+def aggregate_neutral_rotation_matrix(
+    rotations: Sequence[np.ndarray],
+    max_residual_deg: float = 4.5,
+    max_inlier_rms_deg: float = 2.2,
+    min_inlier_ratio: float = 0.60,
+    min_absolute_inliers: int = 18,
+) -> NeutralRotationResult:
+    """
+    Pure mathematical aggregation of candidate SolvePnP rotation matrices into a single R_neutral in SO(3).
+
+    Acceptance criteria:
+        1. At least max(min_absolute_inliers, ceil(min_inlier_ratio * N)) inliers within max_residual_deg (4.5°)
+           of the geodesic medoid.
+        2. Inlier RMS geodesic dispersion <= max_inlier_rms_deg (2.2°).
+
+    All metric units:
+        - max_residual_deg: degrees [°]
+        - max_inlier_rms_deg: degrees [°]
+        - inlier_rms_deg: degrees [°]
+        - inlier_mad_deg: degrees [°]
+        - pre_filter_mad_deg: degrees [°]
+
+    Parameters:
+        rotations: Sequence of valid 3x3 orthonormal SO(3) rotation matrices.
+        max_residual_deg: Geodesic angular radius for the inlier neighborhood (default: 4.5°).
+        max_inlier_rms_deg: Maximum allowable inlier RMS geodesic dispersion (default: 2.2°).
+        min_inlier_ratio: Minimum ratio of inliers to total candidates (default: 0.60).
+        min_absolute_inliers: Minimum absolute inlier count (default: 18).
+
+    Returns:
+        NeutralRotationResult with acceptance status, SO(3) matrix, and diagnostic dispersion metrics.
+    """
+    # 1. Strict validation of all candidate matrices in the input sequence
+    validated_rotations: List[np.ndarray] = []
+    ident = np.eye(3, dtype=np.float64)
+
+    for idx, r in enumerate(rotations):
+        try:
+            arr = np.asarray(r, dtype=np.float64)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Candidate rotation matrix at index {idx} is malformed: {e}")
+
+        if arr.shape != (3, 3):
+            raise ValueError(
+                f"Candidate rotation matrix at index {idx} has invalid shape {arr.shape}; expected (3, 3)"
+            )
+
+        if not np.all(np.isfinite(arr)):
+            raise ValueError(
+                f"Candidate rotation matrix at index {idx} contains non-finite values (NaN or Inf)"
+            )
+
+        if not np.allclose(arr.T @ arr, ident, atol=1e-3):
+            raise ValueError(f"Candidate rotation matrix at index {idx} is not orthogonal")
+
+        det = float(np.linalg.det(arr))
+        if abs(det - 1.0) > 1e-3:
+            raise ValueError(
+                f"Candidate rotation matrix at index {idx} is not in SO(3) "
+                f"(det={det:.6f} != 1.0; reflections and invalid rotations are rejected)"
+            )
+
+        validated_rotations.append(arr)
+
+    n_candidates = len(validated_rotations)
+
+    # 2. Check candidate sample count budget
+    if n_candidates < min_absolute_inliers:
+        return NeutralRotationResult(
+            is_accepted=False,
+            neutral_rot_mat=None,
+            inlier_count=0,
+            total_candidates=n_candidates,
+            inlier_ratio=0.0,
+            medoid_idx=None,
+            inlier_rms_deg=0.0,
+            inlier_mad_deg=0.0,
+            pre_filter_mad_deg=0.0,
+            rejection_reason="INSUFFICIENT_CANDIDATE_SAMPLES",
+        )
+
+    # 3. Compute pairwise geodesic distance matrix D in degrees
+    # D_ij = arccos(clip((Tr(R_i^T @ R_j) - 1) / 2, -1.0, 1.0)) * (180.0 / pi)
+    dists = np.zeros((n_candidates, n_candidates), dtype=np.float64)
+    for i in range(n_candidates):
+        r_i = validated_rotations[i]
+        for j in range(i + 1, n_candidates):
+            r_j = validated_rotations[j]
+            trace_val = float(np.trace(r_i.T @ r_j))
+            cos_val = np.clip((trace_val - 1.0) / 2.0, -1.0, 1.0)
+            deg = float(np.degrees(np.arccos(cos_val)))
+            dists[i, j] = deg
+            dists[j, i] = deg
+
+    # 4. Deterministic medoid selection: argmin of distance sums
+    # np.argmin deterministically selects the lowest index on ties
+    distance_sums = np.sum(dists, axis=1)
+    medoid_idx = int(np.argmin(distance_sums))
+    residuals = dists[medoid_idx, :]
+
+    # Diagnostic pre-filter MAD (scaled MAD of all candidate residuals from medoid)
+    pre_filter_med = float(np.median(residuals))
+    pre_filter_mad_deg = float(np.median(np.abs(residuals - pre_filter_med))) * 1.4826
+
+    # 5. Filter inliers within max_residual_deg neighborhood
+    inlier_mask = residuals <= max_residual_deg
+    inlier_indices = np.where(inlier_mask)[0]
+    inlier_count = int(len(inlier_indices))
+    inlier_ratio = float(inlier_count / n_candidates)
+    inlier_residuals = residuals[inlier_mask]
+
+    # Diagnostic inlier dispersion metrics
+    if inlier_count > 0:
+        inlier_rms_deg = float(np.sqrt(np.mean(inlier_residuals ** 2)))
+        inlier_res_med = float(np.median(inlier_residuals))
+        inlier_mad_deg = float(np.median(np.abs(inlier_residuals - inlier_res_med))) * 1.4826
+    else:
+        inlier_rms_deg = 0.0
+        inlier_mad_deg = 0.0
+
+    # 6. Evaluate acceptance conditions
+    min_required_inliers = max(min_absolute_inliers, int(np.ceil(min_inlier_ratio * n_candidates)))
+
+    if inlier_count < min_required_inliers:
+        return NeutralRotationResult(
+            is_accepted=False,
+            neutral_rot_mat=None,
+            inlier_count=inlier_count,
+            total_candidates=n_candidates,
+            inlier_ratio=inlier_ratio,
+            medoid_idx=medoid_idx,
+            inlier_rms_deg=inlier_rms_deg,
+            inlier_mad_deg=inlier_mad_deg,
+            pre_filter_mad_deg=pre_filter_mad_deg,
+            rejection_reason="INSUFFICIENT_INLIER_RATIO",
+        )
+
+    if inlier_rms_deg > max_inlier_rms_deg:
+        return NeutralRotationResult(
+            is_accepted=False,
+            neutral_rot_mat=None,
+            inlier_count=inlier_count,
+            total_candidates=n_candidates,
+            inlier_ratio=inlier_ratio,
+            medoid_idx=medoid_idx,
+            inlier_rms_deg=inlier_rms_deg,
+            inlier_mad_deg=inlier_mad_deg,
+            pre_filter_mad_deg=pre_filter_mad_deg,
+            rejection_reason="EXCESSIVE_ANGULAR_DISPERSION",
+        )
+
+    # 7. SVD projection of inlier arithmetic mean onto SO(3)
+    inlier_rotations = [validated_rotations[idx] for idx in inlier_indices]
+    m_mean = np.mean(inlier_rotations, axis=0)
+    r_neutral = project_onto_so3(m_mean)
+
+    # Sanity verification of projected matrix
+    if not (np.all(np.isfinite(r_neutral)) and np.allclose(r_neutral.T @ r_neutral, ident, atol=1e-5)):
+        raise RuntimeError("SO(3) projection produced non-orthonormal matrix")
+
+    det_proj = float(np.linalg.det(r_neutral))
+    if abs(det_proj - 1.0) > 1e-5:
+        raise RuntimeError(f"SO(3) projection produced matrix with invalid determinant: {det_proj:.6f}")
+
+    return NeutralRotationResult(
+        is_accepted=True,
+        neutral_rot_mat=r_neutral,
+        inlier_count=inlier_count,
+        total_candidates=n_candidates,
+        inlier_ratio=inlier_ratio,
+        medoid_idx=medoid_idx,
+        inlier_rms_deg=inlier_rms_deg,
+        inlier_mad_deg=inlier_mad_deg,
+        pre_filter_mad_deg=pre_filter_mad_deg,
+        rejection_reason=None,
+    )
 
 
 @dataclass
@@ -325,6 +938,19 @@ CENTER_ONLY_CALIBRATION_PLAN: Tuple[CalibrationStepConfig, ...] = (
 )
 
 
+# Initial CENTER Alignment Policy for Oblique Camera Mounting:
+# Allows camera placement off-center (e.g., A-pillar, center console, dashboard)
+# within +/- 32.0 degrees yaw and -18.0 to +14.0 degrees pitch relative to camera frame.
+# Beyond 35 degrees yaw, perspective foreshortening and facial landmark degradation
+# degrade SO(3) PnP stability.
+DEFAULT_INITIAL_CENTER_MAX_YAW_DEG: float = 32.0
+DEFAULT_INITIAL_CENTER_MIN_PITCH_DEG: float = -18.0
+DEFAULT_INITIAL_CENTER_MAX_PITCH_DEG: float = 14.0
+
+DEFAULT_RECALIBRATION_CENTER_MAX_YAW_DEG: float = 13.0
+DEFAULT_RECALIBRATION_CENTER_MAX_PITCH_DEG: float = 11.0
+
+
 class GuidedCalibrationSession:
     """
     Manages interactive 4-zone (CENTER, LEFT_MIRROR, RIGHT_MIRROR, DASHBOARD) guided calibration,
@@ -341,6 +967,11 @@ class GuidedCalibrationSession:
         existing_profile: Optional[DriverBehaviourProfile] = None,
         include_blink_baseline: bool = False,
         blink_baseline_duration_sec: float = 120.0,
+        initial_center_max_yaw_deg: float = DEFAULT_INITIAL_CENTER_MAX_YAW_DEG,
+        initial_center_min_pitch_deg: float = DEFAULT_INITIAL_CENTER_MIN_PITCH_DEG,
+        initial_center_max_pitch_deg: float = DEFAULT_INITIAL_CENTER_MAX_PITCH_DEG,
+        recalibration_center_max_yaw_deg: float = DEFAULT_RECALIBRATION_CENTER_MAX_YAW_DEG,
+        recalibration_center_max_pitch_deg: float = DEFAULT_RECALIBRATION_CENTER_MAX_PITCH_DEG,
     ) -> None:
         self.driver_id = driver_id
         self.four_zone_mode = four_zone_mode
@@ -351,6 +982,11 @@ class GuidedCalibrationSession:
         self.blink_only_mode = str(target_zone) == "BLINK_CADENCE"
         self.target_zone = None if self.blink_only_mode else target_zone
         self.existing_profile = existing_profile
+        self.initial_center_max_yaw_deg = float(initial_center_max_yaw_deg)
+        self.initial_center_min_pitch_deg = float(initial_center_min_pitch_deg)
+        self.initial_center_max_pitch_deg = float(initial_center_max_pitch_deg)
+        self.recalibration_center_max_yaw_deg = float(recalibration_center_max_yaw_deg)
+        self.recalibration_center_max_pitch_deg = float(recalibration_center_max_pitch_deg)
 
         if self.blink_only_mode:
             base_steps: Tuple[CalibrationStepConfig, ...] = (
@@ -428,6 +1064,7 @@ class GuidedCalibrationSession:
         self._confidence_by_zone: Dict[str, List[float]] = {s.zone.value: [] for s in self.steps}
         self._reliabilities: List[float] = []
         self._collected_blinks: List[BlinkEvent] = []
+        self._candidate_rot_mats: List[np.ndarray] = []
 
         # 2-Minute Natural Blink Cadence Phase Accumulators
         self._blink_phase_elapsed_sec: float = 0.0
@@ -459,6 +1096,7 @@ class GuidedCalibrationSession:
         self.is_completed = False
         self.rejection_reason = None
         self.quality_warnings = []
+        self._candidate_rot_mats = []
         self._step_idx = 0
         self._step_start_ts_ms = timestamp_ms
         self._learned_neutral_pitch = 0.0
@@ -502,7 +1140,57 @@ class GuidedCalibrationSession:
         Verify whether the driver's head is oriented toward target_zone.
         Returns (is_aligned, feedback_instruction).
         """
-        if self.target_zone is not None and self.existing_profile is not None:
+        has_calibrated_reference = (
+            self.existing_profile is not None
+            and (
+                getattr(self.existing_profile, "is_calibrated", False)
+                or getattr(self.existing_profile, "neutral_rot_mat", None) is not None
+                or getattr(self.existing_profile, "neutral_yaw_deg", 0.0) != 0.0
+                or getattr(self.existing_profile, "neutral_pitch_deg", 0.0) != 0.0
+            )
+        )
+
+        if target_zone == PoseZone.CENTER:
+            if self._step_idx == 0 and not has_calibrated_reference:
+                # Dedicated initial CENTER alignment policy for fresh calibration:
+                # Allows camera placement off-center (e.g., A-pillar, center console)
+                # up to self.initial_center_max_yaw_deg and within [min_pitch, max_pitch].
+                if abs(yaw_deg) > self.initial_center_max_yaw_deg:
+                    return False, f"Look straight ahead: turn face forward (yaw {yaw_deg:+.0f}° > ±{self.initial_center_max_yaw_deg:.0f}°)"
+                if pitch_deg > self.initial_center_max_pitch_deg:
+                    return False, f"Look straight ahead: tilt chin down slightly (pitch {pitch_deg:+.0f}° > +{self.initial_center_max_pitch_deg:.0f}°)"
+                if pitch_deg < self.initial_center_min_pitch_deg:
+                    return False, f"Look straight ahead: lift chin up slightly (pitch {pitch_deg:+.0f}° < {self.initial_center_min_pitch_deg:.0f}°)"
+                return True, "Holding Steady (Center Roadway)"
+            else:
+                # Established reference (recalibration or subsequent step with established reference)
+                if has_calibrated_reference:
+                    ref_yaw = (
+                        self.existing_profile.neutral_yaw_deg
+                        if getattr(self.existing_profile, "neutral_yaw_deg", None) is not None
+                        else 0.0
+                    )
+                    ref_pitch = (
+                        self.existing_profile.neutral_pitch_deg
+                        if getattr(self.existing_profile, "neutral_pitch_deg", None) is not None
+                        else 0.0
+                    )
+                elif self._step_idx > 0:
+                    ref_yaw = self._learned_neutral_yaw
+                    ref_pitch = self._learned_neutral_pitch
+                else:
+                    ref_yaw = 0.0
+                    ref_pitch = 0.0
+                rel_yaw = yaw_deg - ref_yaw
+                rel_pitch = pitch_deg - ref_pitch
+                if abs(rel_yaw) > self.recalibration_center_max_yaw_deg:
+                    return False, f"Look straight ahead: turn face to center (rel yaw {rel_yaw:+.0f}°)"
+                if abs(rel_pitch) > self.recalibration_center_max_pitch_deg:
+                    return False, f"Look straight ahead: level head to center (rel pitch {rel_pitch:+.0f}°)"
+                return True, "Holding Steady (Center Roadway)"
+
+        # Relative reference for peripheral zones
+        if self.target_zone is not None and has_calibrated_reference:
             ref_yaw = (
                 self.existing_profile.neutral_yaw_deg
                 if getattr(self.existing_profile, "neutral_yaw_deg", None) is not None
@@ -522,30 +1210,25 @@ class GuidedCalibrationSession:
         rel_yaw = yaw_deg - ref_yaw
         rel_pitch = pitch_deg - ref_pitch
 
-        if target_zone == PoseZone.CENTER:
-            if abs(rel_yaw) > 13.0 or abs(rel_pitch) > 11.0:
-                return False, "Look straight ahead at center roadway"
-            return True, "Holding Steady (Center Roadway)"
-
-        elif target_zone == PoseZone.LEFT_MIRROR:
+        if target_zone == PoseZone.LEFT_MIRROR:
             # Driver turning left yields positive relative yaw in front-facing camera frame
             if rel_yaw < 7.0:
-                return False, "Turn head toward Driver Mirror (Left)  <-"
+                return False, f"Turn head left toward Driver Mirror <- (need +7°, current {rel_yaw:+.0f}°)"
             return True, "Holding Steady (Driver Mirror)"
 
         elif target_zone == PoseZone.RIGHT_MIRROR:
             # Driver turning right yields negative relative yaw in front-facing camera frame
             if rel_yaw > -7.0:
-                return False, "Turn head toward Passenger Mirror (Right)  ->"
+                return False, f"Turn head right toward Passenger Mirror -> (need -7°, current {rel_yaw:+.0f}°)"
             return True, "Holding Steady (Passenger Mirror)"
 
         elif target_zone == PoseZone.DASHBOARD:
-            # Require head yaw to be centered (|yaw| < 10.0 deg) and pitch to be intentionally down (<= -8.0 deg)
+            # Require head yaw to be centered (|yaw| < 16.0 deg) and pitch to be intentionally down (<= -6.0 deg)
             # so returning from a side mirror cannot accidentally trigger it.
-            if abs(rel_yaw) >= 10.0:
-                return False, "Center your head, then glance down at Dashboard"
-            if rel_pitch > -8.0:
-                return False, "Glance downward at Dashboard  v"
+            if abs(rel_yaw) >= 16.0:
+                return False, f"Center head before looking down (yaw {rel_yaw:+.0f}°)"
+            if rel_pitch > -6.0:
+                return False, f"Glance downward at Dashboard v (need -6° pitch, current {rel_pitch:+.0f}°)"
             return True, "Holding Steady (Dashboard)"
 
         return True, "Holding Steady"
@@ -606,12 +1289,14 @@ class GuidedCalibrationSession:
         ear_value: float,
         pitch_deg: float,
         yaw_deg: float,
-        is_eye_currently_closed: bool,
+        is_eye_currently_closed: Optional[bool] = None,
         completed_blink: Optional[BlinkEvent] = None,
         left_ear: Optional[float] = None,
         right_ear: Optional[float] = None,
         blendshape_blink_mean: Optional[float] = None,
         landmark_confidence: Optional[float] = None,
+        rot_mat: Optional[np.ndarray] = None,
+        ear_geometric_valid: Optional[bool] = None,
     ) -> Optional[DriverBehaviourProfile]:
         """
         Feed one frame of measurements into the active calibration step.
@@ -728,19 +1413,45 @@ class GuidedCalibrationSession:
             and is_aligned
             and not is_moving_excessively
         ):
+            # Stage 2.1 rotation candidate collection for CENTER zone:
+            # Independent of EAR acceptance, but verified-closed observations (is_eye_currently_closed is True)
+            # must be excluded. A None eye state remains acceptable if head-pose quality gates pass.
+            if step.zone == PoseZone.CENTER and rot_mat is not None and is_eye_currently_closed is not True:
+                mat = np.asarray(rot_mat, dtype=np.float64)
+                if is_valid_rotation_matrix(mat):
+                    self._candidate_rot_mats.append(mat)
+
             self._valid_frames_by_zone[z_key] += 1
             self._reliabilities.append(geometric_reliability)
-            # Only record open-eye EAR samples. In lateral zones, avoid letting frontal blink
-            # classifier falsely classify foreshortened eyes as closed.
-            is_closed = is_eye_currently_closed if step.zone == PoseZone.CENTER else (ear_value < min_ear_val)
-            if not is_closed and ear_value > min_ear_val:
+
+            # Scalar compatibility tracking associated with valid pose observations
+            if is_eye_currently_closed is not True:
+                self._pitch_samples_by_zone[z_key].append(pitch_deg)
+                self._yaw_samples_by_zone[z_key].append(yaw_deg)
+
+            # EAR Baseline Accumulation:
+            # - For active-profile recalibration: ONLY is_eye_currently_closed is False may contribute.
+            #   True and None must be rejected.
+            # - Initial bootstrap calibration may use separately agreed guided-protocol rules (not verified closed).
+            # - In lateral zones, avoid letting frontal blink classifier falsely classify foreshortened eyes as closed.
+            is_recalibration = (self.existing_profile is not None)
+            if step.zone == PoseZone.CENTER:
+                eye_open_for_baseline = (is_eye_currently_closed is False) if is_recalibration else (is_eye_currently_closed is not True)
+            else:
+                eye_open_for_baseline = (ear_value >= min_ear_val)
+
+            # Tri-state geometric validity for open EAR accumulation:
+            # - False: strictly rejected (never treated as open)
+            # - True: explicitly verified
+            # - None: backward compatible fallback
+            is_geometric_ok = True if ear_geometric_valid is None else ear_geometric_valid
+
+            if eye_open_for_baseline and is_geometric_ok and ear_value > min_ear_val:
                 self._ear_samples_by_zone[z_key].append(ear_value)
                 self._ear_left_by_zone[z_key].append(left_ear if left_ear is not None else ear_value)
                 self._ear_right_by_zone[z_key].append(right_ear if right_ear is not None else ear_value)
                 self._blendshape_by_zone[z_key].append(blendshape_blink_mean if blendshape_blink_mean is not None else 0.05)
                 self._confidence_by_zone[z_key].append(landmark_confidence if landmark_confidence is not None else geometric_reliability)
-                self._pitch_samples_by_zone[z_key].append(pitch_deg)
-                self._yaw_samples_by_zone[z_key].append(yaw_deg)
 
         if completed_blink is not None and not is_moving_excessively:
             self._collected_blinks.append(completed_blink)
@@ -765,6 +1476,9 @@ class GuidedCalibrationSession:
         if time_expired and not should_advance:
             if current_samples >= min_required:
                 should_advance = True
+            elif is_aligned and current_samples >= (min_required // 2) and elapsed_sec < (step_budget_sec + 3.0):
+                # Active alignment grace extension: allow up to 3 extra seconds if driver is actively collecting samples
+                pass
             else:
                 self.quality_warnings.append(
                     f"POOR_VISIBILITY: Insufficient valid observations ({current_samples}/{min_required}) in "
@@ -775,10 +1489,17 @@ class GuidedCalibrationSession:
         if should_advance:
             # If Step 1 (CENTER) finishes, lock in driver's neutral posture!
             if self._step_idx == 0:
-                p_list = self._pitch_samples_by_zone.get(z_key, [0.0])
-                y_list = self._yaw_samples_by_zone.get(z_key, [0.0])
-                self._learned_neutral_pitch = float(np.median(p_list)) if p_list else 0.0
-                self._learned_neutral_yaw = float(np.median(y_list)) if y_list else 0.0
+                p_list = self._pitch_samples_by_zone.get(z_key, [])
+                y_list = self._yaw_samples_by_zone.get(z_key, [])
+                if len(y_list) >= min_required:
+                    self._learned_neutral_pitch = float(np.median(p_list))
+                    self._learned_neutral_yaw = float(np.median(y_list))
+                elif p_list and y_list:
+                    self._learned_neutral_pitch = float(np.median(p_list))
+                    self._learned_neutral_yaw = float(np.median(y_list))
+                else:
+                    self._learned_neutral_pitch = 0.0
+                    self._learned_neutral_yaw = 0.0
 
             self._step_idx += 1
             self._step_start_ts_ms = timestamp_ms
@@ -999,6 +1720,13 @@ class GuidedCalibrationSession:
                     self.existing_profile.active_center_ear_median = new_zb.ear_median
                     self.existing_profile.neutral_pitch_deg = new_zb.pitch_median_deg
                     self.existing_profile.neutral_yaw_deg = new_zb.yaw_median_deg
+                    if self._candidate_rot_mats:
+                        try:
+                            rot_res = aggregate_neutral_rotation_matrix(self._candidate_rot_mats)
+                            if rot_res.is_accepted and rot_res.neutral_rot_mat is not None:
+                                self.existing_profile.neutral_rot_mat = rot_res.neutral_rot_mat
+                        except Exception:
+                            pass
                 self.is_completed = True
                 return self.existing_profile
             else:
@@ -1078,6 +1806,22 @@ class GuidedCalibrationSession:
             else ("FOUR_ZONE" if self.four_zone_mode else ("THREE_ZONE" if self.three_zone_mode else "CENTER_ONLY"))
         )
 
+        # Stage 2.1 SO(3) Neutral Head Pose Rotation Matrix Aggregation
+        neutral_rot_mat: Optional[np.ndarray] = None
+        if self._candidate_rot_mats:
+            try:
+                rot_res = aggregate_neutral_rotation_matrix(self._candidate_rot_mats)
+                if rot_res.is_accepted and rot_res.neutral_rot_mat is not None:
+                    neutral_rot_mat = rot_res.neutral_rot_mat
+                else:
+                    self.quality_warnings.append(
+                        f"ROTATION_REJECTED: Neutral head pose rotation aggregation rejected: {rot_res.rejection_reason}"
+                    )
+            except Exception as e:
+                self.quality_warnings.append(
+                    f"ROTATION_ERROR: Neutral head pose rotation aggregation error: {e}"
+                )
+
         profile = DriverBehaviourProfile(
             driver_id=self.driver_id,
             calibration_mode=cal_mode,
@@ -1102,6 +1846,7 @@ class GuidedCalibrationSession:
             ),
             version=1,
             calibrated_at=datetime.now(timezone.utc).isoformat(),
+            neutral_rot_mat=neutral_rot_mat,
         )
         self.is_completed = True
         return profile

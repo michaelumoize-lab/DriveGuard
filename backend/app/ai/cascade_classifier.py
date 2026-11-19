@@ -112,13 +112,14 @@ DEFAULT_EYE_ONNX_PATH = Path(__file__).resolve().parents[2] / "weights" / "mobil
 class MobileNetV3EyeVerifier:
     """
     Lightweight Eye-Crop Classifier (OPEN vs CLOSED).
-    Uses an ONNX Runtime session if `weights/mobilenetv3_eye.onnx` is present,
+    Uses OpenCV cv2.dnn as the primary ONNX inference backend (or onnxruntime if present),
     or falls back to an analytical pupil/eyelid intensity-gradient crop verifier
     for immediate Stage 1 webcam prototyping before MRL Eye Dataset fine-tuning.
     """
 
     def __init__(self, onnx_model_path: Optional[str | Path] = None) -> None:
         self.onnx_session = None
+        self.cv2_net = None
         self.input_name: Optional[str] = None
         self.is_pretrained_onnx: bool = False
         self.model_path: Optional[str] = None
@@ -126,32 +127,45 @@ class MobileNetV3EyeVerifier:
 
         resolved_path = Path(onnx_model_path) if onnx_model_path is not None else DEFAULT_EYE_ONNX_PATH
         if resolved_path.is_file():
+            import hashlib
+            # 1. Primary backend: OpenCV cv2.dnn (no extra dependencies required)
             try:
-                import hashlib
-                import onnxruntime as ort
-
-                self.onnx_session = ort.InferenceSession(
-                    str(resolved_path), providers=["CPUExecutionProvider"]
-                )
-                self.input_name = self.onnx_session.get_inputs()[0].name
+                self.cv2_net = cv2.dnn.readNetFromONNX(str(resolved_path))
                 self.is_pretrained_onnx = True
                 self.model_path = str(resolved_path)
                 with open(resolved_path, "rb") as f:
                     self.model_sha256 = hashlib.sha256(f.read()).hexdigest()
             except Exception:
-                self.onnx_session = None
-                self.is_pretrained_onnx = False
-                self.model_path = None
-                self.model_sha256 = None
+                self.cv2_net = None
+
+            # 2. Alternative backend: onnxruntime (if cv2.dnn failed)
+            if self.cv2_net is None:
+                try:
+                    import onnxruntime as ort
+
+                    self.onnx_session = ort.InferenceSession(
+                        str(resolved_path), providers=["CPUExecutionProvider"]
+                    )
+                    self.input_name = self.onnx_session.get_inputs()[0].name
+                    self.is_pretrained_onnx = True
+                    self.model_path = str(resolved_path)
+                    with open(resolved_path, "rb") as f:
+                        self.model_sha256 = hashlib.sha256(f.read()).hexdigest()
+                except Exception:
+                    self.onnx_session = None
+                    self.is_pretrained_onnx = False
+                    self.model_path = None
+                    self.model_sha256 = None
 
     def get_diagnostics(self) -> Dict[str, Any]:
         """Return provenance diagnostics for the Stage 2 eye verifier."""
         return {
             "is_pretrained_onnx": self.is_pretrained_onnx,
             "execution_mode": "MOBILENET_ONNX" if self.is_pretrained_onnx else "ANALYTICAL_FALLBACK",
+            "backend": "cv2.dnn" if self.cv2_net is not None else ("onnxruntime" if self.onnx_session is not None else "analytical"),
             "model_path": self.model_path,
             "model_sha256": self.model_sha256,
-            "session_active": self.onnx_session is not None,
+            "session_active": (self.cv2_net is not None) or (self.onnx_session is not None),
         }
 
     def predict_eye_crop(self, crop_quality: Optional[EyeCropQuality]) -> EyeCropPrediction:
@@ -173,7 +187,24 @@ class MobileNetV3EyeVerifier:
             crop = cv2.resize(crop, (64, 64), interpolation=cv2.INTER_AREA)
 
         t_start = time.perf_counter()
-        if self.onnx_session is not None and self.input_name is not None:
+        if self.cv2_net is not None:
+            # Preprocess crop: convert to 3-channel luminance to bridge IR (MRL) <-> RGB domain gap
+            gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+            lum3 = np.stack([gray, gray, gray], axis=-1).astype(np.float32) / 255.0
+            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+            img = (lum3 - mean) / std
+            tensor = np.transpose(img, (2, 0, 1))[np.newaxis, ...]
+            self.cv2_net.setInput(tensor)
+            logits = self.cv2_net.forward()[0]
+            exp_logits = np.exp(logits - np.max(logits))
+            probs = exp_logits / np.sum(exp_logits)
+            open_prob = float(probs[0])
+            closed_prob = float(probs[1])
+            duration_ms = (time.perf_counter() - t_start) * 1000.0
+            execution_mode = "MOBILENET_ONNX"
+            onnx_executed = True
+        elif self.onnx_session is not None and self.input_name is not None:
             # Convert RGB webcam crop to 3-channel luminance to bridge the IR (MRL dataset) <-> RGB (webcam) domain gap
             gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
             lum3 = np.stack([gray, gray, gray], axis=-1).astype(np.float32) / 255.0

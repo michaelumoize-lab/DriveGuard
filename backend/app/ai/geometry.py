@@ -231,16 +231,16 @@ def classify_pose_zone(
     rel_pitch = pitch_deg - neutral_pitch_deg
     rel_yaw = yaw_deg - neutral_yaw_deg
 
-    if abs(rel_yaw) > 48.0 or abs(rel_pitch) > 38.0:
+    if rel_yaw > 50.0 or rel_yaw < -70.0 or abs(rel_pitch) > 38.0:
         return PoseZone.OUT_OF_BOUNDS
 
     # Mirror-corrected driver perspective (front-facing webcam):
     # Driver turning left yields positive relative yaw; turning right yields negative relative yaw.
-    if rel_yaw >= 12.0:
+    if rel_yaw >= 10.5:
         return PoseZone.LEFT_MIRROR
     if rel_yaw <= -12.0:
         return PoseZone.RIGHT_MIRROR
-    if rel_pitch <= -8.0:
+    if rel_pitch <= -6.0:
         return PoseZone.DASHBOARD
 
     return PoseZone.CENTER

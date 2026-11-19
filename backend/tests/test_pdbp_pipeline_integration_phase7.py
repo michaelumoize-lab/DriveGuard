@@ -97,7 +97,7 @@ def build_synthetic_landmarks(
     dist = np.zeros((4, 1), dtype=np.float64)
 
     # Convert Euler angles (deg) to rotation vector in camera coordinate conventions
-    cam_pitch_rad = math.radians(pitch_deg)
+    cam_pitch_rad = math.radians(-pitch_deg)
     cam_yaw_rad = math.radians(-yaw_deg)
     Rx = np.array([[1, 0, 0], [0, math.cos(cam_pitch_rad), -math.sin(cam_pitch_rad)], [0, math.sin(cam_pitch_rad), math.cos(cam_pitch_rad)]], dtype=np.float64)
     Ry = np.array([[math.cos(cam_yaw_rad), 0, math.sin(cam_yaw_rad)], [0, 1, 0], [-math.sin(cam_yaw_rad), 0, math.cos(cam_yaw_rad)]], dtype=np.float64)

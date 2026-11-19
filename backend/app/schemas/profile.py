@@ -4,7 +4,8 @@ Pydantic Data Schemas for Driver Behaviour Profiles (PDBP).
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from backend.app.core.time_utils import validate_iso_timestamp
@@ -68,9 +69,59 @@ class DriverProfileDTO(BaseModel):
     # Neutral Head Pose
     neutral_pitch_deg: float = Field(default=0.0, description="Learned neutral head pitch in degrees")
     neutral_yaw_deg: float = Field(default=0.0, description="Learned neutral head yaw in degrees")
+    neutral_rot_mat: Optional[List[List[float]]] = Field(
+        default=None,
+        description="Learned 3x3 orthonormal neutral rotation matrix in camera coordinate frame",
+    )
 
     # Quality & Reliability
     calibration_reliability: float = Field(default=1.0, description="Overall calibration quality reliability score in [0, 1]")
+
+    @field_validator("neutral_rot_mat", mode="before")
+    @classmethod
+    def validate_neutral_rot_mat(cls, v: Any) -> Optional[List[List[float]]]:
+        if v is None:
+            return None
+
+        # 1. Structural check: exactly 3 rows
+        if not isinstance(v, list) or len(v) != 3:
+            raise ValueError("neutral_rot_mat must be a 3x3 matrix (list of 3 rows)")
+
+        for row_idx, row in enumerate(v):
+            if not isinstance(row, list) or len(row) != 3:
+                raise ValueError(
+                    f"Row {row_idx} of neutral_rot_mat must be a list containing exactly 3 numeric values"
+                )
+            # 2. Strict boolean rejection: reject booleans explicitly (isinstance(True, int) is True in Python)
+            for col_idx, item in enumerate(row):
+                if type(item) is bool:
+                    raise ValueError(
+                        f"neutral_rot_mat[{row_idx}][{col_idx}] is boolean; boolean values are strictly rejected"
+                    )
+
+        # 3. Numeric & Finite check
+        try:
+            arr = np.asarray(v, dtype=np.float64)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"neutral_rot_mat contains non-numeric data: {e}")
+
+        if not np.all(np.isfinite(arr)):
+            raise ValueError("neutral_rot_mat elements must be finite numbers (no NaN or Inf)")
+
+        # 4. Orthogonality check with tolerance 1e-5
+        ident = np.eye(3, dtype=np.float64)
+        if not np.allclose(arr.T @ arr, ident, atol=1e-5):
+            raise ValueError("neutral_rot_mat is not orthogonal (R^T @ R != I within tolerance 1e-5)")
+
+        # 5. Determinant & reflection check with tolerance 1e-5
+        det = float(np.linalg.det(arr))
+        if abs(det - 1.0) > 1e-5:
+            raise ValueError(
+                f"neutral_rot_mat is not a valid SO(3) rotation (det(R)={det:.6f} != 1.0 within tolerance 1e-5; reflections rejected)"
+            )
+
+        # Do not round values inside validator
+        return [[float(x) for x in row] for row in v]
 
     @field_validator("calibrated_at")
     @classmethod

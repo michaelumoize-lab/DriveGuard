@@ -118,6 +118,7 @@ class EyeAspectRatioResult:
     raw_ear: float = 0.0
     is_left_valid: bool = True
     is_right_valid: bool = True
+    is_geometric_valid: Optional[bool] = None
 
 
 def calculate_single_eye_ear_with_validity(
@@ -373,6 +374,8 @@ def extract_eye_aspect_ratio(
     else:
         is_closed = False
 
+    is_geometric_valid = bool(left_valid and right_valid)
+
     return EyeAspectRatioResult(
         left_ear=left_ear,
         right_ear=right_ear,
@@ -386,4 +389,5 @@ def extract_eye_aspect_ratio(
         raw_ear=raw_ear,
         is_left_valid=left_valid,
         is_right_valid=right_valid,
+        is_geometric_valid=is_geometric_valid,
     )

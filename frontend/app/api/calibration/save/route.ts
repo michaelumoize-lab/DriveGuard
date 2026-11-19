@@ -97,13 +97,19 @@ export async function POST(req: NextRequest) {
         const zv = v as Record<string, any>;
         const earMed = Number(zv.ear_median ?? centerEarMedian);
         const earMad = Number(zv.ear_mad_scaled ?? centerEarMadScaled);
+        const rawExpected = Math.min(earMed * 0.76, earMed - 2.3 * earMad);
+        const expectedThreshold = Math.min(0.22, Math.max(0.12, rawExpected));
+        const storedThreshold = Number(zv.dynamic_closure_threshold);
+        const finalThreshold =
+          !isNaN(storedThreshold) && Math.abs(storedThreshold - expectedThreshold) <= 0.0005
+            ? storedThreshold
+            : expectedThreshold;
+
         spatialZonesForWorker[k] = {
           zone: k,
           ear_median: earMed,
           ear_mad_scaled: earMad,
-          dynamic_closure_threshold: Number(
-            zv.dynamic_closure_threshold ?? Math.max(0.12, Math.min(0.22, earMed - 2.3 * earMad))
-          ),
+          dynamic_closure_threshold: finalThreshold,
           pitch_median_deg: Number(zv.pitch_median_deg ?? zv.pitch_deg_median ?? 0.0),
           yaw_median_deg: Number(zv.yaw_median_deg ?? zv.yaw_deg_median ?? 0.0),
           sample_count: Number(zv.sample_count ?? 35),

@@ -691,3 +691,126 @@ def test_bounded_concurrency_safe_thread_cleanup():
     stop_event.set()
     t.join(timeout=2.0)
     assert not t.is_alive(), "Worker failed to terminate within bounded timeout"
+
+
+# ==============================================================================
+# Suite 10: Task 2.1 Neutral Rotation Matrix DTO Validation & Adapter Roundtrip
+# ==============================================================================
+
+def _make_so3_matrix(yaw_deg: float = 0.0, pitch_deg: float = 0.0, roll_deg: float = 0.0) -> np.ndarray:
+    """Helper to generate pure orthonormal SO(3) matrices for testing."""
+    psi = np.radians(yaw_deg)
+    theta = np.radians(pitch_deg)
+    phi = np.radians(roll_deg)
+    Ry = np.array([[np.cos(psi), 0.0, np.sin(psi)], [0.0, 1.0, 0.0], [-np.sin(psi), 0.0, np.cos(psi)]], dtype=np.float64)
+    Rx = np.array([[1.0, 0.0, 0.0], [0.0, np.cos(theta), -np.sin(theta)], [0.0, np.sin(theta), np.cos(theta)]], dtype=np.float64)
+    Rz = np.array([[np.cos(phi), -np.sin(phi), 0.0], [np.sin(phi), np.cos(phi), 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+    return Ry @ Rx @ Rz
+
+
+def test_driver_profile_dto_neutral_rot_mat_valid():
+    """Verify that a valid 3x3 SO(3) matrix passes DTO validation."""
+    rot = _make_so3_matrix(15.0, -8.0)
+    dto = DriverProfileDTO(neutral_rot_mat=rot.tolist())
+    assert dto.neutral_rot_mat is not None
+    assert len(dto.neutral_rot_mat) == 3
+    arr = np.asarray(dto.neutral_rot_mat, dtype=np.float64)
+    assert np.allclose(arr.T @ arr, np.eye(3), atol=1e-5)
+    assert abs(np.linalg.det(arr) - 1.0) < 1e-5
+
+
+def test_driver_profile_dto_neutral_rot_mat_boolean_rejection():
+    """Verify that boolean entries in neutral_rot_mat are strictly rejected."""
+    bad_bool1 = [[True, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    with pytest.raises(ValidationError) as exc1:
+        DriverProfileDTO(neutral_rot_mat=bad_bool1)
+    assert "boolean values are strictly rejected" in str(exc1.value)
+
+    bad_bool2 = [[1.0, 0.0, 0.0], [0.0, False, 0.0], [0.0, 0.0, 1.0]]
+    with pytest.raises(ValidationError) as exc2:
+        DriverProfileDTO(neutral_rot_mat=bad_bool2)
+    assert "boolean values are strictly rejected" in str(exc2.value)
+
+
+def test_driver_profile_dto_neutral_rot_mat_shape_rejection():
+    """Verify that matrices not of shape 3x3 are rejected."""
+    with pytest.raises(ValidationError) as exc_2x3:
+        DriverProfileDTO(neutral_rot_mat=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    assert "must be a 3x3 matrix" in str(exc_2x3.value)
+
+    with pytest.raises(ValidationError) as exc_3x2:
+        DriverProfileDTO(neutral_rot_mat=[[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]])
+    assert "must be a list containing exactly 3 numeric values" in str(exc_3x2.value)
+
+
+def test_driver_profile_dto_neutral_rot_mat_non_orthogonal_rejection():
+    """Verify that non-orthogonal matrices are rejected beyond 1e-5 tolerance."""
+    non_ortho = [[1.0, 0.05, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    with pytest.raises(ValidationError) as exc:
+        DriverProfileDTO(neutral_rot_mat=non_ortho)
+    assert "not orthogonal" in str(exc.value)
+
+
+def test_driver_profile_dto_neutral_rot_mat_reflection_rejection():
+    """Verify that reflection matrices (det = -1.0) are rejected."""
+    reflection = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]]
+    with pytest.raises(ValidationError) as exc:
+        DriverProfileDTO(neutral_rot_mat=reflection)
+    assert "not a valid SO(3) rotation" in str(exc.value)
+
+
+def test_driver_profile_dto_neutral_rot_mat_non_finite_rejection():
+    """Verify that NaN or Inf entries raise ValidationError."""
+    bad_nan = _make_so3_matrix(0.0).tolist()
+    bad_nan[0][0] = float("nan")
+    with pytest.raises(ValidationError) as exc_nan:
+        DriverProfileDTO(neutral_rot_mat=bad_nan)
+    assert "finite numbers" in str(exc_nan.value)
+
+    bad_inf = _make_so3_matrix(0.0).tolist()
+    bad_inf[1][1] = float("inf")
+    with pytest.raises(ValidationError) as exc_inf:
+        DriverProfileDTO(neutral_rot_mat=bad_inf)
+    assert "finite numbers" in str(exc_inf.value)
+
+
+def test_profile_adapter_neutral_rot_mat_six_decimal_roundtrip():
+    """Verify 6-decimal serialization round-trip between DriverBehaviourProfile and DriverProfileDTO."""
+    prof = DriverBehaviourProfile.create_default_uncalibrated()
+    rot = _make_so3_matrix(18.234567, -7.891234, 3.456789)
+    prof.neutral_rot_mat = rot
+
+    dto = profile_to_dto(prof)
+    assert dto.neutral_rot_mat is not None
+    # Verify values are rounded to 6 decimals
+    for row in dto.neutral_rot_mat:
+        for val in row:
+            assert round(val, 6) == val
+
+    prof_reconstructed = dto_to_profile(dto)
+    assert prof_reconstructed.neutral_rot_mat is not None
+    assert isinstance(prof_reconstructed.neutral_rot_mat, np.ndarray)
+    assert prof_reconstructed.neutral_rot_mat.shape == (3, 3)
+    assert np.allclose(prof_reconstructed.neutral_rot_mat, rot, atol=1e-5)
+
+
+def test_profile_adapter_legacy_profile_scalar_fallback():
+    """Verify that a legacy DTO without neutral_rot_mat produces a profile with neutral_rot_mat=None."""
+    dto_legacy = DriverProfileDTO(
+        neutral_pitch_deg=-3.5,
+        neutral_yaw_deg=12.0,
+        neutral_rot_mat=None,
+    )
+    prof = dto_to_profile(dto_legacy)
+    assert prof.neutral_rot_mat is None
+    assert prof.neutral_pitch_deg == -3.5
+    assert prof.neutral_yaw_deg == 12.0
+
+    # Also test DTO when neutral_rot_mat field is omitted entirely
+    dto_omitted = DriverProfileDTO(neutral_pitch_deg=2.0, neutral_yaw_deg=-14.0)
+    assert dto_omitted.neutral_rot_mat is None
+    prof_omitted = dto_to_profile(dto_omitted)
+    assert prof_omitted.neutral_rot_mat is None
+    assert prof_omitted.neutral_pitch_deg == 2.0
+    assert prof_omitted.neutral_yaw_deg == -14.0
+
