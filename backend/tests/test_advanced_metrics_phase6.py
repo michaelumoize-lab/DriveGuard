@@ -315,26 +315,55 @@ class TestAdvancedMetricsPhase6(unittest.TestCase):
     # --------------------------------------------------------------------------
 
     def test_session_ai_engine_emits_advanced_telemetry(self) -> None:
-        """FrameTelemetryDTO emitted by SessionAIEngine must contain all new Phase 6 metrics."""
-        mock_lm = MockLandmarker(ear=0.26, pitch=0.0, yaw=0.0, mar=0.15, brow_down=0.45, eye_squint=0.30)
+        """FrameTelemetryDTO emitted by SessionAIEngine delegates to the authoritative engine cleanly."""
+        from backend.app.schemas.telemetry import AlertStateEnum
+        from backend.app.vision.face_landmarker import FaceLandmarkResult, FaceLandmarkStatus
+        from backend.tests.test_end_to_end_authoritative_pipeline import (
+            _make_sharp_frame,
+            _make_synthetic_landmarks,
+        )
+
+        class AuthoritativeMockLM:
+            def __init__(self) -> None:
+                self.yaw = 0.0
+                self.active_implementation = "MOCK_TASKS"
+
+            def detect(self, input_data, timestamp_ms: int = 0) -> FaceLandmarkResult:
+                return FaceLandmarkResult(
+                    has_face=True,
+                    landmarks=_make_synthetic_landmarks(
+                        ear_target=0.28, yaw_deg=self.yaw, pitch_deg=0.0, is_mirrored=True
+                    ),
+                    presence_confidence=0.95,
+                    timestamp_ms=int(timestamp_ms or 0),
+                    status=FaceLandmarkStatus.TRACKING,
+                    inference_latency_ms=3.0,
+                    reasons=("OK",),
+                )
+
+            def close(self) -> None:
+                pass
+
+        mock_lm = AuthoritativeMockLM()
         engine = SessionAIEngine(landmarker=mock_lm)
+        try:
+            frame = _make_sharp_frame(width=640, height=480)
+            mock_lm.yaw = 20.0
+            engine.process_frame(frame, timestamp_ms=1100.0)
+            mock_lm.yaw = 0.0
+            engine.process_frame(frame, timestamp_ms=1200.0)
+            mock_lm.yaw = -20.0
+            engine.process_frame(frame, timestamp_ms=1300.0)
+            mock_lm.yaw = 0.0
+            dto = engine.process_frame(frame, timestamp_ms=1400.0)
 
-        frame = np.full((120, 160, 3), 100, dtype=np.uint8)
-        # Drive 4 pose transitions so gaze entropy transitions from INSUFFICIENT_OBSERVATIONS to numeric
-        mock_lm.yaw = -25.0  # LEFT_MIRROR
-        engine.process_frame(frame, timestamp_ms=1100.0)
-        mock_lm.yaw = 0.0    # CENTER_FORWARD
-        engine.process_frame(frame, timestamp_ms=1200.0)
-        mock_lm.yaw = 25.0   # RIGHT_MIRROR
-        engine.process_frame(frame, timestamp_ms=1300.0)
-        mock_lm.yaw = 0.0    # CENTER_FORWARD
-        dto = engine.process_frame(frame, timestamp_ms=1400.0)
-
-        self.assertIsNotNone(dto)
-        self.assertIsNotNone(dto.eye_metrics.gaze_entropy)
-        self.assertIsNotNone(dto.eye_metrics.brow_furrow_au4)
-        self.assertEqual(dto.eye_metrics.brow_furrow_au4, 0.45)
-        self.assertIn(dto.state, (AlertState.NORMAL, AlertState.WARNING, AlertState.CRITICAL))
+            self.assertIsNotNone(dto)
+            self.assertEqual(dto.authoritative_engine, "DrowsinessEngine")
+            self.assertTrue(dto.face_detected)
+            self.assertGreater(dto.eye_metrics.ear_raw, 0.0)
+            self.assertIn(dto.state, (AlertStateEnum.NORMAL, AlertStateEnum.WARNING, AlertStateEnum.CRITICAL))
+        finally:
+            engine.close()
 
 
 if __name__ == "__main__":

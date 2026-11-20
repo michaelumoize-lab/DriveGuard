@@ -95,63 +95,46 @@ class TestFaceLossGracePeriodAndRecoveryDG06:
             face_loss_grace_ms=500.0,
         )
 
-        # 1. Establish normal monitoring with a simulated detected face
+        # 1. Establish normal monitoring with a simulated detected face (authoritative FaceLandmarkResult)
+        from backend.app.vision.face_landmarker import FaceLandmarkResult, FaceLandmarkStatus
+        from backend.tests.test_end_to_end_authoritative_pipeline import (
+            _make_sharp_frame,
+            _make_synthetic_landmarks,
+        )
+
         class MockGeomLandmarker:
             def __init__(self, detected: bool):
                 self.detected = detected
                 self.active_implementation = "MOCK_TASKS"
 
-            def process_frame(self, **kwargs):
-                from backend.app.ai.geometry import FrameGeometryFeatures, PoseZone
+            def detect(self, input_data, timestamp_ms: int = 0):
                 if self.detected:
-                    return (
-                        FrameGeometryFeatures(
-                            timestamp_ms=kwargs.get("timestamp_ms", 0.0),
-                            face_detected=True,
-                            landmark_confidence=0.95,
-                            left_ear=0.28,
-                            right_ear=0.28,
-                            yaw_weighted_ear=0.28,
-                            blendshape_blink_left=0.05,
-                            blendshape_blink_right=0.05,
-                            blendshape_blink_mean=0.05,
-                            mar=0.12,
-                            pitch_deg=0.0,
-                            yaw_deg=0.0,
-                            roll_deg=0.0,
-                            pose_zone=PoseZone.CENTER,
-                            geometric_reliability=0.90,
-                            tracking_mode="MOCK_TASKS",
-                        ),
-                        None,
+                    return FaceLandmarkResult(
+                        has_face=True,
+                        landmarks=_make_synthetic_landmarks(ear_target=0.28, yaw_deg=0.0, pitch_deg=0.0, is_mirrored=True),
+                        presence_confidence=0.95,
+                        timestamp_ms=int(timestamp_ms or 0),
+                        status=FaceLandmarkStatus.TRACKING,
+                        inference_latency_ms=4.0,
+                        reasons=("OK",),
                     )
-                else:
-                    return (
-                        FrameGeometryFeatures(
-                            timestamp_ms=kwargs.get("timestamp_ms", 0.0),
-                            face_detected=False,
-                            landmark_confidence=0.0,
-                            left_ear=0.0,
-                            right_ear=0.0,
-                            yaw_weighted_ear=0.0,
-                            blendshape_blink_left=None,
-                            blendshape_blink_right=None,
-                            blendshape_blink_mean=None,
-                            mar=0.0,
-                            pitch_deg=0.0,
-                            yaw_deg=0.0,
-                            roll_deg=0.0,
-                            pose_zone=PoseZone.OUT_OF_BOUNDS,
-                            geometric_reliability=0.0,
-                            tracking_mode="MOCK_TASKS",
-                        ),
-                        None,
-                    )
+                return FaceLandmarkResult(
+                    has_face=False,
+                    landmarks=(),
+                    presence_confidence=0.0,
+                    timestamp_ms=int(timestamp_ms or 0),
+                    status=FaceLandmarkStatus.INSUFFICIENT_DATA,
+                    inference_latency_ms=4.0,
+                    reasons=("NO_FACE",),
+                )
+
+            def close(self) -> None:
+                pass
 
         mock_landmarker = MockGeomLandmarker(detected=True)
         engine.landmarker = mock_landmarker
 
-        frame_rgb = np.zeros((480, 640, 3), dtype=np.uint8)
+        frame_rgb = _make_sharp_frame(width=640, height=480)
 
         # Send valid frames at 1000ms and 1033ms
         t1 = engine.process_frame(frame_rgb, timestamp_ms=1000.0)
@@ -209,61 +192,44 @@ class TestFaceLossGracePeriodAndRecoveryDG06:
             face_loss_grace_ms=450.0,
         )
 
+        from backend.app.vision.face_landmarker import FaceLandmarkResult, FaceLandmarkStatus
+        from backend.tests.test_end_to_end_authoritative_pipeline import (
+            _make_sharp_frame,
+            _make_synthetic_landmarks,
+        )
+
         class MockLandmarker:
             def __init__(self):
                 self.detected = True
                 self.active_implementation = "MOCK_TASKS"
 
-            def process_frame(self, **kwargs):
-                from backend.app.ai.geometry import FrameGeometryFeatures, PoseZone
+            def detect(self, input_data, timestamp_ms: int = 0):
                 if self.detected:
-                    return (
-                        FrameGeometryFeatures(
-                            timestamp_ms=kwargs.get("timestamp_ms", 0.0),
-                            face_detected=True,
-                            landmark_confidence=0.95,
-                            left_ear=0.28,
-                            right_ear=0.28,
-                            yaw_weighted_ear=0.28,
-                            blendshape_blink_left=0.05,
-                            blendshape_blink_right=0.05,
-                            blendshape_blink_mean=0.05,
-                            mar=0.12,
-                            pitch_deg=0.0,
-                            yaw_deg=0.0,
-                            roll_deg=0.0,
-                            pose_zone=PoseZone.CENTER,
-                            geometric_reliability=0.90,
-                            tracking_mode="MOCK_TASKS",
-                        ),
-                        None,
+                    return FaceLandmarkResult(
+                        has_face=True,
+                        landmarks=_make_synthetic_landmarks(ear_target=0.28, yaw_deg=0.0, pitch_deg=0.0, is_mirrored=True),
+                        presence_confidence=0.95,
+                        timestamp_ms=int(timestamp_ms or 0),
+                        status=FaceLandmarkStatus.TRACKING,
+                        inference_latency_ms=4.0,
+                        reasons=("OK",),
                     )
-                else:
-                    return (
-                        FrameGeometryFeatures(
-                            timestamp_ms=kwargs.get("timestamp_ms", 0.0),
-                            face_detected=False,
-                            landmark_confidence=0.0,
-                            left_ear=0.0,
-                            right_ear=0.0,
-                            yaw_weighted_ear=0.0,
-                            blendshape_blink_left=None,
-                            blendshape_blink_right=None,
-                            blendshape_blink_mean=None,
-                            mar=0.0,
-                            pitch_deg=0.0,
-                            yaw_deg=0.0,
-                            roll_deg=0.0,
-                            pose_zone=PoseZone.OUT_OF_BOUNDS,
-                            geometric_reliability=0.0,
-                            tracking_mode="MOCK_TASKS",
-                        ),
-                        None,
-                    )
+                return FaceLandmarkResult(
+                    has_face=False,
+                    landmarks=(),
+                    presence_confidence=0.0,
+                    timestamp_ms=int(timestamp_ms or 0),
+                    status=FaceLandmarkStatus.INSUFFICIENT_DATA,
+                    inference_latency_ms=4.0,
+                    reasons=("NO_FACE",),
+                )
+
+            def close(self) -> None:
+                pass
 
         mock = MockLandmarker()
         engine.landmarker = mock
-        frame_rgb = np.zeros((480, 640, 3), dtype=np.uint8)
+        frame_rgb = _make_sharp_frame(width=640, height=480)
 
         # Step 1: establish active monitoring
         engine.process_frame(frame_rgb, timestamp_ms=1000.0)

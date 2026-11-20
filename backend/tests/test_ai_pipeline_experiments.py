@@ -141,19 +141,16 @@ async def test_engine_synchronous_experiment_mode_transition() -> None:
     )
     try:
         assert engine.experiment_mode == ExperimentMode.C_CONFIDENCE_GATED_CASCADE
-        assert engine.cascade.mode == ExperimentMode.C_CONFIDENCE_GATED_CASCADE
 
         # Switch to Mode A (Geometric only)
         new_mode = await engine.submit_command("SWITCH_EXPERIMENT", mode="EXPERIMENT_A_GEOMETRIC_ONLY")
         assert new_mode == ExperimentMode.A_GEOMETRIC_ONLY
         assert engine.experiment_mode == ExperimentMode.A_GEOMETRIC_ONLY
-        assert engine.cascade.mode == ExperimentMode.A_GEOMETRIC_ONLY
 
         # Switch to Mode B (CNN always)
         new_mode = await engine.submit_command("SWITCH_EXPERIMENT", mode="B_CNN_ALWAYS")
         assert new_mode == ExperimentMode.B_CNN_ALWAYS
         assert engine.experiment_mode == ExperimentMode.B_CNN_ALWAYS
-        assert engine.cascade.mode == ExperimentMode.B_CNN_ALWAYS
 
         # Invalid mode must raise ValueError and preserve current mode
         with pytest.raises(ValueError):

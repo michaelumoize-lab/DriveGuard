@@ -13,6 +13,8 @@ import {
   CircleDashed,
 } from "lucide-react";
 
+import type { BackendProcessingStatus } from "@/types/telemetry";
+
 export interface ReadinessChecklistProps {
   cameraActive: boolean;
   cameraResolutionLabel?: string;
@@ -20,6 +22,7 @@ export interface ReadinessChecklistProps {
   isCalibrated: boolean;
   centerEarBaseline?: number;
   livekitStatus: "disconnected" | "connecting" | "connected" | "reconnecting" | "error";
+  backendProcessingStatus?: BackendProcessingStatus;
   isStale: boolean;
   rttMs?: number;
   audioStatus: string;
@@ -35,6 +38,7 @@ export const ReadinessChecklist = React.memo(function ReadinessChecklist({
   isCalibrated,
   centerEarBaseline,
   livekitStatus,
+  backendProcessingStatus,
   isStale,
   rttMs,
   audioStatus,
@@ -72,8 +76,8 @@ export const ReadinessChecklist = React.memo(function ReadinessChecklist({
       id: "calibration",
       label: "4-Zone Baseline",
       value: isCalibrated
-        ? `Calibrated (${(centerEarBaseline ?? 0.285).toFixed(3)})`
-        : "Uncalibrated Default",
+        ? `Calibrated (${centerEarBaseline !== undefined ? centerEarBaseline.toFixed(3) : "Active"})`
+        : "Calibration Required",
       state: isCalibrated ? "ready" : "warning",
       icon: Compass,
       onClick: !isCalibrated ? onCalibrateClick : undefined,
@@ -82,17 +86,21 @@ export const ReadinessChecklist = React.memo(function ReadinessChecklist({
       id: "worker",
       label: "LiveKit AI Worker",
       value:
-        livekitStatus === "connected" && !isStale
-          ? `Online${rttMs && rttMs > 0 ? ` (${rttMs} ms)` : ""}`
-          : isStale
-            ? "Telemetry Stale"
-            : livekitStatus === "connecting" || livekitStatus === "reconnecting"
-              ? "Handshaking…"
-              : livekitStatus === "error"
-                ? "Connection Error"
-                : "Standby",
+        backendProcessingStatus === "processing" && !isStale
+          ? `Processing${rttMs && rttMs > 0 ? ` (${rttMs} ms)` : ""}`
+          : backendProcessingStatus === "awaiting_telemetry"
+            ? "Awaiting Telemetry…"
+            : isStale
+              ? "Telemetry Stale"
+              : livekitStatus === "connecting" || livekitStatus === "reconnecting"
+                ? "Handshaking…"
+                : livekitStatus === "error"
+                  ? "Connection Error"
+                  : livekitStatus === "connected"
+                    ? "Connected (No Frames)"
+                    : "Standby",
       state:
-        livekitStatus === "connected" && !isStale
+        backendProcessingStatus === "processing" && !isStale
           ? "ready"
           : isStale || livekitStatus === "error"
             ? "warning"

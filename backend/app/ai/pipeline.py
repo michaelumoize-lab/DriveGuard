@@ -1,57 +1,49 @@
 """
-DriveGuard Session AI Engine — Unified Pipeline Orchestrator.
+DriveGuard Session AI Engine — Thin Session & Transport Adapter.
 
-Encapsulates the complete real-time computer vision and adaptive inference pipeline:
-  1. Image Ingestion (Decodes raw JPEG/PNG bytes or receives pre-decoded NumPy BGR frames).
-  2. MediaPipe 478 3D Face Landmarking & Iris Tracking.
-  3. 6DoF Head Pose Estimation & 4-Zone Pose Classification.
-  4. 4-Zone Pose-Conditioned Guided Calibration Session Management.
-  5. Sub-Frame Blink Kinematics (Duration, Reopening RCR, Rolling 60s PERCLOS).
-  6. Confidence-Gated Eye Cascade with Reliability-Weighted Arbitration.
-  7. Personalised Adaptive Risk Engine (4-state FSM, Explainable Reason Codes).
-  8. Side-by-side Conventional Fixed Threshold Benchmark Comparison.
+Wraps the single authoritative `LocalMonitoringService` pipeline:
+  FrameQualityAnalyzer
+    -> DriveGuardFaceLandmarker (backend.app.vision.face_landmarker)
+    -> DriverFeatureExtractor (EAR, Head Pose, MAR/Yawn, Blink Kinematics, PERCLOS, PDBP)
+    -> DrowsinessEngine (SignalConfidenceEvaluator -> TemporalAnalyzer -> DecisionEngine)
+    -> AlertStateManager
+
+Responsibilities retained strictly for session & transport orchestration:
+  1. Per-session identity and ownership metadata (`session_id`, `driver_id`, `owner_id`).
+  2. Thread-safe execution serialization (`_process_lock`) and FIFO frame-boundary
+     command queue (`submit_command`, `_drain_pending_commands_locked`).
+  3. Frame input adaptation via `frame_adapters` (JPEG/PNG bytes, RGB24 arrays, BGR24 arrays).
+  4. Projection of authoritative `LocalMonitoringFrameResult` outputs into FastAPI /
+     WebSocket / LiveKit Pydantic wire contracts (`FrameTelemetryDTO`, `CalibrationPhaseDTO`).
+  5. Bounded latency / FPS diagnostics and safe native resource cleanup (`close()`).
+
+Zero duplicated drowsiness detection, EAR, MAR, blink, PERCLOS, head-pose, or
+risk-scoring logic lives in this module.
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 from dataclasses import dataclass
-import asyncio
 import logging
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Deque, Dict, List, Optional, Tuple, Union
+from typing import Any, Deque, Dict, List, Optional, Union
 
-import cv2
 import numpy as np
 
-logger = logging.getLogger("driveguard.pipeline")
-
-from backend.app.ai.blink_kinematics import TemporalKinematicsTracker
-from backend.app.ai.cascade_classifier import (
-    ConfidenceGatedEyeCascade,
-    ExperimentMode,
-)
-from backend.app.ai.gaze_attention import GazeAttentionTracker
-from backend.app.ai.geometry import (
-    FrameGeometryFeatures,
-    PoseZone,
-)
-from backend.app.ai.landmarker import DriveGuardFaceLandmarker
-from backend.app.ai.pdbp_calibration import (
-    DriverBehaviourProfile,
-    GuidedCalibrationSession,
-    ZoneBaseline,
-)
+from backend.app.core.experiment_mode import ExperimentMode
+from backend.app.ai.pdbp_calibration import DriverBehaviourProfile
 from backend.app.ai.profile_adapter import dto_to_profile, profile_to_dto
-from backend.app.ai.risk_engine import (
-    AlertState,
-    PersonalisedAdaptiveRiskEngine,
-)
+from backend.app.alerts.alert_state import AlertState
+from backend.app.alerts.alert_state_manager import AlertStateManager
+from backend.app.features.feature_extractor import DriverFeatureExtractor
+from backend.app.intelligence.drowsiness_engine import DrowsinessEngine
+from backend.app.intelligence.reason_codes import DrowsinessState
 from backend.app.schemas.calibration import CalibrationPhaseDTO
-from backend.app.schemas.profile import DriverProfileDTO, ZoneBaselineDTO
+from backend.app.schemas.profile import DriverProfileDTO
 from backend.app.schemas.telemetry import (
     AlertStateEnum,
     CascadeStatusDTO,
@@ -61,6 +53,41 @@ from backend.app.schemas.telemetry import (
     HeadPoseDTO,
     PoseZoneEnum,
 )
+from backend.app.services.frame_adapters import (
+    ArrayFrameAdapter,
+    EncodedBytesFrameAdapter,
+    FrameDecodeError,
+)
+from backend.app.services.local_monitoring_service import (
+    LocalMonitoringConfig,
+    LocalMonitoringFrameResult,
+    LocalMonitoringService,
+    ProcessedTelemetrySnapshot,
+)
+from backend.app.services.profile_store import ProfileStore
+from backend.app.vision.face_landmarker import DriveGuardFaceLandmarker
+
+logger = logging.getLogger("driveguard.pipeline")
+
+
+def _map_authoritative_state_to_wire(
+    alert_state: AlertState,
+    drowsiness_state: DrowsinessState,
+    alert_active: bool,
+) -> tuple[AlertStateEnum, float]:
+    """
+    Map authoritative Phase 6/8 alert state to the backward-compatible 4-level
+    wire `AlertStateEnum` and normalized diagnostic risk score in [0.0, 1.0].
+    """
+    if drowsiness_state == DrowsinessState.INSUFFICIENT_DATA and not alert_active:
+        return AlertStateEnum.MONITORING_UNAVAILABLE, 0.0
+    if alert_state == AlertState.CRITICAL:
+        return AlertStateEnum.CRITICAL, 0.95
+    if alert_state == AlertState.WARNING:
+        return AlertStateEnum.WARNING, 0.65
+    if alert_state == AlertState.ATTENTION:
+        return AlertStateEnum.WARNING, 0.45
+    return AlertStateEnum.NORMAL, 0.05
 
 
 @dataclass
@@ -75,7 +102,8 @@ class EngineCommand:
 
 class SessionAIEngine:
     """
-    Stateful AI pipeline orchestrator managing one driver's real-time monitoring session.
+    Thin stateful session adapter delegating all computer vision, feature extraction,
+    drowsiness inference, calibration, and alerting to `LocalMonitoringService`.
     """
 
     def __init__(
@@ -88,10 +116,15 @@ class SessionAIEngine:
         landmarker: Optional[DriveGuardFaceLandmarker] = None,
         face_loss_grace_ms: float = 450.0,
         owner_id: Optional[str] = None,
+        is_mirrored: bool = True,
+        store: Optional[ProfileStore] = None,
     ) -> None:
         self.session_id = session_id
         self.driver_id = driver_id
         self.owner_id: str = owner_id or driver_id
+        self.is_mirrored: bool = bool(is_mirrored)
+        self._onnx_model_path = onnx_model_path
+
         if isinstance(experiment_mode, str):
             try:
                 self.experiment_mode = ExperimentMode(experiment_mode)
@@ -100,27 +133,37 @@ class SessionAIEngine:
         else:
             self.experiment_mode = experiment_mode
 
-        # AI Subsystem Components
-        self.landmarker = landmarker if landmarker is not None else DriveGuardFaceLandmarker()
-        self.cascade = ConfidenceGatedEyeCascade(
-            mode=self.experiment_mode, onnx_model_path=onnx_model_path
-        )
+        # Authoritative profile record held by session adapter
         if profile is not None:
-            self.profile = profile
+            self._profile = profile
         else:
-            self.profile = DriverBehaviourProfile.create_default_uncalibrated(driver_id=driver_id)
-        self.kinematics = TemporalKinematicsTracker(
-            personalized_blink_median_ms=self.profile.blink_duration_median_ms,
-            personalized_blink_mad_ms=self.profile.blink_duration_mad_ms,
+            self._profile = DriverBehaviourProfile.create_default_uncalibrated(driver_id=driver_id)
+
+        # Single authoritative monitoring pipeline (headless: no server speaker I/O)
+        self.monitoring_service = LocalMonitoringService(
+            config=LocalMonitoringConfig(
+                driver_id=driver_id,
+                is_mirrored=self.is_mirrored,
+                cnn_shadow_enabled=False,
+            ),
+            store=store,
+            landmarker=landmarker,
+            enable_landmarker=(landmarker is None),
+            enable_shadow_worker=False,
+            enable_audio=False,
+            enable_event_logging=False,
+            auto_load_profile=False,
+            persist_calibration_to_store=False,
+            initial_profile=profile,
+            face_loss_grace_ms=float(face_loss_grace_ms),
+            landmarker_grace_timeout_sec=max(0.05, float(face_loss_grace_ms) / 1000.0),
         )
-        self.gaze_tracker = GazeAttentionTracker()
-        self.risk_engine = PersonalisedAdaptiveRiskEngine(profile=self.profile, fixed_ear_threshold=0.22)
 
-        # Calibration State
-        self.calibration_session: Optional[GuidedCalibrationSession] = None
+        # Calibration DTO cache for WebSocket / REST status polling
         self._last_completed_calibration_dto: Optional[CalibrationPhaseDTO] = None
+        self._last_frame_result: Optional[LocalMonitoringFrameResult] = None
 
-        # Telemetry & Performance Counters
+        # Telemetry & performance counters
         self.frame_index: int = 0
         self.prev_timestamp_ms: Optional[float] = None
         self.fps_ema: float = 30.0
@@ -130,9 +173,8 @@ class SessionAIEngine:
         self.total_fixed_false_alarms: int = 0
 
         # Hybrid latency history management:
-        # 1. Exact lifetime O(1) running accumulators for session summary mean calculation
-        #    (IEEE 754 64-bit summation accumulated rounding error bounded <= 1.1e-7 ms over 720k frames)
-        # 2. Bounded circular buffer for recent latency inspection (~60 seconds at 25 FPS = 1500 samples)
+        # 1. Exact O(1) lifetime accumulators for session summary mean
+        # 2. Bounded circular buffer (1500 samples ~= 60s at 25 FPS)
         self._lifetime_latency_count: int = 0
         self._lifetime_latency_sum_ms: float = 0.0
         self._recent_latencies_ms: Deque[float] = deque(maxlen=1500)
@@ -142,7 +184,7 @@ class SessionAIEngine:
         self._pending_commands: Deque[EngineCommand] = deque()
         self._is_closed = False
 
-        # Face-Loss Grace Period & Monitoring Availability FSM (DG-06)
+        # Face-loss availability envelope (transport observability without competing AI)
         self.face_loss_grace_ms: float = float(face_loss_grace_ms)
         self._face_lost_start_ms: Optional[float] = None
         self._last_seen_ms: Optional[float] = None
@@ -153,17 +195,66 @@ class SessionAIEngine:
         self._recovery_frame_count: int = 0
         self.REQUIRED_RECOVERY_FRAMES: int = 3
 
+    # --------------------------------------------------------------------------
+    # Authoritative Core Component Accessors
+    # --------------------------------------------------------------------------
+
+    @property
+    def drowsiness_engine(self) -> DrowsinessEngine:
+        """Authoritative DrowsinessEngine shared with local monitoring."""
+        return self.monitoring_service.drowsiness_engine
+
+    @property
+    def feature_extractor(self) -> DriverFeatureExtractor:
+        """Authoritative DriverFeatureExtractor shared with local monitoring."""
+        return self.monitoring_service.feature_extractor
+
+    @property
+    def alert_manager(self) -> AlertStateManager:
+        """Authoritative AlertStateManager shared with local monitoring."""
+        return self.monitoring_service.alert_manager
+
+    @property
+    def landmarker(self) -> Optional[DriveGuardFaceLandmarker]:
+        """Authoritative vision landmarker owned by LocalMonitoringService."""
+        return self.monitoring_service.landmarker
+
+    @landmarker.setter
+    def landmarker(self, value: Optional[DriveGuardFaceLandmarker]) -> None:
+        self.monitoring_service.landmarker = value
+
+    @property
+    def profile(self) -> DriverBehaviourProfile:
+        """Active session driver profile."""
+        return self._profile
+
+    @profile.setter
+    def profile(self, value: DriverBehaviourProfile) -> None:
+        self._profile = value
+
+    @property
+    def calibration_session(self):
+        return self.monitoring_service.calibration_session
+
+    @calibration_session.setter
+    def calibration_session(self, value) -> None:
+        self.monitoring_service.calibration_session = value
+
     @property
     def latencies_ms(self) -> List[float]:
-        """Backward compatibility: returns shallow list copy of recent rolling window of up to 1500 samples."""
+        """Shallow list copy of recent rolling window of up to 1500 samples."""
         return list(self._recent_latencies_ms)
 
     def get_recent_latencies(self) -> List[float]:
         """Return shallow list copy of recent rolling window of up to 1500 latency samples."""
         return list(self._recent_latencies_ms)
 
+    def get_latest_telemetry_snapshot(self) -> Optional[ProcessedTelemetrySnapshot]:
+        """Return the latest authoritative `ProcessedTelemetrySnapshot` (zero raw video)."""
+        return self.monitoring_service.get_latest_telemetry()
+
     # --------------------------------------------------------------------------
-    # Calibration Lifecycle Management (Synchronized & Frame-Boundary Safe)
+    # Calibration Lifecycle Management (Delegated to LocalMonitoringService)
     # --------------------------------------------------------------------------
 
     def start_calibration(
@@ -198,31 +289,22 @@ class SessionAIEngine:
         include_blink_baseline: bool = False,
         blink_baseline_duration_sec: float = 120.0,
     ) -> CalibrationPhaseDTO:
-        t_zone: Optional[PoseZone | str] = None
-        if target_zone:
-            is_4z, is_3z = False, False
-            if str(target_zone) == "BLINK_CADENCE":
-                t_zone = "BLINK_CADENCE"
-            else:
-                t_zone = PoseZone(target_zone) if isinstance(target_zone, str) else target_zone
-        elif four_zone_mode is None and three_zone_mode is None:
-            # Default to full 4-Zone calibration
+        if four_zone_mode is None and three_zone_mode is None and target_zone is None:
             is_4z, is_3z = True, False
         else:
             is_4z = bool(four_zone_mode)
             is_3z = not is_4z and bool(three_zone_mode)
 
-        self.calibration_session = GuidedCalibrationSession(
-            driver_id=self.driver_id,
+        self.monitoring_service.start_calibration(
+            timestamp_ms=timestamp_ms,
+            is_mirrored=self.is_mirrored,
             four_zone_mode=is_4z,
             three_zone_mode=is_3z,
             step_duration_sec=zone_duration_sec,
-            target_zone=t_zone,
-            existing_profile=self.profile if (t_zone is not None and self.profile.calibration_mode != "UNCALIBRATED_DEFAULT") else None,
+            target_zone=target_zone,
             include_blink_baseline=include_blink_baseline,
             blink_baseline_duration_sec=blink_baseline_duration_sec,
         )
-        self.calibration_session.start(timestamp_ms=timestamp_ms)
         self._last_completed_calibration_dto = None
         return self._build_calibration_dto(timestamp_ms=timestamp_ms)
 
@@ -232,36 +314,53 @@ class SessionAIEngine:
             self._cancel_calibration_locked()
 
     def _cancel_calibration_locked(self) -> None:
-        self.calibration_session = None
+        self.monitoring_service.cancel_calibration()
 
     def skip_calibration_step(self, timestamp_ms: Optional[float] = None) -> Optional[CalibrationPhaseDTO]:
-        """Manually advance past the current zone if tracking is difficult or user wishes to proceed."""
+        """Manually advance past the current calibration zone."""
         with self._process_lock:
             return self._skip_calibration_step_locked(timestamp_ms=timestamp_ms)
 
     def _skip_calibration_step_locked(self, timestamp_ms: Optional[float] = None) -> Optional[CalibrationPhaseDTO]:
-        if self.calibration_session is not None and self.calibration_session.is_running:
-            new_profile = self.calibration_session.skip_current_step(timestamp_ms=timestamp_ms)
-            if new_profile is not None:
-                self._set_profile_locked(new_profile)
-                self._last_completed_calibration_dto = self._build_calibration_dto(timestamp_ms=timestamp_ms)
-            return self._build_calibration_dto(timestamp_ms=timestamp_ms)
-        return None
+        if not self.monitoring_service.is_calibrating:
+            return None
+        completed_profile = self.monitoring_service.skip_calibration_step(timestamp_ms=timestamp_ms)
+        if completed_profile is not None:
+            self._profile = completed_profile
+            self._last_completed_calibration_dto = CalibrationPhaseDTO(
+                current_zone="CENTER",
+                phase_index=1,
+                total_phases=1,
+                zone_progress_pct=100.0,
+                total_progress_pct=100.0,
+                stable_samples_count=len(completed_profile.zone_baselines),
+                target_samples_count=15,
+                instruction="Calibration complete.",
+                is_head_in_target_zone=True,
+                stability_feedback="Profile Ready",
+                is_completed=True,
+                profile=self.export_profile_dto(),
+            )
+            return self._last_completed_calibration_dto
+        return self._build_calibration_dto(timestamp_ms=timestamp_ms)
 
     @property
     def is_calibrating(self) -> bool:
         """Check whether the session is currently in active calibration mode."""
-        return self.calibration_session is not None and self.calibration_session.is_running
+        return self.monitoring_service.is_calibrating
 
     def get_calibration_status(self) -> Optional[CalibrationPhaseDTO]:
         """Return the current calibration progress or the last completed calibration DTO."""
-        if self.calibration_session is not None:
+        if self.monitoring_service.calibration_session is not None:
             return self._build_calibration_dto()
         return self._last_completed_calibration_dto
 
     def _build_calibration_dto(self, timestamp_ms: Optional[float] = None) -> CalibrationPhaseDTO:
-        """Construct the Pydantic CalibrationPhaseDTO from the internal session state."""
-        if self.calibration_session is None or not self.calibration_session.is_running:
+        """Construct the Pydantic CalibrationPhaseDTO from the active GuidedCalibrationSession."""
+        cal_sess = self.monitoring_service.calibration_session
+        if cal_sess is None or not cal_sess.is_running:
+            if self._last_completed_calibration_dto is not None:
+                return self._last_completed_calibration_dto
             return CalibrationPhaseDTO(
                 current_zone="CENTER",
                 phase_index=1,
@@ -274,19 +373,19 @@ class SessionAIEngine:
                 is_head_in_target_zone=True,
                 stability_feedback="Profile Ready",
                 is_completed=True,
-                rejection_reason=self.calibration_session.rejection_reason if self.calibration_session else None,
-                quality_warnings=list(self.calibration_session.quality_warnings) if self.calibration_session else [],
-                profile=self.export_profile_dto() if (self.calibration_session and self.calibration_session.is_completed) else None,
+                rejection_reason=cal_sess.rejection_reason if cal_sess else None,
+                quality_warnings=list(cal_sess.quality_warnings) if cal_sess else [],
+                profile=self.export_profile_dto() if (cal_sess and cal_sess.is_completed) else None,
             )
 
-        ts = timestamp_ms or (time.perf_counter() * 1000.0)
-        curr_step_num, total_steps, ratio, instruction, is_aligned, feedback = self.calibration_session.get_progress(ts)
+        ts = timestamp_ms if timestamp_ms is not None else (time.perf_counter() * 1000.0)
+        curr_step_num, total_steps, ratio, instruction, is_aligned, feedback = cal_sess.get_progress(ts)
         phase_idx = max(1, curr_step_num)
-        step = self.calibration_session.current_step
-        zone_samples = len(self.calibration_session._ear_samples_by_zone.get(step.zone.value, []))
+        step = cal_sess.current_step
+        zone_samples = len(cal_sess._ear_samples_by_zone.get(step.zone.value, []))
         total_pct = max(0.0, min(100.0, (((phase_idx - 1) + ratio) / max(1, total_steps)) * 100.0))
         zone_pct = max(0.0, min(100.0, ratio * 100.0))
-        live_blink = self.calibration_session.get_live_blink_telemetry()
+        live_blink = cal_sess.get_live_blink_telemetry()
         curr_zone_name = "BLINK_CADENCE" if step.step_type == "BLINK_CADENCE" else step.zone.value
 
         return CalibrationPhaseDTO(
@@ -297,7 +396,7 @@ class SessionAIEngine:
             zone_progress_pct=round(zone_pct, 1),
             total_progress_pct=round(total_pct, 1),
             stable_samples_count=zone_samples,
-            target_samples_count=self.calibration_session.target_samples_per_zone,
+            target_samples_count=cal_sess.target_samples_per_zone,
             elapsed_sec=float(live_blink.get("elapsed_sec") or 0.0),
             target_duration_sec=float(live_blink.get("target_duration_sec") or step.duration_sec),
             collected_blinks_count=int(live_blink.get("collected_blinks_count") or 0),
@@ -308,44 +407,40 @@ class SessionAIEngine:
             instruction=instruction,
             is_head_in_target_zone=is_aligned,
             stability_feedback=feedback,
-            is_completed=self.calibration_session.is_completed,
-            rejection_reason=self.calibration_session.rejection_reason,
-            quality_warnings=list(self.calibration_session.quality_warnings),
+            is_completed=cal_sess.is_completed,
+            rejection_reason=cal_sess.rejection_reason,
+            quality_warnings=list(cal_sess.quality_warnings),
         )
 
     # --------------------------------------------------------------------------
-    # Profile Import / Export (Synchronized & Frame-Boundary Safe)
+    # Profile Import / Export (Synchronized & Delegated to Authoritative Extractor)
     # --------------------------------------------------------------------------
 
     def set_profile(self, profile: DriverBehaviourProfile) -> None:
-        """Update active personal baseline profile."""
+        """Update active personal baseline profile on the authoritative extractor."""
         with self._process_lock:
             self._set_profile_locked(profile)
 
     def _set_profile_locked(self, profile: DriverBehaviourProfile) -> None:
-        self.profile = profile
-        self.risk_engine.set_profile(profile)
-        self.kinematics.set_personalized_baseline(
-            profile.blink_duration_median_ms, profile.blink_duration_mad_ms
-        )
+        self._profile = profile
+        self.monitoring_service.set_profile(profile)
 
     def export_profile_dto(self) -> DriverProfileDTO:
-        """Export the active driver profile as a validated Pydantic DTO (delegated to profile_adapter)."""
+        """Export the active driver profile as a validated Pydantic DTO."""
         with self._process_lock:
-            return profile_to_dto(self.profile)
+            return profile_to_dto(self._profile)
 
     def load_profile_dto(self, dto: DriverProfileDTO) -> None:
-        """Load and activate a driver profile from a Pydantic DTO (synchronized under process lock)."""
+        """Load and activate a driver profile from a Pydantic DTO."""
         with self._process_lock:
             self._load_profile_dto_locked(dto)
 
     def _load_profile_dto_locked(self, dto: DriverProfileDTO) -> None:
-        """Internal lock-held implementation of profile DTO loading."""
         new_profile = dto_to_profile(dto)
         self._set_profile_locked(new_profile)
 
     def set_experiment_mode(self, mode: Union[ExperimentMode, str]) -> ExperimentMode:
-        """Authoritative synchronous method to validate and transition experiment mode."""
+        """Validate and update session experiment metadata mode."""
         validated = self._validate_experiment_mode(mode)
         with self._process_lock:
             return self._set_experiment_mode_locked(validated)
@@ -364,24 +459,22 @@ class SessionAIEngine:
 
     def _set_experiment_mode_locked(self, mode: ExperimentMode) -> ExperimentMode:
         self.experiment_mode = mode
-        if self.cascade is not None:
-            self.cascade.mode = mode
         return mode
 
     # --------------------------------------------------------------------------
-    # Thread-Safe Command Boundary Mechanism (Workstream B)
+    # Thread-Safe Command Boundary Mechanism
     # --------------------------------------------------------------------------
 
     async def submit_command(self, action: str, **params: Any) -> Any:
         """
         Thread-safe asynchronous entry point for engine state mutations.
-        Enqueues command for execution at next frame boundary under _process_lock,
-        or triggers immediate threadpool execution if idle, returning result without blocking loop.
+        Enqueues command for FIFO execution at the next frame boundary under `_process_lock`.
         """
         if self._is_closed:
-            raise RuntimeError(f"SessionAIEngine '{self.session_id}' is closed; command '{action}' rejected.")
+            raise RuntimeError(
+                f"SessionAIEngine '{self.session_id}' is closed; command '{action}' rejected."
+            )
 
-        # Pre-validate synchronous commands before queueing
         if action == "SWITCH_EXPERIMENT":
             self._validate_experiment_mode(params.get("mode"))
 
@@ -391,7 +484,9 @@ class SessionAIEngine:
 
         with self._command_lock:
             if self._is_closed:
-                raise RuntimeError(f"SessionAIEngine '{self.session_id}' is closed; command '{action}' rejected.")
+                raise RuntimeError(
+                    f"SessionAIEngine '{self.session_id}' is closed; command '{action}' rejected."
+                )
             self._pending_commands.append(cmd)
 
         drain_task = asyncio.create_task(asyncio.to_thread(self._drain_pending_commands))
@@ -405,12 +500,10 @@ class SessionAIEngine:
                     pass
 
     def _drain_pending_commands(self) -> None:
-        """Synchronously acquire process lock and drain all queued commands."""
         with self._process_lock:
             self._drain_pending_commands_locked()
 
     def _drain_pending_commands_locked(self) -> None:
-        """Drain and execute all pending commands while holding _process_lock."""
         with self._command_lock:
             if not self._pending_commands:
                 return
@@ -428,7 +521,12 @@ class SessionAIEngine:
                 if cmd.future and cmd.event_loop and not cmd.future.done():
                     cmd.event_loop.call_soon_threadsafe(cmd.future.set_exception, exc)
                 elif not cmd.future:
-                    logger.error(f"[SessionAIEngine] Error executing command '{cmd.action}': {exc}", exc_info=True)
+                    logger.error(
+                        "[SessionAIEngine] Error executing command '%s': %s",
+                        cmd.action,
+                        exc,
+                        exc_info=True,
+                    )
 
     def _execute_command_internal_locked(self, action: str, params: Dict[str, Any]) -> Any:
         if self._is_closed:
@@ -462,7 +560,7 @@ class SessionAIEngine:
             raise ValueError(f"Unknown engine command action: '{action}'")
 
     # --------------------------------------------------------------------------
-    # Real-Time Frame Processing Orchestration
+    # Real-Time Frame Processing (Delegated to Authoritative LocalMonitoringService)
     # --------------------------------------------------------------------------
 
     def process_frame(
@@ -473,14 +571,8 @@ class SessionAIEngine:
         is_rgb: bool = True,
     ) -> FrameTelemetryDTO:
         """
-        Execute the complete DriveGuard pipeline on a single video frame.
-
-        Args:
-            frame_input: Either a pre-decoded BGR image (NumPy array) or raw JPEG/PNG image bytes.
-            timestamp_ms: Optional presentation timestamp in ms; if omitted, current clock is used.
-
-        Returns:
-            FrameTelemetryDTO containing full explainable metrics, risk score, and cascade decisions.
+        Adapt incoming frame bytes or NumPy array and execute the single authoritative
+        `LocalMonitoringService` pipeline under `_process_lock`.
         """
         with self._process_lock:
             if self._is_closed:
@@ -499,184 +591,141 @@ class SessionAIEngine:
         is_rgb: bool = True,
     ) -> FrameTelemetryDTO:
         t_start = time.perf_counter()
-        # Drain and apply any pending control mutations at this frame boundary
         self._drain_pending_commands_locked()
         self.frame_index += 1
 
-        # 1. Resolve timestamp & instantaneous FPS
-        if timestamp_ms is None:
-            ts_ms = t_start * 1000.0
-        else:
-            ts_ms = float(timestamp_ms)
+        ts_ms = (t_start * 1000.0) if timestamp_ms is None else float(timestamp_ms)
 
-        last_frame_ts = self.prev_timestamp_ms
         if self.prev_timestamp_ms is not None:
             dt_sec = max(1e-4, (ts_ms - self.prev_timestamp_ms) / 1000.0)
             self.fps_ema = 0.90 * self.fps_ema + 0.10 * (1.0 / dt_sec)
         self.prev_timestamp_ms = ts_ms
 
-        # 2. Decode raw image bytes if necessary (EXP-1A RGB Pass-Through)
-        frame_rgb: Optional[np.ndarray] = None
-        if isinstance(frame_input, bytes):
-            nparr = np.frombuffer(frame_input, np.uint8)
-            decoded = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            if decoded is not None:
-                frame_rgb = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
-        elif isinstance(frame_input, np.ndarray):
-            if is_rgb:
-                frame_rgb = frame_input
+        # 1. Adapt heterogeneous input source via canonical frame adapters
+        try:
+            if isinstance(frame_input, (bytes, bytearray)):
+                adapted = EncodedBytesFrameAdapter.adapt(
+                    bytes(frame_input),
+                    timestamp_ms=ts_ms,
+                    frame_index=self.frame_index,
+                    source_id=f"session:{self.session_id}:bytes",
+                    is_mirrored=self.is_mirrored,
+                )
+            elif isinstance(frame_input, np.ndarray):
+                if is_rgb:
+                    adapted = ArrayFrameAdapter.adapt_rgb(
+                        frame_input,
+                        timestamp_ms=ts_ms,
+                        frame_index=self.frame_index,
+                        source_id=f"session:{self.session_id}:rgb",
+                        is_mirrored=self.is_mirrored,
+                    )
+                else:
+                    adapted = ArrayFrameAdapter.adapt_bgr(
+                        frame_input,
+                        timestamp_ms=ts_ms,
+                        frame_index=self.frame_index,
+                        source_id=f"session:{self.session_id}:bgr",
+                        is_mirrored=self.is_mirrored,
+                    )
             else:
-                frame_rgb = cv2.cvtColor(frame_input, cv2.COLOR_BGR2RGB)
-
-        if frame_rgb is None or frame_rgb.size == 0:
+                raise FrameDecodeError(f"Unsupported frame input type: {type(frame_input).__name__}")
+        except FrameDecodeError as exc:
+            logger.debug("[SessionAIEngine] Frame decode failed on '%s': %s", self.session_id, exc)
             return self._build_unavailable_frame(ts_ms, latency_ms=0.5, reason="IMAGE_DECODE_FAILED")
 
-        # 3. MediaPipe Face Landmark & 3D Pose Extraction (direct RGB pass-through)
-        ref_ear = self.profile.center_ear_median
+        # 2. Run the SINGLE authoritative LocalMonitoringService pipeline
         try:
-            try:
-                geom, _ = self.landmarker.process_frame(
-                    frame_bgr=frame_rgb,
-                    timestamp_ms=ts_ms,
-                    neutral_pitch_deg=self.profile.neutral_pitch_deg,
-                    neutral_yaw_deg=self.profile.neutral_yaw_deg,
-                    reference_open_ear=ref_ear,
-                    extract_crops=True,
-                    is_rgb=True,
-                )
-            except TypeError:
-                geom, _ = self.landmarker.process_frame(
-                    frame_bgr=frame_rgb,
-                    timestamp_ms=ts_ms,
-                    neutral_pitch_deg=self.profile.neutral_pitch_deg,
-                    neutral_yaw_deg=self.profile.neutral_yaw_deg,
-                    reference_open_ear=ref_ear,
-                    extract_crops=True,
-                )
+            cal_session_before = self.monitoring_service.calibration_session
+            cal_steps_before = len(cal_session_before.steps) if cal_session_before is not None else 4
+            cal_warnings_before = (
+                list(cal_session_before.quality_warnings) if cal_session_before is not None else []
+            )
+            frame_res = self.monitoring_service.process_adapted_frame(adapted)
         except Exception as exc:
-            logger.error(f"[SessionAIEngine] Landmarker exception at {ts_ms}ms: {exc}", exc_info=True)
-            self.kinematics.handle_face_lost(ts_ms)
-            self._recovery_frame_count = 0
-            latency_ms = (time.perf_counter() - t_start) * 1000.0
+            logger.error(
+                "[SessionAIEngine] Authoritative pipeline exception at %.1fms: %s",
+                ts_ms,
+                exc,
+                exc_info=True,
+            )
+            return self._handle_face_loss_or_fault(
+                ts_ms=ts_ms,
+                latency_ms=(time.perf_counter() - t_start) * 1000.0,
+                fault_reason=f"LANDMARKER_EXCEPTION: {type(exc).__name__}",
+                grace_reason=f"FACE_VISIBILITY_DEGRADED: {type(exc).__name__}",
+            )
 
-            if not self._has_seen_face:
-                self._monitoring_status = "MONITORING_UNAVAILABLE"
-                self.gaze_tracker.handle_face_lost(ts_ms)
-                return self._build_unavailable_frame(
-                    ts_ms,
-                    latency_ms=latency_ms,
-                    reason=f"LANDMARKER_EXCEPTION: {type(exc).__name__}",
-                    state=AlertStateEnum.MONITORING_UNAVAILABLE,
-                    risk_score=0.0,
-                    monitoring_status="MONITORING_UNAVAILABLE",
-                    face_visible=False,
-                    grace_period_active=False,
-                    last_seen_ms=self._last_seen_ms,
-                )
+        self._last_frame_result = frame_res
 
-            if self._face_lost_start_ms is None:
-                self._face_lost_start_ms = self._last_seen_ms if self._last_seen_ms is not None else ts_ms
-            loss_duration_ms = ts_ms - self._face_lost_start_ms
+        # 3. Capture calibration completion/rejection DTO if calibration finished on this frame
+        if frame_res.completed_calibration_profile is not None:
+            self._profile = frame_res.completed_calibration_profile
+            profile_dto = self.export_profile_dto()
+            self._last_completed_calibration_dto = CalibrationPhaseDTO(
+                current_zone="CENTER",
+                phase_index=cal_steps_before,
+                total_phases=cal_steps_before,
+                zone_progress_pct=100.0,
+                total_progress_pct=100.0,
+                stable_samples_count=len(self._profile.zone_baselines),
+                target_samples_count=15,
+                instruction="Calibration successful! Personal baselines activated.",
+                is_head_in_target_zone=True,
+                stability_feedback="Profile Ready",
+                is_completed=True,
+                quality_warnings=cal_warnings_before,
+                profile=profile_dto,
+            )
+        elif frame_res.calibration_rejection_reason is not None:
+            self._last_completed_calibration_dto = CalibrationPhaseDTO(
+                current_zone="CENTER",
+                phase_index=1,
+                total_phases=cal_steps_before,
+                zone_progress_pct=0.0,
+                total_progress_pct=0.0,
+                stable_samples_count=0,
+                target_samples_count=15,
+                instruction="Calibration rejected. Please ensure good lighting and face visibility.",
+                is_head_in_target_zone=False,
+                stability_feedback="Rejected",
+                is_completed=True,
+                rejection_reason=frame_res.calibration_rejection_reason,
+                quality_warnings=cal_warnings_before,
+            )
 
-            if loss_duration_ms < self.face_loss_grace_ms:
-                self._monitoring_status = "FACE_VISIBILITY_DEGRADED"
-                self.gaze_tracker.freeze(ts_ms)
-                return self._build_unavailable_frame(
-                    ts_ms,
-                    latency_ms=latency_ms,
-                    reason=f"FACE_VISIBILITY_DEGRADED: {type(exc).__name__}",
-                    state=self._last_valid_alert_state,
-                    risk_score=self._last_valid_risk_score,
-                    monitoring_status="FACE_VISIBILITY_DEGRADED",
-                    face_visible=False,
-                    grace_period_active=True,
-                    last_seen_ms=self._last_seen_ms,
-                )
-            else:
-                self._monitoring_status = "MONITORING_UNAVAILABLE"
-                self.gaze_tracker.handle_face_lost(ts_ms)
-                return self._build_unavailable_frame(
-                    ts_ms,
-                    latency_ms=latency_ms,
-                    reason=f"LANDMARKER_EXCEPTION: {type(exc).__name__}",
-                    state=AlertStateEnum.MONITORING_UNAVAILABLE,
-                    risk_score=0.0,
-                    monitoring_status="MONITORING_UNAVAILABLE",
-                    face_visible=False,
-                    grace_period_active=False,
-                    last_seen_ms=self._last_seen_ms,
-                )
+        latency_ms = (time.perf_counter() - t_start) * 1000.0
+        self._lifetime_latency_count += 1
+        self._lifetime_latency_sum_ms += latency_ms
+        self._recent_latencies_ms.append(latency_ms)
 
-        if not geom.face_detected:
-            self.kinematics.handle_face_lost(ts_ms)
-            self._recovery_frame_count = 0
-            latency_ms = (time.perf_counter() - t_start) * 1000.0
+        landmark = frame_res.landmark
+        features = frame_res.features
+        assessment = frame_res.assessment
 
-            if not self._has_seen_face:
-                self._monitoring_status = "MONITORING_UNAVAILABLE"
-                self.gaze_tracker.handle_face_lost(ts_ms)
-                return self._build_unavailable_frame(
-                    ts_ms,
-                    latency_ms=latency_ms,
-                    reason="NO_FACE_DETECTED",
-                    state=AlertStateEnum.MONITORING_UNAVAILABLE,
-                    risk_score=0.0,
-                    monitoring_status="MONITORING_UNAVAILABLE",
-                    face_visible=False,
-                    grace_period_active=False,
-                    last_seen_ms=self._last_seen_ms,
-                )
+        # 4. Handle face-not-detected availability envelope cleanly
+        if not landmark.has_face:
+            return self._handle_face_loss_or_fault(
+                ts_ms=ts_ms,
+                latency_ms=latency_ms,
+                fault_reason="NO_FACE_DETECTED",
+                grace_reason="FACE_VISIBILITY_DEGRADED",
+                frame_res=frame_res,
+            )
 
-            if self._face_lost_start_ms is None:
-                self._face_lost_start_ms = self._last_seen_ms if self._last_seen_ms is not None else ts_ms
-            loss_duration_ms = ts_ms - self._face_lost_start_ms
-
-            if loss_duration_ms < self.face_loss_grace_ms:
-                self._monitoring_status = "FACE_VISIBILITY_DEGRADED"
-                self.gaze_tracker.freeze(ts_ms)
-                return self._build_unavailable_frame(
-                    ts_ms,
-                    latency_ms=latency_ms,
-                    reason="FACE_VISIBILITY_DEGRADED",
-                    state=self._last_valid_alert_state,
-                    risk_score=self._last_valid_risk_score,
-                    monitoring_status="FACE_VISIBILITY_DEGRADED",
-                    face_visible=False,
-                    grace_period_active=True,
-                    last_seen_ms=self._last_seen_ms,
-                )
-            else:
-                self._monitoring_status = "MONITORING_UNAVAILABLE"
-                self.gaze_tracker.handle_face_lost(ts_ms)
-                return self._build_unavailable_frame(
-                    ts_ms,
-                    latency_ms=latency_ms,
-                    reason="NO_FACE_DETECTED",
-                    state=AlertStateEnum.MONITORING_UNAVAILABLE,
-                    risk_score=0.0,
-                    monitoring_status="MONITORING_UNAVAILABLE",
-                    face_visible=False,
-                    grace_period_active=False,
-                    last_seen_ms=self._last_seen_ms,
-                )
-
-        # 3b. Face detected: mark face seen, handle recovery transitions and temporal synchronization
+        # 5. Face detected: update availability & 3-frame recovery status
         was_lost = self._face_lost_start_ms is not None
         was_sustained_outage = was_lost and (
             (ts_ms - (self._face_lost_start_ms or ts_ms)) >= self.face_loss_grace_ms
             or self._monitoring_status in ("MONITORING_UNAVAILABLE", "FACE_LOST")
         )
-
         if was_lost:
-            self.kinematics.handle_gap(ts_ms)
-            self.gaze_tracker.handle_gap(ts_ms)
             self._face_lost_start_ms = None
-        else:
-            self.gaze_tracker.unfreeze(ts_ms)
-
         self._last_seen_ms = ts_ms
 
-        if was_sustained_outage or (self._recovery_frame_count > 0 and self._recovery_frame_count < self.REQUIRED_RECOVERY_FRAMES):
+        if was_sustained_outage or (
+            0 < self._recovery_frame_count < self.REQUIRED_RECOVERY_FRAMES
+        ):
             self._recovery_frame_count += 1
             if self._recovery_frame_count < self.REQUIRED_RECOVERY_FRAMES:
                 self._monitoring_status = "MONITORING_RECOVERING"
@@ -686,148 +735,37 @@ class SessionAIEngine:
         else:
             self._recovery_frame_count = 0
             self._monitoring_status = "MONITORING_ACTIVE"
-
         self._has_seen_face = True
 
-        # 4. Zone-Adaptive Baseline Selection
-        zone_baseline = self.profile.get_zone_baseline(geom.pose_zone)
-
-        # 5. Confidence-Gated Eye Cascade with Reliability-Weighted Arbitration
-        try:
-            cascade_res = self.cascade.evaluate(
-                geom=geom,
-                reference_open_ear=zone_baseline.ear_median,
-                close_threshold_ear=zone_baseline.dynamic_closure_threshold,
-            )
-        except Exception as exc:
-            logger.warning(f"[SessionAIEngine] Cascade evaluation exception: {exc}. Activating geometric fallback.")
-            from backend.app.ai.cascade_classifier import CascadeStageResult
-            cascade_res = CascadeStageResult(
-                experiment_mode=self.experiment_mode,
-                geom_closure_score=float(geom.yaw_weighted_ear < zone_baseline.dynamic_closure_threshold),
-                geom_reliability=geom.geometric_reliability,
-                disagreement_ear_vs_blendshape=0.0,
-                cnn_invoked=False,
-                gate_trigger_reason="EXCEPTION_FALLBACK",
-                cnn_closed_prob=None,
-                cnn_open_prob=None,
-                cnn_reliability=None,
-                fused_closure_score=float(geom.yaw_weighted_ear < zone_baseline.dynamic_closure_threshold),
-                winning_authority="GEOMETRIC_FALLBACK",
-                stage_latency_ms=0.1,
-            )
-        if cascade_res.cnn_invoked:
-            self.total_cnn_invocations += 1
-        if cascade_res.disagreement_ear_vs_blendshape > 0.40:
-            self.total_disagreements += 1
-
-        # 6. Sub-Frame Blink Kinematics (Duration, RCR Velocity, Rolling 60s PERCLOS, Gap-Aware, Authentic Squint)
-        kinematics_res = self.kinematics.update(
-            timestamp_ms=ts_ms,
-            ear_value=geom.yaw_weighted_ear,
-            fused_closure_score=cascade_res.fused_closure_score,
-            mar_value=geom.mar,
-            ear_close_threshold=zone_baseline.dynamic_closure_threshold,
-            left_ear=geom.left_ear,
-            right_ear=geom.right_ear,
-            left_threshold=zone_baseline.dynamic_closure_threshold,
-            right_threshold=zone_baseline.dynamic_closure_threshold,
-            landmark_confidence=geom.landmark_confidence,
-            head_yaw_deg=geom.yaw_deg,
-            eye_squint=geom.blendshape_eye_squint,
+        # 6. Project authoritative DrowsinessEngine & AlertStateManager outputs to FrameTelemetryDTO
+        wire_state, risk_score = _map_authoritative_state_to_wire(
+            alert_state=frame_res.alert_state,
+            drowsiness_state=assessment.state,
+            alert_active=assessment.alert_active,
         )
-        # Euro NCAP 2026 Gaze Scanpath & Attention Tracking
-        gaze_res = self.gaze_tracker.update(
-            timestamp_ms=ts_ms,
-            zone=geom.pose_zone,
-            pitch_deg=geom.pitch_deg,
-            yaw_deg=geom.yaw_deg,
-        )
+        self._last_valid_risk_score = risk_score
+        self._last_valid_alert_state = wire_state
 
-        # 7. Calibration Step Ingestion (if session is actively calibrating)
-        if self.calibration_session is not None and self.calibration_session.is_running:
-            new_profile = self.calibration_session.ingest_frame(
-                timestamp_ms=ts_ms,
-                face_detected=geom.face_detected,
-                geometric_reliability=geom.geometric_reliability,
-                ear_value=geom.yaw_weighted_ear,
-                pitch_deg=geom.pitch_deg,
-                yaw_deg=geom.yaw_deg,
-                is_eye_currently_closed=kinematics_res.is_eye_closed,
-                completed_blink=kinematics_res.completed_blink,
-                left_ear=geom.left_ear,
-                right_ear=geom.right_ear,
-                blendshape_blink_mean=geom.blendshape_blink_mean,
-                landmark_confidence=geom.landmark_confidence,
-            )
-            if new_profile is not None:
-                total_steps = len(self.calibration_session.steps)
-                self._set_profile_locked(new_profile)
-                profile_dto = self.export_profile_dto()
-                self._last_completed_calibration_dto = CalibrationPhaseDTO(
-                    current_zone="CENTER",
-                    phase_index=total_steps,
-                    total_phases=total_steps,
-                    zone_progress_pct=100.0,
-                    total_progress_pct=100.0,
-                    stable_samples_count=len(new_profile.zone_baselines),
-                    target_samples_count=15,
-                    instruction="Calibration successful! Personal baselines activated.",
-                    is_head_in_target_zone=True,
-                    stability_feedback="Profile Ready",
-                    is_completed=True,
-                    quality_warnings=list(self.calibration_session.quality_warnings),
-                    profile=profile_dto,
-                )
-                self.calibration_session = None
-            elif not self.calibration_session.is_running and self.calibration_session.rejection_reason is not None:
-                self._last_completed_calibration_dto = CalibrationPhaseDTO(
-                    current_zone="CENTER",
-                    phase_index=1,
-                    total_phases=4,
-                    zone_progress_pct=0.0,
-                    total_progress_pct=0.0,
-                    stable_samples_count=0,
-                    target_samples_count=15,
-                    instruction="Calibration rejected. Please ensure good lighting and face visibility.",
-                    is_head_in_target_zone=False,
-                    stability_feedback="Rejected",
-                    is_completed=True,
-                    rejection_reason=self.calibration_session.rejection_reason,
-                    quality_warnings=list(self.calibration_session.quality_warnings),
-                )
-                self.calibration_session = None
-
-        # 8. Personalised Adaptive Risk Engine (FSM State, Reason Codes, Dual-Anchor Update)
-        risk_res = self.risk_engine.evaluate(
-            geom=geom,
-            cascade=cascade_res,
-            kinematics=kinematics_res,
-            gaze=gaze_res,
-        )
-        is_mirror_suppressed = risk_res.deviations.is_mirror_check_context
+        is_mirror_suppressed = bool(assessment.is_mirror_check_context)
         if is_mirror_suppressed:
             self.total_mirror_check_suppressions += 1
 
-        # 9. Parallel Fixed-Threshold Comparison (Conventional EAR < 0.22)
-        fixed_state_str = risk_res.conventional_fixed_state.value
-        fixed_fa = (
-            fixed_state_str != "NORMAL"
-            and risk_res.state == AlertState.NORMAL
-            and geom.pose_zone in (PoseZone.LEFT_MIRROR, PoseZone.RIGHT_MIRROR, PoseZone.DASHBOARD)
+        pose_zone_dto = features.head_pose.zone
+        fixed_closed = bool(features.ear.is_geometric_valid and features.ear.weighted_ear < 0.22)
+        fixed_state_str = "WARNING" if fixed_closed else "NORMAL"
+        fixed_fa = bool(
+            fixed_closed
+            and frame_res.alert_state == AlertState.NORMAL
+            and pose_zone_dto
+            in (PoseZoneEnum.LEFT_MIRROR, PoseZoneEnum.RIGHT_MIRROR, PoseZoneEnum.DASHBOARD)
         )
         if fixed_fa:
             self.total_fixed_false_alarms += 1
 
-        latency_ms = (time.perf_counter() - t_start) * 1000.0
-        self._lifetime_latency_count += 1
-        self._lifetime_latency_sum_ms += latency_ms
-        self._recent_latencies_ms.append(latency_ms)
+        reason_codes = [r.code.value for r in assessment.decision.reasons] or ["ALERT_NORMAL"]
+        completed_blink = features.blink.completed_blink
+        active_thresh = max(0.0, float(features.ear.closure_threshold))
 
-        self._last_valid_risk_score = round(risk_res.risk_score, 3)
-        self._last_valid_alert_state = AlertStateEnum(risk_res.state.value)
-
-        # 10. Assemble validated Pydantic DTO
         return FrameTelemetryDTO(
             session_id=self.session_id,
             driver_id=self.driver_id,
@@ -838,72 +776,169 @@ class SessionAIEngine:
             face_visible=True,
             grace_period_active=False,
             last_seen_ms=self._last_seen_ms,
-            tracking_mode=getattr(geom, "tracking_mode", "MEDIAPIPE_TASKS"),
-            state=AlertStateEnum(risk_res.state.value),
+            tracking_mode=getattr(self.landmarker, "active_implementation", "MEDIAPIPE_TASKS"),
+            state=wire_state,
+            drowsiness_state=assessment.state.value,
+            alert_state=frame_res.alert_state.value,
+            is_recovering=frame_res.is_recovering,
+            authoritative_engine="DrowsinessEngine",
             monitoring_status=self._monitoring_status,
-            risk_score=round(risk_res.risk_score, 3),
-            pose_zone=PoseZoneEnum(geom.pose_zone.value),
-            reason_codes=risk_res.reasons,
+            risk_score=round(risk_score, 3),
+            pose_zone=pose_zone_dto,
+            reason_codes=reason_codes,
             head_pose=HeadPoseDTO(
-                pitch_deg=round(geom.pitch_deg, 1),
-                yaw_deg=round(geom.yaw_deg, 1),
-                roll_deg=round(geom.roll_deg, 1),
+                pitch_deg=round(float(features.head_pose.pitch_deg), 1),
+                yaw_deg=round(float(features.head_pose.yaw_deg), 1),
+                roll_deg=round(float(features.head_pose.roll_deg), 1),
             ),
             eye_metrics=EyeMetricsDTO(
-                ear_raw=round(geom.yaw_weighted_ear, 4),
-                ear_left=round(geom.left_ear, 4),
-                ear_right=round(geom.right_ear, 4),
-                ear_normalized=round(kinematics_res.smoothed_ear, 4),
-                ear_closure_threshold=round(zone_baseline.dynamic_closure_threshold, 4),
-                is_eye_closed=kinematics_res.is_eye_closed,
-                fused_closure_prob=round(cascade_res.fused_closure_score, 3),
-                perclos_pct=round(kinematics_res.perclos_60s_pct, 2),
-                blink_duration_ms=round(kinematics_res.completed_blink.duration_ms, 1) if kinematics_res.completed_blink else None,
-                blink_rcr=round(kinematics_res.completed_blink.rcr, 2) if kinematics_res.completed_blink else None,
-                blink_rate_per_min=round(kinematics_res.blink_rate_per_min, 1),
-                mar_yawn=round(geom.mar, 3),
-                blink_state=kinematics_res.blink_state.value,
-                blink_classification=kinematics_res.blink_classification.value,
-                perclos_coverage_pct=round(kinematics_res.perclos_coverage_pct, 1),
-                perclos_reliable=kinematics_res.perclos_reliable,
-                eye_closure_duration_ms=round(kinematics_res.current_closure_duration_ms, 1),
-                sampling_gap_detected=kinematics_res.sampling_gap_detected,
-                blink_avr=round(kinematics_res.recent_blink_avr, 3) if kinematics_res.recent_blink_avr is not None else None,
-                blink_cv_ibi=round(kinematics_res.blink_cv_ibi, 3) if kinematics_res.blink_cv_ibi is not None else None,
-                gaze_entropy=round(gaze_res.transition_entropy_ht, 3) if gaze_res.transition_entropy_ht is not None else None,
-                brow_furrow_au4=round(geom.blendshape_brow_down, 3) if geom.blendshape_brow_down is not None else None,
-                yawn_envelope_confidence=round(kinematics_res.yawn_confidence, 3),
+                ear_raw=round(max(0.0, float(features.ear.weighted_ear)), 4),
+                ear_left=round(max(0.0, float(features.ear.left_ear)), 4),
+                ear_right=round(max(0.0, float(features.ear.right_ear)), 4),
+                ear_normalized=round(max(0.0, float(features.ear.compensated_ear)), 4),
+                ear_closure_threshold=round(active_thresh, 4),
+                is_eye_closed=bool(features.ear.is_closed),
+                fused_closure_prob=1.0 if features.ear.is_closed else 0.0,
+                perclos_pct=round(max(0.0, min(100.0, float(features.perclos.perclos_pct))), 2),
+                blink_duration_ms=round(float(completed_blink.duration_ms), 1) if completed_blink else None,
+                blink_rcr=round(float(completed_blink.rcr), 2) if completed_blink else None,
+                blink_rate_per_min=round(float(assessment.temporal_metrics.blink_count_60s), 1),
+                mar_yawn=round(max(0.0, float(features.mar.mar)), 3),
+                blink_state=features.blink.state.value,
+                blink_classification=(
+                    completed_blink.classification.value if completed_blink else "NORMAL"
+                ),
+                perclos_coverage_pct=round(
+                    max(0.0, min(100.0, float(features.perclos.coverage_pct))), 1
+                ),
+                perclos_reliable=bool(features.perclos.is_reliable),
+                eye_closure_duration_ms=round(
+                    max(0.0, float(features.blink.current_closure_duration_ms)), 1
+                ),
+                sampling_gap_detected=bool(features.blink.sampling_gap_detected),
             ),
             cascade=CascadeStatusDTO(
                 experiment_mode=self.experiment_mode.value,
-                cnn_triggered=cascade_res.cnn_invoked,
-                geom_open_prob=round(1.0 - cascade_res.geom_closure_score, 3),
-                geom_reliability=round(geom.geometric_reliability, 3),
-                cnn_open_prob=round(cascade_res.cnn_open_prob, 3) if cascade_res.cnn_open_prob is not None else None,
-                cnn_reliability=round(cascade_res.cnn_reliability, 3) if cascade_res.cnn_reliability is not None else None,
-                arbitration_winner=cascade_res.winning_authority,
-                disagreement_flag=bool(
-                    cascade_res.cnn_invoked
-                    and cascade_res.cnn_closed_prob is not None
-                    and abs(cascade_res.geom_closure_score - cascade_res.cnn_closed_prob) >= 0.30
-                ),
-                cnn_latency_ms=round(cascade_res.stage_latency_ms, 2),
-                cnn_execution_mode=cascade_res.cnn_execution_mode,
-                verifier_invoked=cascade_res.cnn_invoked,
-                gate_trigger_reason=cascade_res.gate_trigger_reason,
-                onnx_inference_executed=cascade_res.onnx_inference_executed,
-                cnn_inference_duration_ms=round(cascade_res.cnn_inference_duration_ms, 2) if cascade_res.cnn_inference_duration_ms is not None else None,
+                cnn_triggered=False,
+                geom_open_prob=0.0 if features.ear.is_closed else 1.0,
+                geom_reliability=round(max(0.0, min(1.0, float(assessment.confidence.overall_confidence))), 3),
+                cnn_open_prob=None,
+                cnn_reliability=None,
+                arbitration_winner="AUTHORITATIVE_ENGINE",
+                disagreement_flag=False,
+                cnn_latency_ms=0.0,
+                cnn_execution_mode="UNAVAILABLE",
+                verifier_invoked=False,
+                gate_trigger_reason="AUTHORITATIVE_DROWSINESS_ENGINE",
+                onnx_inference_executed=False,
+                cnn_inference_duration_ms=None,
             ),
             comparison=ConventionalFixedComparisonDTO(
                 fixed_cutoff_ear=0.22,
                 fixed_alert_state=fixed_state_str,
                 fixed_false_alarm=fixed_fa,
-                personalised_zone=geom.pose_zone.value,
-                personalised_threshold=round(zone_baseline.dynamic_closure_threshold, 4),
+                personalised_zone=pose_zone_dto.value,
+                personalised_threshold=round(active_thresh, 4),
                 is_mirror_check_suppressed=is_mirror_suppressed,
             ),
             engine_mode="CALIBRATING" if self.is_calibrating else "MONITORING",
             inference_latency_ms=round(latency_ms, 2),
+        )
+
+    def _handle_face_loss_or_fault(
+        self,
+        *,
+        ts_ms: float,
+        latency_ms: float,
+        fault_reason: str,
+        grace_reason: str,
+        frame_res: Optional[LocalMonitoringFrameResult] = None,
+    ) -> FrameTelemetryDTO:
+        """Apply honest face-loss / fault availability reporting without fabricating metrics."""
+        self._recovery_frame_count = 0
+
+        if not self._has_seen_face:
+            self._monitoring_status = "MONITORING_UNAVAILABLE"
+            return self._build_unavailable_frame(
+                ts_ms,
+                latency_ms=latency_ms,
+                reason=fault_reason,
+                state=AlertStateEnum.MONITORING_UNAVAILABLE,
+                risk_score=0.0,
+                monitoring_status="MONITORING_UNAVAILABLE",
+                face_visible=False,
+                grace_period_active=False,
+                last_seen_ms=self._last_seen_ms,
+                drowsiness_state=(
+                    frame_res.assessment.state.value if frame_res is not None else DrowsinessState.INSUFFICIENT_DATA.value
+                ),
+                alert_state=(
+                    frame_res.alert_state.value if frame_res is not None else AlertState.NORMAL.value
+                ),
+            )
+
+        if self._face_lost_start_ms is None:
+            self._face_lost_start_ms = self._last_seen_ms if self._last_seen_ms is not None else ts_ms
+        loss_duration_ms = ts_ms - self._face_lost_start_ms
+
+        if loss_duration_ms < self.face_loss_grace_ms:
+            self._monitoring_status = "FACE_VISIBILITY_DEGRADED"
+            return self._build_unavailable_frame(
+                ts_ms,
+                latency_ms=latency_ms,
+                reason=grace_reason,
+                state=self._last_valid_alert_state,
+                risk_score=self._last_valid_risk_score,
+                monitoring_status="FACE_VISIBILITY_DEGRADED",
+                face_visible=False,
+                grace_period_active=True,
+                last_seen_ms=self._last_seen_ms,
+                drowsiness_state=(
+                    frame_res.assessment.state.value if frame_res is not None else None
+                ),
+                alert_state=(
+                    frame_res.alert_state.value if frame_res is not None else None
+                ),
+            )
+
+        self._monitoring_status = "MONITORING_UNAVAILABLE"
+        # Preserve unresolved safety-critical alert if authoritative engine holds alert_active=True
+        if frame_res is not None and frame_res.assessment.alert_active:
+            held_state, held_risk = _map_authoritative_state_to_wire(
+                alert_state=frame_res.alert_state,
+                drowsiness_state=frame_res.assessment.state,
+                alert_active=True,
+            )
+            return self._build_unavailable_frame(
+                ts_ms,
+                latency_ms=latency_ms,
+                reason=fault_reason,
+                state=held_state,
+                risk_score=held_risk,
+                monitoring_status="MONITORING_UNAVAILABLE",
+                face_visible=False,
+                grace_period_active=False,
+                last_seen_ms=self._last_seen_ms,
+                drowsiness_state=frame_res.assessment.state.value,
+                alert_state=frame_res.alert_state.value,
+            )
+
+        return self._build_unavailable_frame(
+            ts_ms,
+            latency_ms=latency_ms,
+            reason=fault_reason,
+            state=AlertStateEnum.MONITORING_UNAVAILABLE,
+            risk_score=0.0,
+            monitoring_status="MONITORING_UNAVAILABLE",
+            face_visible=False,
+            grace_period_active=False,
+            last_seen_ms=self._last_seen_ms,
+            drowsiness_state=(
+                frame_res.assessment.state.value if frame_res is not None else DrowsinessState.INSUFFICIENT_DATA.value
+            ),
+            alert_state=(
+                frame_res.alert_state.value if frame_res is not None else AlertState.NORMAL.value
+            ),
         )
 
     def _build_unavailable_frame(
@@ -918,6 +953,8 @@ class SessionAIEngine:
         grace_period_active: bool = False,
         last_seen_ms: Optional[float] = None,
         tracking_mode: Optional[str] = None,
+        drowsiness_state: Optional[str] = None,
+        alert_state: Optional[str] = None,
     ) -> FrameTelemetryDTO:
         """Construct fallback telemetry when face tracking or video decoding drops."""
         return FrameTelemetryDTO(
@@ -932,6 +969,10 @@ class SessionAIEngine:
             last_seen_ms=last_seen_ms if last_seen_ms is not None else self._last_seen_ms,
             tracking_mode=tracking_mode or getattr(self.landmarker, "active_implementation", "DEGRADED_UNAVAILABLE"),
             state=state,
+            drowsiness_state=drowsiness_state or DrowsinessState.INSUFFICIENT_DATA.value,
+            alert_state=alert_state or self.alert_manager.current_state.value,
+            is_recovering=self.alert_manager.is_recovering,
+            authoritative_engine="DrowsinessEngine",
             monitoring_status=monitoring_status,
             risk_score=risk_score,
             pose_zone=PoseZoneEnum.UNKNOWN,
@@ -942,7 +983,7 @@ class SessionAIEngine:
                 ear_left=0.0,
                 ear_right=0.0,
                 ear_normalized=0.0,
-                ear_closure_threshold=0.20,
+                ear_closure_threshold=round(max(0.0, float(self.feature_extractor.active_closure_threshold)), 4),
                 is_eye_closed=False,
                 fused_closure_prob=0.0,
                 perclos_pct=0.0,
@@ -978,7 +1019,7 @@ class SessionAIEngine:
                 fixed_alert_state="UNAVAILABLE",
                 fixed_false_alarm=False,
                 personalised_zone="UNKNOWN",
-                personalised_threshold=0.20,
+                personalised_threshold=round(max(0.0, float(self.feature_extractor.active_closure_threshold)), 4),
                 is_mirror_check_suppressed=False,
             ),
             engine_mode="CALIBRATING" if self.is_calibrating else "MONITORING",
@@ -986,7 +1027,7 @@ class SessionAIEngine:
         )
 
     def close(self) -> None:
-        """Cleanly release AI resources (MediaPipe FaceLandmarker, Cascade ONNX sessions)."""
+        """Cleanly abort pending commands and release authoritative monitoring resources."""
         with self._process_lock:
             self._is_closed = True
             with self._command_lock:
@@ -997,12 +1038,7 @@ class SessionAIEngine:
                             cmd.future.set_exception,
                             RuntimeError(f"Engine is closing; command '{cmd.action}' aborted."),
                         )
-            if self.landmarker is not None and hasattr(self.landmarker, "close"):
-                try:
-                    self.landmarker.close()
-                except Exception:
-                    pass
-            self.cascade = None
+            self.monitoring_service.close()
 
     # --------------------------------------------------------------------------
     # Session Statistics & Diagnostics
@@ -1020,17 +1056,25 @@ class SessionAIEngine:
             "session_id": self.session_id,
             "driver_id": self.driver_id,
             "owner_id": self.owner_id,
+            "authoritative_engine": "DrowsinessEngine",
+            "orchestrator": "LocalMonitoringService",
+            "experiment_mode": self.experiment_mode.value,
             "total_frames_processed": self.frame_index,
             "mean_inference_latency_ms": round(mean_lat, 2),
             "cnn_trigger_rate_pct": round(cnn_rate, 2),
             "total_disagreements_arbitrated": self.total_disagreements,
             "mirror_check_false_alarms_prevented": self.total_mirror_check_suppressions,
             "conventional_fixed_false_alarms": self.total_fixed_false_alarms,
-            "is_calibrated": self.profile.calibration_mode != "UNCALIBRATED_DEFAULT",
-            "active_calibration_mode": self.profile.calibration_mode,
+            "is_calibrated": self._profile.calibration_mode != "UNCALIBRATED_DEFAULT",
+            "is_ocular_active": self.feature_extractor.is_profile_feasible,
+            "active_calibration_mode": self._profile.calibration_mode,
+            "current_alert_state": self.alert_manager.current_state.value,
+            "cascade_diagnostics": {
+                "mode": self.experiment_mode.value,
+                "authority": "AUTHORITATIVE_DROWSINESS_ENGINE",
+                "verifier_enabled": False,
+            },
         }
-        if hasattr(self.landmarker, "get_diagnostics"):
+        if self.landmarker is not None and hasattr(self.landmarker, "get_diagnostics"):
             summary["landmarker_diagnostics"] = self.landmarker.get_diagnostics()
-        if hasattr(self.cascade, "get_diagnostics"):
-            summary["cascade_diagnostics"] = self.cascade.get_diagnostics()
         return summary

@@ -163,30 +163,33 @@ class RuntimeSnapshot:
     neutral_pitch_deg: float
     neutral_yaw_deg: float
     neutral_rot_mat: Optional[np.ndarray]
+    neutral_is_mirrored: Optional[bool] = None
 
-    # Detector state (22)
-    closure_threshold: float
-    reopen_threshold: float
-    state: BlinkState
-    prev_ts: Optional[float]
-    prev_ear: Optional[float]
-    blink_start_ts: Optional[float]
-    closing_entry_ts: Optional[float]
-    closure_start_ts: Optional[float]
-    closing_onset_ear: float
-    closing_min_ear: float
-    closing_last_progress_ts: Optional[float]
-    min_ear: float
-    min_ear_ts: Optional[float]
-    open_ear_before: float
-    last_open_ear: Optional[float]
-    was_left_closed: bool
-    was_right_closed: bool
-    is_left_censored: bool
-    total_blinks: int
-    prolonged_blinks: int
-    recent_duration_ms: Optional[float]
-    recent_rcr: Optional[float]
+    # Detector state (24)
+    closure_threshold: float = 0.20
+    reopen_threshold: float = 0.23
+    state: BlinkState = BlinkState.OPEN
+    prev_ts: Optional[float] = None
+    prev_ear: Optional[float] = None
+    blink_start_ts: Optional[float] = None
+    closing_entry_ts: Optional[float] = None
+    closure_start_ts: Optional[float] = None
+    reopening_entry_ts: Optional[float] = None
+    closing_onset_ear: float = 0.30
+    closing_min_ear: float = 0.30
+    closing_last_progress_ts: Optional[float] = None
+    closing_reanchored: bool = False
+    min_ear: float = 1.0
+    min_ear_ts: Optional[float] = None
+    open_ear_before: float = 0.30
+    last_open_ear: Optional[float] = None
+    was_left_closed: bool = False
+    was_right_closed: bool = False
+    is_left_censored: bool = False
+    total_blinks: int = 0
+    prolonged_blinks: int = 0
+    recent_duration_ms: Optional[float] = None
+    recent_rcr: Optional[float] = None
 
 
 class DriverFeatureExtractor:
@@ -225,6 +228,7 @@ class DriverFeatureExtractor:
             self.neutral_rot_mat: Optional[np.ndarray] = neutral_rot_mat.astype(np.float64)
         else:
             self.neutral_rot_mat = None
+        self.neutral_is_mirrored: Optional[bool] = None
         self.is_mirrored = is_mirrored
         self.open_ear_baseline = open_ear_baseline
         self.auto_adaptive_thresholds = auto_adaptive_thresholds
@@ -465,6 +469,7 @@ class DriverFeatureExtractor:
             neutral_pitch_deg=self.neutral_pitch_deg,
             neutral_yaw_deg=self.neutral_yaw_deg,
             neutral_rot_mat=(self.neutral_rot_mat.copy() if self.neutral_rot_mat is not None else None),
+            neutral_is_mirrored=self.neutral_is_mirrored,
             closure_threshold=bd.closure_threshold,
             reopen_threshold=bd.reopen_threshold,
             state=bd._state,
@@ -473,9 +478,11 @@ class DriverFeatureExtractor:
             blink_start_ts=bd._blink_start_ts,
             closing_entry_ts=bd._closing_entry_ts,
             closure_start_ts=bd._closure_start_ts,
+            reopening_entry_ts=bd._reopening_entry_ts,
             closing_onset_ear=bd._closing_onset_ear,
             closing_min_ear=bd._closing_min_ear,
             closing_last_progress_ts=bd._closing_last_progress_ts,
+            closing_reanchored=bd._closing_reanchored,
             min_ear=bd._min_ear,
             min_ear_ts=bd._min_ear_ts,
             open_ear_before=bd._open_ear_before,
@@ -506,6 +513,7 @@ class DriverFeatureExtractor:
             self.neutral_pitch_deg = snap.neutral_pitch_deg
             self.neutral_yaw_deg = snap.neutral_yaw_deg
             self.neutral_rot_mat = (snap.neutral_rot_mat.copy() if snap.neutral_rot_mat is not None else None)
+            self.neutral_is_mirrored = snap.neutral_is_mirrored
 
             bd = self._blink_detector
             bd.closure_threshold = snap.closure_threshold
@@ -516,9 +524,11 @@ class DriverFeatureExtractor:
             bd._blink_start_ts = snap.blink_start_ts
             bd._closing_entry_ts = snap.closing_entry_ts
             bd._closure_start_ts = snap.closure_start_ts
+            bd._reopening_entry_ts = snap.reopening_entry_ts
             bd._closing_onset_ear = snap.closing_onset_ear
             bd._closing_min_ear = snap.closing_min_ear
             bd._closing_last_progress_ts = snap.closing_last_progress_ts
+            bd._closing_reanchored = snap.closing_reanchored
             bd._min_ear = snap.min_ear
             bd._min_ear_ts = snap.min_ear_ts
             bd._open_ear_before = snap.open_ear_before
@@ -567,6 +577,7 @@ class DriverFeatureExtractor:
                     if self._active_snapshot.neutral_rot_mat is not None
                     else None
                 )
+                self.neutral_is_mirrored = getattr(self._active_snapshot, "calibration_is_mirrored", None)
             elif self._profile is not None:
                 self.neutral_pitch_deg = self._profile.neutral_pitch_deg
                 self.neutral_yaw_deg = self._profile.neutral_yaw_deg
@@ -575,6 +586,7 @@ class DriverFeatureExtractor:
                     if self._profile.neutral_rot_mat is not None
                     else None
                 )
+                self.neutral_is_mirrored = getattr(self._profile, "calibration_is_mirrored", None)
 
             target_c, target_r = self._zone_thresholds.get(
                 current_zone, self._zone_thresholds[PoseZone.CENTER]
@@ -626,6 +638,7 @@ class DriverFeatureExtractor:
             self.neutral_pitch_deg = 0.0
             self.neutral_yaw_deg = 0.0
             self.neutral_rot_mat = None
+            self.neutral_is_mirrored = None
             self._blink_detector.update_thresholds(
                 self.ear_closure_threshold,
                 max(self.ear_closure_threshold + 0.03, self.ear_closure_threshold * 1.15),
@@ -659,6 +672,12 @@ class DriverFeatureExtractor:
 
         if not (isinstance(profile.calibration_mode, str) and profile.calibration_mode.strip()):
             return False, "Profile has invalid or empty calibration_mode"
+
+        if profile.calibration_mode.strip().upper() == "UNCALIBRATED_DEFAULT":
+            return False, "Uncalibrated default profile cannot activate personalized ocular monitoring"
+
+        if getattr(profile, "is_calibrated", None) is False:
+            return False, "Profile is marked is_calibrated=False and cannot activate ocular monitoring"
 
         if not math.isfinite(profile.center_ear_median) or profile.center_ear_median <= 0.0:
             return False, f"Invalid center_ear_median: {profile.center_ear_median}"
@@ -752,6 +771,13 @@ class DriverFeatureExtractor:
 
         if center_zb is None:
             return False, "Missing CENTER baseline", {}
+
+        if center_zb.sample_count <= 0:
+            return (
+                False,
+                f"Infeasible CENTER zone: requires empirical samples (sample_count={center_zb.sample_count} <= 0)",
+                {},
+            )
 
         c_center, r_center, span_center, center_feasible = compute_zone_thresholds(
             center_zb.ear_median, center_zb.ear_mad_scaled
@@ -1010,6 +1036,7 @@ class DriverFeatureExtractor:
                     if snapshot.neutral_rot_mat is not None
                     else None
                 )
+                self.neutral_is_mirrored = getattr(snapshot, "calibration_is_mirrored", None)
                 c_center, r_center = zone_thresh[PoseZone.CENTER]
                 self._current_active_thresholds = (c_center, r_center)
                 self._latched_thresholds = None
@@ -1083,6 +1110,7 @@ class DriverFeatureExtractor:
                 neutral_rot_mat=self.neutral_rot_mat,
                 is_mirrored=mirrored,
                 current_zone=self._last_zone,
+                neutral_is_mirrored=self.neutral_is_mirrored,
             )
             self._last_zone = pose_res.zone if pose_res.is_valid else None
             current_zone = pose_res.zone if pose_res.is_valid else PoseZone.CENTER
@@ -1093,6 +1121,7 @@ class DriverFeatureExtractor:
                 timestamp_ms=ts_ms,
                 aspect_ratio=aspect_ratio,
                 has_face=has_face,
+                is_normalized=True,
                 is_looking_away=pose_res.is_looking_away,
             )
 
@@ -1143,6 +1172,7 @@ class DriverFeatureExtractor:
                     aspect_ratio=aspect_ratio,
                     closure_threshold=raw_c,
                     is_mirrored=mirrored,
+                    is_normalized=True,
                 )
 
                 # Explicitly invalidate classification while preserving raw measurements
@@ -1189,6 +1219,7 @@ class DriverFeatureExtractor:
                     aspect_ratio=aspect_ratio,
                     closure_threshold=active_c,
                     is_mirrored=mirrored,
+                    is_normalized=True,
                 )
 
                 # 2. Update blink detector using identical threshold pair
@@ -1217,10 +1248,15 @@ class DriverFeatureExtractor:
                 ):
                     self._latched_thresholds = (active_c, active_r)
 
-                # 4. PERCLOS uses exact same ear_res.is_closed
+                # 4. PERCLOS uses consistent hysteretic eye-closure state (aligned with EAR & blink detector)
+                perclos_is_closed: Optional[bool] = (
+                    bool(ear_res.is_closed or blink_res.is_eye_closed)
+                    if ear_res.is_valid
+                    else None
+                )
                 perclos_res = self._perclos_calculator.update(
                     timestamp_ms=ts_ms,
-                    is_closed=ear_res.is_closed if ear_res.is_valid else None,
+                    is_closed=perclos_is_closed,
                     has_face=has_face,
                     is_valid=ear_res.is_valid,
                 )
@@ -1247,7 +1283,7 @@ class DriverFeatureExtractor:
                 right_ear=0.0,
                 weighted_ear=0.0,
                 compensated_ear=0.0,
-                closure_threshold=self.ear_closure_threshold,
+                closure_threshold=self.active_closure_threshold,
                 is_left_closed=False,
                 is_right_closed=False,
                 is_closed=False,

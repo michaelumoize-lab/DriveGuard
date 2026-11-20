@@ -3,12 +3,14 @@ REST Endpoints for Monitoring Session Lifecycle.
 Secured with cryptographic backend token authentication and resource ownership checks.
 """
 
+import asyncio
 import uuid
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from backend.app.core.auth import AuthenticatedUser, get_current_user, verify_resource_ownership
+from backend.app.core.config import settings
 from backend.app.schemas.profile import DriverProfileDTO
 from backend.app.services.session_manager import session_manager
 
@@ -133,6 +135,91 @@ async def switch_session_experiment_mode(
         "session_id": session_id,
         "experiment_mode": new_mode.value if hasattr(new_mode, "value") else str(new_mode),
         "status": "SUCCESS",
+    }
+
+
+@router.post("/{session_id}/frame", response_model=Dict[str, Any])
+async def ingest_session_frame(
+    session_id: str,
+    request: Request,
+    timestamp_ms: Optional[float] = Query(
+        default=None,
+        description="Optional frame capture timestamp in milliseconds",
+    ),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Process a single uploaded image frame (JPEG/PNG/WebP bytes) through the session's
+    authoritative `LocalMonitoringService` (`DrowsinessEngine`) and return structured telemetry.
+    """
+    engine = session_manager.get_session(session_id)
+    if engine is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session '{session_id}' not found.",
+        )
+    owner = getattr(engine, "owner_id", engine.driver_id)
+    verify_resource_ownership(current_user, owner, "monitoring session")
+
+    frame_bytes = await request.body()
+    if not frame_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Request body must contain encoded image bytes (JPEG/PNG/WebP).",
+        )
+    if len(frame_bytes) > settings.MAX_WS_FRAME_SIZE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Frame payload ({len(frame_bytes)} bytes) exceeds limit ({settings.MAX_WS_FRAME_SIZE_BYTES} bytes).",
+        )
+
+    telemetry_dto = await asyncio.to_thread(
+        engine.process_frame,
+        frame_bytes,
+        timestamp_ms,
+    )
+    if "IMAGE_DECODE_FAILED" in telemetry_dto.reason_codes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid image payload: unable to decode bytes into a valid video frame.",
+        )
+
+    cal_status = engine.get_calibration_status()
+    return {
+        "type": "TELEMETRY",
+        "telemetry": telemetry_dto.model_dump(),
+        "calibration": (
+            cal_status.model_dump()
+            if (engine.is_calibrating or (cal_status is not None and not cal_status.is_completed))
+            else None
+        ),
+    }
+
+
+@router.get("/{session_id}/telemetry", response_model=Dict[str, Any])
+def get_session_latest_telemetry(
+    session_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Return the latest processed telemetry snapshot and alert state for an active session."""
+    engine = session_manager.get_session(session_id)
+    if engine is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session '{session_id}' not found.",
+        )
+    owner = getattr(engine, "owner_id", engine.driver_id)
+    verify_resource_ownership(current_user, owner, "monitoring session")
+
+    snap = engine.get_latest_telemetry_snapshot()
+    return {
+        "session_id": session_id,
+        "driver_id": engine.driver_id,
+        "authoritative_engine": "DrowsinessEngine",
+        "alert_state": engine.alert_manager.current_state.value,
+        "is_recovering": engine.alert_manager.is_recovering,
+        "is_calibrated": engine.feature_extractor.is_profile_feasible,
+        "telemetry": snap.to_dict() if snap is not None else None,
     }
 
 

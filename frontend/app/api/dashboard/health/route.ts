@@ -51,7 +51,7 @@ async function runHealthCheckProbe(): Promise<HealthCheckResponse> {
         data.status === "ok" ||
         data.status === "healthy" ||
         data.status === "HEALTHY" ||
-        data.weights?.mobilenetv3_eye_onnx === true
+        data.weights?.face_landmarker_task === true
       ) {
         fastApiStatus = { status: "online", latencyMs: faLatency };
       } else {

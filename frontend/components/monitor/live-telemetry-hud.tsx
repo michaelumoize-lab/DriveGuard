@@ -1,7 +1,12 @@
 "use client";
 
 import React from "react";
-import { FrameTelemetry, LatencyDiagnostics } from "@/types/telemetry";
+import {
+  FrameTelemetry,
+  LatencyDiagnostics,
+  explainReasonCode,
+  resolveEffectiveDisplayState,
+} from "@/types/telemetry";
 import { CameraState } from "@/types/camera";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -203,13 +208,32 @@ export function LiveTelemetryHUD({
   const threshold = eye_metrics?.ear_closure_threshold ?? 0.22;
   const isEyeClosed = eye_metrics?.is_eye_closed ?? false;
   const perclos = eye_metrics?.perclos_pct ?? 0;
+  const marYawn = eye_metrics?.mar_yawn ?? 0;
   const blinkDur = eye_metrics?.blink_duration_ms;
   const blinkRcr = eye_metrics?.blink_rcr;
   const blinkRate = eye_metrics?.blink_rate_per_min ?? 0;
 
-  // Determine state banner visuals
+  const effectiveState = resolveEffectiveDisplayState(telemetry, {
+    isConnected: isCameraActive,
+    isStale,
+  });
+  const hasLiveFace =
+    telemetry.face_detected &&
+    effectiveState !== "STALE" &&
+    effectiveState !== "MONITORING_UNAVAILABLE";
+
+  // Determine state banner visuals (never shows green ATTENTIVE when stale or unavailable)
   const getStateVisuals = () => {
-    switch (state) {
+    switch (effectiveState) {
+      case "STALE":
+        return {
+          pillBg: "bg-purple-900/90 text-purple-200 border border-dashed border-purple-400/70",
+          icon: <WifiOff className="size-4 text-purple-300" />,
+          label: "TELEMETRY STALE",
+          sublabel: "No recent backend frames",
+          cardBorder: "border-purple-500/40 border-dashed",
+          riskColor: "text-muted-foreground",
+        };
       case "CRITICAL":
         return {
           pillBg: "bg-rose-500 text-white shadow-md shadow-rose-500/25",
@@ -224,15 +248,24 @@ export function LiveTelemetryHUD({
           pillBg: "bg-amber-500 text-black shadow-md shadow-amber-500/20",
           icon: <AlertTriangle className="size-4" />,
           label: "DROWSY / WARNING",
-          sublabel: "Elevated eyelid closure",
+          sublabel: "Elevated drowsiness indicators",
           cardBorder: "border-amber-500/40 ring-1 ring-amber-500/20",
+          riskColor: "text-amber-500",
+        };
+      case "ATTENTION":
+        return {
+          pillBg: "bg-amber-500/20 text-amber-500 border border-amber-500/40",
+          icon: <AlertTriangle className="size-4" />,
+          label: "ATTENTION / EARLY SIGNAL",
+          sublabel: "Early fatigue cue detected",
+          cardBorder: "border-amber-500/30",
           riskColor: "text-amber-500",
         };
       case "NORMAL":
         return {
           pillBg: "bg-emerald-500 text-white shadow-md shadow-emerald-500/20",
           icon: <ShieldCheck className="size-4" />,
-          label: "ATTENTIVE & SAFE",
+          label: telemetry.is_recovering ? "ATTENTIVE (RECOVERING)" : "ATTENTIVE & SAFE",
           sublabel: "Normal eyelid & gaze profile",
           cardBorder: "border-border",
           riskColor: "text-emerald-500",
@@ -242,7 +275,7 @@ export function LiveTelemetryHUD({
           pillBg: "bg-slate-800 text-amber-300 border border-dashed border-amber-400/70",
           icon: <EyeOff className="size-4 text-amber-400" />,
           label: "MONITORING UNAVAILABLE",
-          sublabel: "Face lost or camera occluded",
+          sublabel: "Face lost or sensor degraded",
           cardBorder: "border-amber-500/40 border-dashed",
           riskColor: "text-muted-foreground",
         };
@@ -261,26 +294,7 @@ export function LiveTelemetryHUD({
   const stateStyle = getStateVisuals();
   const riskPct = Math.round(risk_score * 100);
 
-  // Friendly human interpretations for reason codes
-  const getReasonLabel = (code: string) => {
-    switch (code) {
-      case "EXTENDED_EYE_CLOSURE":
-      case "EXTENDED_CLOSURE":
-        return "Extended Eye Closure (>1.2s)";
-      case "HIGH_PERCLOS":
-        return `PERCLOS ${perclos.toFixed(1)}% Exceeds 25%`;
-      case "OFF_ROAD_GAZE":
-        return "Off-Road Distracted Gaze";
-      case "MICRO_SLEEP":
-        return "Microsleep Episode Detected";
-      case "YAWN_DETECTED":
-        return "Frequent Yawning Detected";
-      default:
-        return code.replace(/_/g, " ");
-    }
-  };
-
-  // 3D Zone Arrow or label
+  // Authoritative 3D Zone display
   const getZoneDisplay = (zone: string) => {
     switch (zone) {
       case "CENTER":
@@ -291,6 +305,9 @@ export function LiveTelemetryHUD({
         return { label: "Right Mirror", hint: "Side Check", status: "caution" };
       case "DASHBOARD":
         return { label: "Dashboard", hint: "Cluster Check", status: "caution" };
+      case "OFF_ROAD":
+      case "OUT_OF_BOUNDS":
+        return { label: "Off Road", hint: "Averted Gaze", status: "critical" };
       case "UNKNOWN":
         return { label: "Tracking Unavailable", hint: "Face tracking lost", status: "caution" };
       default:
@@ -419,7 +436,7 @@ export function LiveTelemetryHUD({
             <Badge
               variant="outline"
               className="px-2 py-0.5 rounded-lg border-border text-muted-foreground whitespace-nowrap"
-              title="MediaPipe + MobileNetV3 CPU pipeline inference latency"
+              title="Authoritative LocalMonitoringService + DrowsinessEngine inference latency"
             >
               AI: {(telemetry.timing?.infer_duration_ms != null ? telemetry.timing.infer_duration_ms : inference_latency_ms ?? 0).toFixed(0)}ms
             </Badge>
@@ -498,16 +515,24 @@ export function LiveTelemetryHUD({
 
             <span
               className={`text-xs font-mono tabular-nums font-bold px-2 py-0.5 rounded-lg inline-flex items-center gap-1 shrink-0 whitespace-nowrap ${
-                isEyeClosed
-                  ? "bg-rose-500/20 text-rose-500 border border-rose-500/30"
-                  : "bg-emerald-500/20 text-emerald-500 border border-emerald-500/30"
+                !hasLiveFace
+                  ? "bg-muted text-muted-foreground border border-border"
+                  : isEyeClosed
+                    ? "bg-rose-500/20 text-rose-500 border border-rose-500/30"
+                    : "bg-emerald-500/20 text-emerald-500 border border-emerald-500/30"
               }`}
             >
-              {isEyeClosed ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
-              <span>{ear.toFixed(3)}</span>
-              <span className="text-[10px] uppercase font-sans">
-                {isEyeClosed ? "Closed" : "Open"}
-              </span>
+              {!hasLiveFace ? (
+                <span>Unavailable</span>
+              ) : (
+                <>
+                  {isEyeClosed ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
+                  <span>{ear.toFixed(3)}</span>
+                  <span className="text-[10px] uppercase font-sans">
+                    {isEyeClosed ? "Closed" : "Open"}
+                  </span>
+                </>
+              )}
             </span>
           </div>
 
@@ -660,11 +685,12 @@ export function LiveTelemetryHUD({
             <span className="truncate">Head Pose</span>
           </div>
           <div className="font-bold text-foreground text-xs truncate">
-            P: {head_pose ? Math.round(head_pose.pitch_deg) : 0}° | Y:{" "}
-            {head_pose ? Math.round(head_pose.yaw_deg) : 0}°
+            {hasLiveFace && head_pose
+              ? `P: ${Math.round(head_pose.pitch_deg)}° | Y: ${Math.round(head_pose.yaw_deg)}°`
+              : "Unavailable"}
           </div>
           <div className="text-[10px] text-muted-foreground font-sans truncate">
-            Pitch / Yaw alignment
+            {hasLiveFace && head_pose ? `Roll: ${Math.round(head_pose.roll_deg)}°` : "Awaiting face lock"}
           </div>
         </div>
 
@@ -678,79 +704,57 @@ export function LiveTelemetryHUD({
             {blinkRate > 0 ? `${blinkRate.toFixed(1)} /min` : "--"}
           </div>
           <div className="text-[10px] text-muted-foreground font-sans truncate">
-            {blinkRate === 0
-              ? "Calibrating"
-              : blinkRate < 6
-              ? "Low (Eye fixation)"
-              : blinkRate > 25
-              ? "Frequent blinks"
-              : "Normal cadence"}
+            {blinkDur ? `Last: ${Math.round(blinkDur)}ms` : "Normal cadence"}
           </div>
         </div>
 
-        {/* Instrument 4: Kinematic Dynamics (RCR & AVR) */}
+        {/* Instrument 4: Yawn MAR & Kinematics */}
         <div className="p-2.5 rounded-xl bg-card border border-border shadow-2xs space-y-1">
           <div className="text-[10px] text-muted-foreground uppercase flex items-center justify-between">
             <span className="flex items-center gap-1 truncate">
               <Timer className="size-3 text-primary shrink-0" />
-              <span>Kinematics (RCR/AVR)</span>
+              <span>Yawn MAR / RCR</span>
             </span>
-            {eye_metrics?.blink_avr !== null && eye_metrics?.blink_avr !== undefined && (
-              <span className="text-[9px] text-primary font-bold">
-                AVR: {eye_metrics.blink_avr.toFixed(2)}
-              </span>
-            )}
           </div>
           <div className="font-bold text-foreground text-xs truncate">
-            {blinkRcr
-              ? `RCR: ${blinkRcr.toFixed(2)}`
-              : blinkDur
-              ? `${Math.round(blinkDur)}ms`
-              : "Calibrating"}
+            {hasLiveFace
+              ? `MAR: ${marYawn.toFixed(2)}${blinkRcr ? ` · RCR ${blinkRcr.toFixed(2)}` : ""}`
+              : "Unavailable"}
           </div>
           <div className="text-[10px] text-muted-foreground font-sans truncate">
-            Re-open / Closure dynamics
+            {reason_codes?.includes("AUTHENTIC_YAWN") || reason_codes?.includes("FREQUENT_YAWNING")
+              ? "Active yawn detected"
+              : "Mouth aperture nominal"}
           </div>
         </div>
       </div>
 
-      {/* 5. Edge AI Cascade Decision Panel */}
+      {/* 5. Authoritative Backend Engine Authority Panel */}
       <div className="p-3 rounded-2xl bg-card border border-border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Cpu className="size-4 text-primary shrink-0" />
           <span className="text-muted-foreground font-medium text-[11px] sm:text-xs">
-            Cascade Decision Authority:
+            Authoritative Engine:
           </span>
-          <Badge
-            variant={
-              cascade?.arbitration_winner === "MOBILENET_V3"
-                ? "default"
-                : "secondary"
-            }
-            className="font-mono text-[11px] font-bold"
-          >
-            {cascade?.arbitration_winner || "GEOMETRY"}
+          <Badge variant="secondary" className="font-mono text-[11px] font-bold">
+            {telemetry.authoritative_engine || "DrowsinessEngine"}
           </Badge>
-        </div>
-
-        <div className="flex items-center gap-2 font-mono">
-          {cascade?.cnn_triggered ? (
-            <Badge className="bg-amber-500/20 text-amber-500 border border-amber-500/40 text-[10px] font-semibold animate-pulse gap-1">
-              <Zap className="size-3 fill-amber-500" />
-              <span>CNN ACTIVE ({cascade.cnn_latency_ms?.toFixed(0) || 14}ms)</span>
-            </Badge>
-          ) : (
-            <Badge
-              variant="outline"
-              className="border-border text-muted-foreground text-[10px] gap-1"
-            >
-              <span>GEOMETRIC FAST-PATH (&lt;2ms)</span>
+          {telemetry.drowsiness_state && (
+            <Badge variant="outline" className="font-mono text-[10px]">
+              State: {telemetry.drowsiness_state}
             </Badge>
           )}
+        </div>
 
+        <div className="flex items-center gap-2 font-mono flex-wrap">
+          {telemetry.alert_state && (
+            <Badge variant="outline" className="border-border text-foreground text-[10px]">
+              Alert: {telemetry.alert_state}
+            </Badge>
+          )}
           {cascade?.geom_reliability !== undefined && (
-            <span className="text-[10px] text-muted-foreground hidden md:inline">
-              Reliability: {(cascade.geom_reliability * 100).toFixed(0)}%
+            <span className="text-[10px] text-muted-foreground">
+              Confidence: {(cascade.geom_reliability * 100).toFixed(0)}%
             </span>
           )}
         </div>

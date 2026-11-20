@@ -2154,17 +2154,23 @@ def test_blink_7_genuine_prolonged_closure_and_distinct_durations() -> None:
     assert s_done.completed_blink.duration_ms == pytest.approx(410.25, abs=0.05)
     assert s_done.completed_blink.duration_ms > s_sustained.current_closure_duration_ms
 
-    # Verify REOPENING -> CLOSED interpolates closure_threshold crossing
+    # Verify REOPENING -> CLOSED preserves original closure_threshold crossing under Schmitt-trigger hysteresis
+    # (Audit CRITICAL-2: brief rise into [closure_threshold, reopen_threshold) without reaching
+    # reopen_threshold must NOT reset the ongoing closure onset timestamp).
     detector.reset()
     detector.update(timestamp_ms=2000.0, left_ear=0.30, right_ear=0.30, ear=0.30)
+    # Crosses closure_threshold=0.205 between (2000, 0.30) and (2033, 0.12):
+    # t_cross_close = 2000 + 33 * (0.30 - 0.205) / (0.30 - 0.12) = 2017.4167 ms
     detector.update(timestamp_ms=2033.0, left_ear=0.12, right_ear=0.12, ear=0.12)
     s_reopening = detector.update(timestamp_ms=2066.0, left_ear=0.225, right_ear=0.225, ear=0.225)
     assert s_reopening.state == BlinkState.REOPENING
-    # Drops from 0.225 at t=2066 to 0.125 at t=2106 across closure_threshold=0.205:
-    # t_cross_close = 2066 + 40 * (0.225 - 0.205) / (0.225 - 0.125) = 2074.0 ms
+    assert s_reopening.is_eye_closed is True
+    # Drops from 0.225 at t=2066 back to 0.125 at t=2106 without ever reaching reopen_threshold=0.240:
+    # Original closure start (2017.4167 ms) is preserved rather than reset to 2074.0 ms.
     s_reclosed = detector.update(timestamp_ms=2106.0, left_ear=0.125, right_ear=0.125, ear=0.125)
     assert s_reclosed.state == BlinkState.CLOSED
-    assert s_reclosed.current_closure_duration_ms == pytest.approx(2106.0 - 2074.0, abs=0.05)
+    expected_t_close = 2000.0 + 33.0 * (0.30 - 0.205) / (0.30 - 0.12)
+    assert s_reclosed.current_closure_duration_ms == pytest.approx(2106.0 - expected_t_close, abs=0.05)
 
 
 def test_blink_phase2_1_slow_progressive_closures_80_to_200ms() -> None:

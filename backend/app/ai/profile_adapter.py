@@ -20,7 +20,7 @@ from typing import Dict
 
 import numpy as np
 
-from backend.app.ai.geometry import PoseZone
+from backend.app.features.head_pose import PoseZone
 from backend.app.ai.pdbp_calibration import DriverBehaviourProfile, ZoneBaseline
 from backend.app.schemas.profile import DriverProfileDTO, ZoneBaselineDTO
 
@@ -81,6 +81,7 @@ def profile_to_dto(profile: DriverBehaviourProfile) -> DriverProfileDTO:
             if getattr(profile, "neutral_rot_mat", None) is not None
             else None
         ),
+        calibration_is_mirrored=getattr(profile, "calibration_is_mirrored", None),
     )
 
 
@@ -162,4 +163,5 @@ def dto_to_profile(dto: DriverProfileDTO) -> DriverBehaviourProfile:
             if getattr(dto, "neutral_rot_mat", None) is not None
             else None
         ),
+        calibration_is_mirrored=getattr(dto, "calibration_is_mirrored", None),
     )

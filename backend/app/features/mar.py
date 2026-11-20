@@ -75,7 +75,7 @@ DEFAULT_MAX_YAWN_DURATION_MS: float = 8000.0    # Maximum realistic single yawn 
 
 # Tracking Gap & Dropout Thresholds
 DEFAULT_DROPOUT_GRACE_MS: float = 200.0         # Maximum tolerance for transient landmark loss
-DEFAULT_MAX_SAMPLING_GAP_MS: float = 500.0      # Inter-frame gap threshold triggering event reset
+DEFAULT_MAX_SAMPLING_GAP_MS: float = 250.0      # Inter-frame gap threshold triggering event reset (aligned with Blink/PERCLOS/Temporal)
 
 # Baseline Parameters
 DEFAULT_CLOSED_BASELINE_THRESHOLD: float = 0.28  # Maximum MAR to qualify as closed for baseline update
@@ -269,6 +269,7 @@ class YawnDetector:
 
         # In-flight state tracking
         self._is_opening: bool = False
+        self._opening_exceeded_max: bool = False
         self._opening_start_ts: Optional[float] = None
         self._last_open_valid_ts: Optional[float] = None
         self._observed_open_ms: float = 0.0
@@ -425,6 +426,8 @@ class YawnDetector:
                 self._last_open_valid_ts = ts
                 self._peak_mar = max(self._peak_mar, mar)
                 self._open_mar_samples.append(mar)
+                if self._observed_open_ms > self.max_yawn_duration_ms:
+                    self._opening_exceeded_max = True
             else:
                 # Mouth has dropped below hold floor (episode terminates)
                 is_mouth_open = False
@@ -466,6 +469,7 @@ class YawnDetector:
     def _abort_opening(self) -> None:
         """Reset active opening tracking state."""
         self._is_opening = False
+        self._opening_exceeded_max = False
         self._opening_start_ts = None
         self._last_open_valid_ts = None
         self._observed_open_ms = 0.0
@@ -481,18 +485,29 @@ class YawnDetector:
         completed_yawn: Optional[YawnEvent] = None,
     ) -> MouthAspectRatioResult:
         """Construct structured MouthAspectRatioResult maintaining field order."""
-        if self._is_opening and self._opening_start_ts is not None:
+        if (
+            is_valid
+            and self._is_opening
+            and not self._opening_exceeded_max
+            and self._opening_start_ts is not None
+        ):
             wall_clock_duration = current_ts - self._opening_start_ts
             observed_duration = self._observed_open_ms
         else:
             wall_clock_duration = 0.0
             observed_duration = 0.0
 
+        active_within_bounds = (
+            is_valid
+            and self._is_opening
+            and not self._opening_exceeded_max
+            and observed_duration <= self.max_yawn_duration_ms
+        )
         is_yawn_in_progress = bool(
-            self._is_opening and (observed_duration >= (self.min_yawn_duration_ms * 0.5))
+            active_within_bounds and (observed_duration >= (self.min_yawn_duration_ms * 0.5))
         )
         is_authentic_yawn = bool(
-            self._is_opening and (observed_duration >= self.min_yawn_duration_ms)
+            active_within_bounds and (observed_duration >= self.min_yawn_duration_ms)
         )
         opening_ratio = mar / max(self._baseline_mar, 1e-6)
 
@@ -507,7 +522,7 @@ class YawnDetector:
             is_valid=is_valid,
             baseline_mar=self._baseline_mar,
             opening_ratio=opening_ratio,
-            peak_mar=self._peak_mar if self._is_opening else mar,
+            peak_mar=self._peak_mar if (is_valid and self._is_opening) else mar,
             observed_yawn_duration_ms=observed_duration,
         )
 

@@ -5,7 +5,12 @@ import { toast } from "sonner";
 import { useCamera } from "@/hooks/use-camera";
 import { useLivekitTelemetryStream } from "@/hooks/use-livekit-telemetry-stream";
 import { CameraView } from "@/components/camera/camera-view";
-import { CalibrationPhase, FrameTelemetry, ZoneBaselineEntry } from "@/types/telemetry";
+import {
+  CalibratedProfilePayload,
+  CalibrationPhase,
+  FrameTelemetry,
+  ZoneBaselineEntry,
+} from "@/types/telemetry";
 import { InitialDriverProfileData } from "@/components/monitor/unified-live-monitor";
 import {
   Card,
@@ -20,6 +25,7 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import {
   Activity,
+  AlertTriangle,
   Eye,
   Camera,
   Play,
@@ -45,28 +51,6 @@ export interface GuidedCalibrationWizardProps {
   onCalibrationSaved?: (profile: InitialDriverProfileData) => void;
 }
 
-interface CapturedBlinkSample {
-  timestampMs: number;
-  durationMs: number;
-  rcr: number;
-  amplitude: number;
-}
-
-function computeMedianAndScaledMad(values: number[], minFloor: number): [number, number] {
-  if (!values.length) return [0, minFloor];
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  const median =
-    sorted.length % 2 === 1 ? sorted[mid] : 0.5 * (sorted[mid - 1] + sorted[mid]);
-  const absDevs = sorted.map((v) => Math.abs(v - median)).sort((a, b) => a - b);
-  const mad =
-    absDevs.length % 2 === 1
-      ? absDevs[mid]
-      : 0.5 * (absDevs[mid - 1] + absDevs[mid]);
-  const scaledMad = Math.max(minFloor, 1.4826 * mad);
-  return [median, scaledMad];
-}
-
 const BLINK_STREAM_TARGET_SEC = 120;
 
 export function GuidedCalibrationWizard({
@@ -85,33 +69,15 @@ export function GuidedCalibrationWizard({
     "FULL_4ZONE_AND_BLINK" | "QUICK_4ZONE_ONLY" | "BLINK_2MIN_ONLY"
   >("FULL_4ZONE_AND_BLINK");
   const [isSuccess, setIsSuccess] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [calState, setCalState] = useState<CalibrationPhase | null>(null);
   const [savedProfile, setSavedProfile] = useState<InitialDriverProfileData | null>(
     initialDriverProfile
   );
+  const [latestTelemetry, setLatestTelemetry] = useState<FrameTelemetry | null>(null);
 
-  // 2-Minute Natural Blink Rate & Cadence Stream State
-  const [isBlinkStreamActive, setIsBlinkStreamActive] = useState(false);
-  const [blinkElapsedSec, setBlinkElapsedSec] = useState(0);
-  const [capturedBlinks, setCapturedBlinks] = useState<CapturedBlinkSample[]>([]);
-  const [livePerclosPct, setLivePerclosPct] = useState<number>(0);
-  const [liveEarValue, setLiveEarValue] = useState<number>(0.285);
-  const [isFaceVisibleInStream, setIsFaceVisibleInStream] = useState<boolean>(true);
-
-  const isBlinkStreamActiveRef = useRef(false);
-  const blinkElapsedSecRef = useRef(0);
-  const capturedBlinksRef = useRef<CapturedBlinkSample[]>([]);
-  const pendingSpatialProfileRef = useRef<Record<string, any> | null>(null);
-  const lastSeenBlinkDurRef = useRef<number | null>(null);
-  const lastBlinkRecordedAtMsRef = useRef<number>(0);
-  const eyeClosedStartMsRef = useRef<number | null>(null);
-  const minEarDuringClosureRef = useRef<number>(0.3);
-  const perclosSamplesRef = useRef<number[]>([]);
   const hasHandledCompletionRef = useRef<boolean>(false);
-  const workflowRef = useRef(calibrationWorkflow);
-  useEffect(() => {
-    workflowRef.current = calibrationWorkflow;
-  }, [calibrationWorkflow]);
 
   // Stable Session ID
   const stableSessionId = useMemo(
@@ -134,114 +100,44 @@ export function GuidedCalibrationWizard({
     mirrored: true,
   });
 
-  // Finalize & Persist Combined (4-Zone Spatial + 2-Min Blink Rate) Profile
-  const finalizeAndPersistProfile = useCallback(
-    (spatialProf: Record<string, any> | null, blinks: CapturedBlinkSample[], elapsedSec: number) => {
-      isBlinkStreamActiveRef.current = false;
-      setIsBlinkStreamActive(false);
-
-      const centerEar =
-        (spatialProf?.center_ear_median as number) ??
-        savedProfile?.centerEarMedian ??
-        0.285;
-      const centerEarMad =
-        (spatialProf?.center_ear_mad_scaled as number) ??
-        savedProfile?.centerEarMadScaled ??
-        0.018;
-      const zoneMap =
-        (spatialProf?.zone_baselines as Record<string, unknown> | null) ??
-        savedProfile?.zoneBaselines ??
-        null;
-
-      // Compute personal blink kinematics from the 2-minute stream (or fallback to backend values)
-      let durMed =
-        (spatialProf?.blink_duration_median_ms as number) ??
-        savedProfile?.blinkDurationMedianMs ??
-        235.0;
-      let durMad =
-        (spatialProf?.blink_duration_mad_ms as number) ??
-        savedProfile?.blinkDurationMadMs ??
-        40.0;
-      let rcrMed =
-        (spatialProf?.blink_rcr_median as number) ??
-        savedProfile?.blinkRcrMedian ??
-        0.95;
-      let rcrMad =
-        (spatialProf?.blink_rcr_mad as number) ??
-        savedProfile?.blinkRcrMad ??
-        0.18;
-      let freqMed =
-        (spatialProf?.blink_freq_median_per_min as number) ?? 16.0;
-      let freqMad =
-        (spatialProf?.blink_freq_mad_per_min as number) ?? 4.5;
-      let ampMed =
-        (spatialProf?.blink_amplitude_median as number) ?? 0.14;
-
-      if (blinks.length >= 2) {
-        const durs = blinks.map((b) => Math.min(520, Math.max(80, b.durationMs)));
-        const rcrs = blinks.map((b) => Math.min(3.0, Math.max(0.3, b.rcr)));
-        const amps = blinks.map((b) => Math.min(0.35, Math.max(0.05, b.amplitude)));
-        const [dMed, dMad] = computeMedianAndScaledMad(durs, 35.0);
-        const [rMed, rMad] = computeMedianAndScaledMad(rcrs, 0.14);
-        const [aMed] = computeMedianAndScaledMad(amps, 0.02);
-        durMed = Number(dMed.toFixed(1));
-        durMad = Number(dMad.toFixed(1));
-        rcrMed = Number(rMed.toFixed(2));
-        rcrMad = Number(rMad.toFixed(2));
-        ampMed = Number(aMed.toFixed(3));
-
-        const effectiveMin = Math.max(0.25, elapsedSec / 60.0);
-        const overallRate = blinks.length / effectiveMin;
-        const ibiRates: number[] = [];
-        for (let i = 1; i < blinks.length; i++) {
-          const ibiMs = blinks[i].timestampMs - blinks[i - 1].timestampMs;
-          if (ibiMs >= 1200 && ibiMs <= 25000) {
-            ibiRates.push(60000.0 / ibiMs);
-          }
-        }
-        if (ibiRates.length >= 2) {
-          const [ibiMed, ibiMad] = computeMedianAndScaledMad(ibiRates, 3.5);
-          freqMed = Number(
-            Math.min(38.0, Math.max(5.0, 0.65 * overallRate + 0.35 * ibiMed)).toFixed(1)
-          );
-          freqMad = Number(Math.min(10.0, Math.max(3.5, ibiMad)).toFixed(1));
-        } else {
-          freqMed = Number(Math.min(35.0, Math.max(6.0, overallRate)).toFixed(1));
-          freqMad = 4.5;
-        }
-      } else if (blinks.length === 1) {
-        durMed = Number(
-          Math.min(310, Math.max(170, 0.6 * blinks[0].durationMs + 0.4 * 235.0)).toFixed(1)
-        );
-        durMad = 40.0;
-        rcrMed = Number(
-          Math.min(1.8, Math.max(0.55, 0.6 * blinks[0].rcr + 0.4 * 0.95)).toFixed(2)
-        );
-        rcrMad = 0.18;
-      } else if (durMed <= 190) {
-        // Prevent legacy 185ms fallback from causing false alarms on normal blinks
-        durMed = 235.0;
-        durMad = 40.0;
+  // Persist authoritative backend-produced profile only (never fabricate fallback baselines)
+  const persistBackendCalibratedProfile = useCallback(
+    async (backendProfile: CalibratedProfilePayload) => {
+      if (
+        !backendProfile ||
+        typeof backendProfile.center_ear_median !== "number" ||
+        !Number.isFinite(backendProfile.center_ear_median) ||
+        backendProfile.center_ear_median <= 0
+      ) {
+        const msg = "Backend completed calibration without returning a valid physiological profile.";
+        setSaveError(msg);
+        setIsSuccess(false);
+        toast.error(msg);
+        return;
       }
 
-      const perclosArr = perclosSamplesRef.current;
-      const basePerclos =
-        perclosArr.length >= 5
-          ? Number(
-              Math.min(
-                9.5,
-                Math.max(
-                  1.2,
-                  perclosArr.reduce((acc, v) => acc + v, 0) / perclosArr.length
-                )
-              ).toFixed(2)
-            )
-          : Number(
-              Math.min(8.5, Math.max(1.5, ((freqMed * durMed) / 60000.0) * 100.0)).toFixed(2)
-            );
+      setIsSavingProfile(true);
+      setSaveError(null);
+
+      const centerZone = backendProfile.zone_baselines?.CENTER;
+      const centerEarMad =
+        backendProfile.center_ear_mad_scaled ??
+        centerZone?.ear_mad_scaled ??
+        0.018;
+      const freqMed = backendProfile.blink_freq_median_per_min ?? 16.0;
+      const freqMad = backendProfile.blink_freq_mad_per_min ?? 4.5;
+      const durMed = backendProfile.blink_duration_median_ms;
+      const durMad = backendProfile.blink_duration_mad_ms;
+      const rcrMed = backendProfile.blink_rcr_median;
+      const rcrMad = backendProfile.blink_rcr_mad;
+      const basePerclos = backendProfile.baseline_perclos_pct ?? 3.5;
+      const ampMed = backendProfile.blink_amplitude_median ?? 0.14;
+      const blinksSampled = backendProfile.temporal_blinks_sampled ?? 0;
+      const windowSec = backendProfile.temporal_window_sec ?? BLINK_STREAM_TARGET_SEC;
+      const modeLabel = backendProfile.calibration_mode || "FOUR_ZONE";
 
       const enrichedZones: Record<string, unknown> = {
-        ...(zoneMap && typeof zoneMap === "object" ? zoneMap : {}),
+        ...(backendProfile.zone_baselines ?? {}),
         _temporalBaseline: {
           blinkFreqMedianPerMin: freqMed,
           blinkFreqMadPerMin: freqMad,
@@ -251,193 +147,92 @@ export function GuidedCalibrationWizard({
           blinkRcrMad: rcrMad,
           baselinePerclosPct: basePerclos,
           blinkAmplitudeMedian: ampMed,
-          temporalBlinksSampled: blinks.length,
-          temporalWindowSec: Math.round(elapsedSec || BLINK_STREAM_TARGET_SEC),
-          calibratedAt: new Date().toISOString(),
+          temporalBlinksSampled: blinksSampled,
+          temporalWindowSec: windowSec,
+          calibratedAt: backendProfile.calibrated_at ?? new Date().toISOString(),
+        },
+        _poseMetadata: {
+          neutral_rot_mat: backendProfile.neutral_rot_mat ?? null,
+          calibration_is_mirrored: backendProfile.calibration_is_mirrored ?? null,
         },
       };
-
-      const modeLabel =
-        workflowRef.current === "FULL_4ZONE_AND_BLINK"
-          ? "FOUR_ZONE_PLUS_BLINK"
-          : workflowRef.current === "BLINK_2MIN_ONLY"
-          ? "FOUR_ZONE_PLUS_BLINK"
-          : "4_ZONE";
 
       const nextProfile: InitialDriverProfileData = {
         isCalibrated: true,
         calibrationMode: modeLabel,
-        centerEarMedian: centerEar,
+        centerEarMedian: backendProfile.center_ear_median,
         centerEarMadScaled: centerEarMad,
         blinkDurationMedianMs: durMed,
         blinkDurationMadMs: durMad,
         blinkRcrMedian: rcrMed,
         blinkRcrMad: rcrMad,
-        neutralPitchDeg:
-          (spatialProf?.neutral_pitch_deg as number) ??
-          savedProfile?.neutralPitchDeg ??
-          0.0,
-        neutralYawDeg:
-          (spatialProf?.neutral_yaw_deg as number) ??
-          savedProfile?.neutralYawDeg ??
-          0.0,
-        calibrationReliability:
-          (spatialProf?.calibration_reliability as number) ??
-          savedProfile?.calibrationReliability ??
-          0.92,
+        neutralPitchDeg: backendProfile.neutral_pitch_deg,
+        neutralYawDeg: backendProfile.neutral_yaw_deg,
+        calibrationReliability: backendProfile.calibration_reliability,
         zoneBaselines: enrichedZones,
       };
 
-      setSavedProfile(nextProfile);
-      setIsSuccess(true);
+      try {
+        const res = await fetch("/api/calibration/save", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            calibrationMode: modeLabel,
+            centerEarMedian: nextProfile.centerEarMedian,
+            centerEarMadScaled: nextProfile.centerEarMadScaled,
+            blinkDurationMedianMs: nextProfile.blinkDurationMedianMs,
+            blinkDurationMadMs: nextProfile.blinkDurationMadMs,
+            blinkRcrMedian: nextProfile.blinkRcrMedian,
+            blinkRcrMad: nextProfile.blinkRcrMad,
+            blinkFreqMedianPerMin: freqMed,
+            blinkFreqMadPerMin: freqMad,
+            baselinePerclosPct: basePerclos,
+            blinkAmplitudeMedian: ampMed,
+            temporalBlinksSampled: blinksSampled,
+            temporalWindowSec: windowSec,
+            sensitivityLevel: backendProfile.sensitivity_level ?? "STANDARD",
+            neutralPitchDeg: nextProfile.neutralPitchDeg,
+            neutralYawDeg: nextProfile.neutralYawDeg,
+            neutralRotMat: backendProfile.neutral_rot_mat ?? null,
+            calibrationIsMirrored: backendProfile.calibration_is_mirrored ?? null,
+            calibrationReliability: nextProfile.calibrationReliability,
+            zoneBaselines: backendProfile.zone_baselines ?? {},
+          }),
+        });
 
-      fetch("/api/calibration/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          calibrationMode: modeLabel,
-          centerEarMedian: nextProfile.centerEarMedian,
-          centerEarMadScaled: nextProfile.centerEarMadScaled,
-          blinkDurationMedianMs: nextProfile.blinkDurationMedianMs,
-          blinkDurationMadMs: nextProfile.blinkDurationMadMs,
-          blinkRcrMedian: nextProfile.blinkRcrMedian,
-          blinkRcrMad: nextProfile.blinkRcrMad,
-          blinkFreqMedianPerMin: freqMed,
-          blinkFreqMadPerMin: freqMad,
-          baselinePerclosPct: basePerclos,
-          blinkAmplitudeMedian: ampMed,
-          temporalBlinksSampled: blinks.length,
-          temporalWindowSec: Math.round(elapsedSec || BLINK_STREAM_TARGET_SEC),
-          neutralPitchDeg: nextProfile.neutralPitchDeg,
-          neutralYawDeg: nextProfile.neutralYawDeg,
-          calibrationReliability: nextProfile.calibrationReliability,
-          zoneBaselines: enrichedZones,
-        }),
-      })
-        .then(() => {
-          toast.success(
-            `Personal 4-Zone + Blink Baseline Saved (${freqMed.toFixed(1)} blinks/min · ${Math.round(durMed)}ms)!`,
-            { id: "calibration-completed-toast" }
-          );
-          if (onCalibrationSaved) {
-            onCalibrationSaved(nextProfile);
-          }
-        })
-        .catch((e) => console.warn("Could not save profile to DB:", e));
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          throw new Error(errBody.error || `Profile persistence failed (HTTP ${res.status})`);
+        }
+
+        setSavedProfile(nextProfile);
+        setIsSuccess(true);
+        toast.success(
+          `Calibrated profile saved (Center EAR ${nextProfile.centerEarMedian.toFixed(3)} · ${Math.round(durMed)} ms blink).`,
+          { id: "calibration-completed-toast" }
+        );
+        if (onCalibrationSaved) {
+          onCalibrationSaved(nextProfile);
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Failed to save calibrated profile.";
+        setSaveError(msg);
+        setIsSuccess(false);
+        toast.error(msg, { id: "calibration-save-error-toast" });
+      } finally {
+        setIsSavingProfile(false);
+      }
     },
-    [onCalibrationSaved, savedProfile]
+    [onCalibrationSaved]
   );
 
-  // Start the 2-Minute Natural Blink Rate & Cadence Stream
-  const beginTwoMinuteBlinkStream = useCallback((spatialProfile: Record<string, any> | null) => {
-    pendingSpatialProfileRef.current = spatialProfile;
-    capturedBlinksRef.current = [];
-    setCapturedBlinks([]);
-    blinkElapsedSecRef.current = 0;
-    setBlinkElapsedSec(0);
-    lastSeenBlinkDurRef.current = null;
-    lastBlinkRecordedAtMsRef.current = 0;
-    eyeClosedStartMsRef.current = null;
-    perclosSamplesRef.current = [];
-    isBlinkStreamActiveRef.current = true;
-    setIsBlinkStreamActive(true);
-    toast.info(
-      "4-Zone spatial alignment locked! Starting 2-Minute Natural Blink Rate & Cadence stream — look ahead and blink naturally.",
-      { id: "blink-stream-start-toast" }
-    );
-  }, []);
-
-  // Process incoming telemetry frames during the 2-Minute Natural Blink Rate Stream
-  const handleLiveTelemetry = useCallback((t: FrameTelemetry) => {
-    if (!isBlinkStreamActiveRef.current) return;
-
-    setIsFaceVisibleInStream(t.face_detected);
-    if (!t.face_detected) return;
-
-    const em = t.eye_metrics;
-    if (!em) return;
-
-    setLiveEarValue(em.ear_raw);
-    if (typeof em.perclos_pct === "number") {
-      setLivePerclosPct(em.perclos_pct);
-      perclosSamplesRef.current.push(em.perclos_pct);
-    }
-
-    const nowMs = Date.now();
-
-    // Method A: Server-emitted completed blink event
-    if (
-      typeof em.blink_duration_ms === "number" &&
-      em.blink_duration_ms >= 70 &&
-      em.blink_duration_ms <= 650 &&
-      em.blink_duration_ms !== lastSeenBlinkDurRef.current &&
-      nowMs - lastBlinkRecordedAtMsRef.current >= 350
-    ) {
-      lastSeenBlinkDurRef.current = em.blink_duration_ms;
-      lastBlinkRecordedAtMsRef.current = nowMs;
-      const sample: CapturedBlinkSample = {
-        timestampMs: nowMs,
-        durationMs: em.blink_duration_ms,
-        rcr: typeof em.blink_rcr === "number" && em.blink_rcr > 0 ? em.blink_rcr : 0.95,
-        amplitude: Math.max(0.08, 0.285 - Math.min(0.22, em.ear_raw)),
-      };
-      const next = [...capturedBlinksRef.current, sample];
-      capturedBlinksRef.current = next;
-      setCapturedBlinks(next);
-      eyeClosedStartMsRef.current = null;
-      return;
-    }
-
-    // Method B: Client edge-transition detector if two consecutive blinks had identical rounded duration
-    const isClosed = Boolean(em.is_eye_closed || em.ear_raw < em.ear_closure_threshold);
-    if (isClosed) {
-      if (eyeClosedStartMsRef.current === null) {
-        eyeClosedStartMsRef.current = nowMs;
-        minEarDuringClosureRef.current = em.ear_raw;
-      } else {
-        minEarDuringClosureRef.current = Math.min(minEarDuringClosureRef.current, em.ear_raw);
-      }
-    } else if (eyeClosedStartMsRef.current !== null) {
-      const durMs = nowMs - eyeClosedStartMsRef.current;
-      eyeClosedStartMsRef.current = null;
-      if (durMs >= 75 && durMs <= 600 && nowMs - lastBlinkRecordedAtMsRef.current >= 400) {
-        lastBlinkRecordedAtMsRef.current = nowMs;
-        const sample: CapturedBlinkSample = {
-          timestampMs: nowMs,
-          durationMs: durMs,
-          rcr: typeof em.blink_rcr === "number" && em.blink_rcr > 0 ? em.blink_rcr : 0.95,
-          amplitude: Math.max(0.06, em.ear_raw - minEarDuringClosureRef.current),
-        };
-        const next = [...capturedBlinksRef.current, sample];
-        capturedBlinksRef.current = next;
-        setCapturedBlinks(next);
-      }
-    }
-  }, []);
-
-  // 1-Second Ticker for the 2-Minute Natural Blink Stream
-  useEffect(() => {
-    if (!isBlinkStreamActive) return;
-    const interval = setInterval(() => {
-      if (!isBlinkStreamActiveRef.current) return;
-      const nextSec = blinkElapsedSecRef.current + 1;
-      blinkElapsedSecRef.current = nextSec;
-      setBlinkElapsedSec(nextSec);
-
-      if (nextSec >= BLINK_STREAM_TARGET_SEC) {
-        finalizeAndPersistProfile(
-          pendingSpatialProfileRef.current,
-          capturedBlinksRef.current,
-          nextSec
-        );
-      }
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [isBlinkStreamActive, finalizeAndPersistProfile]);
-
-  // 2. Real-Time LiveKit WebRTC Streaming & Calibration Hook
+  // 2. Real-Time LiveKit WebRTC Streaming & Authoritative Backend Calibration Hook
   const {
     isConnected: isLivekitConnected,
+    connectionStatus,
+    backendProcessingStatus,
+    workerError,
+    isStale,
     calibration: livekitCalibration,
     startStreamingLoop,
     stopStreamingLoop,
@@ -450,7 +245,9 @@ export function GuidedCalibrationWizard({
   } = useLivekitTelemetryStream({
     sessionId: stableSessionId,
     driverId,
-    onTelemetry: handleLiveTelemetry,
+    onTelemetry: (t) => {
+      setLatestTelemetry(t);
+    },
     onCalibration: (cal) => {
       setCalState(cal);
       if (!cal.is_completed) {
@@ -462,38 +259,40 @@ export function GuidedCalibrationWizard({
       }
       hasHandledCompletionRef.current = true;
 
-      if (cal.is_completed && !cal.rejection_reason) {
-        const prof = (cal as unknown as { profile?: Record<string, unknown> })?.profile ?? null;
-        // If user selected FULL_4ZONE_AND_BLINK and backend completed spatial zones in 4 steps
-        // without running Phase 5 natively, seamlessly launch the 2-Minute Blink Stream!
-        if (
-          workflowRef.current === "FULL_4ZONE_AND_BLINK" &&
-          (cal.total_phases <= 4 || !prof?.temporal_blinks_sampled)
-        ) {
-          beginTwoMinuteBlinkStream(prof);
-          return;
-        }
-
-        // Otherwise finalize immediately
-        finalizeAndPersistProfile(
-          prof,
-          capturedBlinksRef.current,
-          cal.elapsed_sec || BLINK_STREAM_TARGET_SEC
-        );
-      } else if (cal.is_completed && cal.rejection_reason) {
+      if (cal.rejection_reason) {
         setIsSuccess(false);
+        toast.error(`Calibration rejected: ${cal.rejection_reason}`, {
+          id: "calibration-rejected-toast",
+        });
+        return;
       }
+
+      if (!cal.profile) {
+        const msg =
+          "Backend marked calibration finished without a validated profile. Please retry.";
+        setSaveError(msg);
+        setIsSuccess(false);
+        toast.error(msg);
+        return;
+      }
+
+      void persistBackendCalibratedProfile(cal.profile);
+    },
+    onError: (err) => {
+      toast.error(`Calibration connection error: ${err.message}`, {
+        id: "calibration-connection-error",
+      });
     },
   });
 
   // Keep calState in sync with incoming LiveKit calibration data
   useEffect(() => {
-    if (livekitCalibration && !isBlinkStreamActive) {
+    if (livekitCalibration) {
       setCalState(livekitCalibration);
     }
-  }, [livekitCalibration, isBlinkStreamActive]);
+  }, [livekitCalibration]);
 
-  // Reactive Video Streaming: Link camera activation with WebRTC publisher
+  // Reactive Video Streaming: Link camera activation with LiveKit WebRTC publisher
   useEffect(() => {
     if (cameraState === "active" && videoRef.current) {
       startStreamingLoop(videoRef.current, isMirrored);
@@ -523,28 +322,27 @@ export function GuidedCalibrationWizard({
     }
   };
 
-  // User Actions
+  // User Actions — strictly delegated to backend GuidedCalibrationSession
   const handleStartCalibration = async (
     overrideMode?: "FULL_4ZONE_AND_BLINK" | "QUICK_4ZONE_ONLY" | "BLINK_2MIN_ONLY"
   ) => {
     const modeToRun = overrideMode || calibrationWorkflow;
     if (overrideMode) {
       setCalibrationWorkflow(overrideMode);
-      workflowRef.current = overrideMode;
     }
 
     hasHandledCompletionRef.current = false;
     setIsSuccess(false);
+    setSaveError(null);
     setCalState(null);
-    isBlinkStreamActiveRef.current = false;
-    setIsBlinkStreamActive(false);
 
     if (cameraState !== "active") {
       await startCamera();
     }
 
     if (modeToRun === "BLINK_2MIN_ONLY") {
-      beginTwoMinuteBlinkStream(null);
+      triggerLivekitRecalibrate("BLINK_CADENCE", 5.0, BLINK_STREAM_TARGET_SEC);
+      toast.info("Starting Backend 2-Minute Natural Blink Rate Calibration...");
       return;
     }
 
@@ -552,105 +350,73 @@ export function GuidedCalibrationWizard({
     triggerLivekitCalibration(true, 5.0, includeBlink, BLINK_STREAM_TARGET_SEC);
     toast.info(
       includeBlink
-        ? "Starting 4-Zone Spatial + 2-Minute Natural Blink Rate Calibration..."
-        : "Starting Quick 4-Zone Spatial Calibration..."
+        ? "Starting Backend 4-Zone Spatial + 2-Minute Blink Calibration..."
+        : "Starting Backend 4-Zone Spatial Calibration..."
     );
   };
 
   const handleStopCalibration = () => {
-    isBlinkStreamActiveRef.current = false;
-    setIsBlinkStreamActive(false);
     triggerLivekitCancel();
     stopCamera();
     stopStreamingLoop();
     setCalState(null);
+    setSaveError(null);
   };
 
   const handleSkipZone = () => {
-    if (isBlinkStreamActive) {
-      finalizeAndPersistProfile(
-        pendingSpatialProfileRef.current,
-        capturedBlinksRef.current,
-        blinkElapsedSecRef.current
-      );
-      return;
-    }
     triggerLivekitSkip();
-    toast.info("Advancing past current calibration stage...");
+    toast.info("Requesting backend to advance past current calibration stage...");
   };
 
   const handleRecalibrateZone = async (zone: string) => {
     hasHandledCompletionRef.current = false;
     setIsSuccess(false);
-    isBlinkStreamActiveRef.current = false;
-    setIsBlinkStreamActive(false);
+    setSaveError(null);
+    setCalState(null);
     if (cameraState !== "active") {
       await startCamera();
     }
     if (zone === "BLINK_CADENCE") {
       setCalibrationWorkflow("BLINK_2MIN_ONLY");
-      workflowRef.current = "BLINK_2MIN_ONLY";
-      beginTwoMinuteBlinkStream(null);
-      return;
     }
-    triggerLivekitRecalibrate(zone, 5.0);
-    toast.info(`Recalibrating ${zone} zone...`);
+    triggerLivekitRecalibrate(zone, 5.0, BLINK_STREAM_TARGET_SEC);
+    toast.info(`Recalibrating ${zone.replace("_", " ")} on backend...`);
   };
 
-  // Live Blink Rate & Duration Metrics during 2-Min Stream
-  const liveBlinkStats = useMemo(() => {
-    const count =
-      isBlinkStreamActive
-        ? capturedBlinks.length
-        : calState?.collected_blinks_count ?? capturedBlinks.length;
-    const elapsed =
-      isBlinkStreamActive
-        ? blinkElapsedSec
-        : calState?.elapsed_sec ?? blinkElapsedSec;
-    const elapsedMin = Math.max(0.15, elapsed / 60.0);
-    const ratePerMin =
-      isBlinkStreamActive
-        ? count > 0
-          ? Number(Math.min(55, count / elapsedMin).toFixed(1))
-          : 0.0
-        : calState?.live_blink_rate_per_min ?? 0.0;
-    const durs = capturedBlinks.map((b) => b.durationMs);
-    const [medDur] = durs.length ? computeMedianAndScaledMad(durs, 35) : [null];
-    const rcrs = capturedBlinks.map((b) => b.rcr);
-    const [medRcr] = rcrs.length ? computeMedianAndScaledMad(rcrs, 0.14) : [null];
+  const isInBlinkPhase =
+    calState?.current_zone === "BLINK_CADENCE" || calState?.phase_type === "BLINK_CADENCE";
 
-    const remainingSec = Math.max(0, BLINK_STREAM_TARGET_SEC - Math.round(elapsed));
+  // Read live blink cadence metrics strictly from backend CalibrationPhaseDTO
+  const liveBlinkStats = useMemo(() => {
+    const targetSec = calState?.target_duration_sec ?? BLINK_STREAM_TARGET_SEC;
+    const elapsed = calState?.elapsed_sec ?? 0;
+    const remainingSec = Math.max(0, Math.round(targetSec - elapsed));
     const mm = String(Math.floor(remainingSec / 60)).padStart(2, "0");
     const ss = String(remainingSec % 60).padStart(2, "0");
-    const progressPct = Math.min(100, Math.round((elapsed / BLINK_STREAM_TARGET_SEC) * 100));
+    const progressPct =
+      typeof calState?.zone_progress_pct === "number"
+        ? Math.min(100, Math.round(calState.zone_progress_pct))
+        : targetSec > 0
+          ? Math.min(100, Math.round((elapsed / targetSec) * 100))
+          : 0;
 
     return {
-      count,
+      count: calState?.collected_blinks_count ?? 0,
       elapsed,
       remainingFormatted: `${mm}:${ss}`,
       progressPct,
-      ratePerMin,
+      ratePerMin: calState?.live_blink_rate_per_min ?? 0.0,
       medianDurationMs:
-        medDur !== null
-          ? Math.round(medDur)
-          : calState?.live_median_blink_duration_ms
+        typeof calState?.live_median_blink_duration_ms === "number"
           ? Math.round(calState.live_median_blink_duration_ms)
           : null,
       medianRcr:
-        medRcr !== null
-          ? medRcr.toFixed(2)
-          : calState?.live_median_blink_rcr
+        typeof calState?.live_median_blink_rcr === "number"
           ? calState.live_median_blink_rcr.toFixed(2)
           : null,
     };
-  }, [blinkElapsedSec, calState, capturedBlinks, isBlinkStreamActive]);
+  }, [calState]);
 
-  const isInBlinkPhase =
-    isBlinkStreamActive ||
-    calState?.current_zone === "BLINK_CADENCE" ||
-    calState?.phase_type === "BLINK_CADENCE";
-
-  // Directional guidance helpers
   const currentZoneInfo = useMemo(() => {
     if (isInBlinkPhase) {
       return {
@@ -692,28 +458,53 @@ export function GuidedCalibrationWizard({
   const isCalibrating =
     cameraState === "active" &&
     isLivekitConnected &&
-    (isBlinkStreamActive || Boolean(calState && !calState.is_completed));
+    Boolean(calState && !calState.is_completed);
 
-  // Extract stored temporal baseline metadata for the Baseline Inspector
+  const isFaceVisible = latestTelemetry ? latestTelemetry.face_detected : null;
+  const liveEarValue =
+    latestTelemetry && latestTelemetry.face_detected
+      ? latestTelemetry.eye_metrics.ear_raw
+      : null;
+  const livePerclosPct =
+    latestTelemetry && latestTelemetry.face_detected
+      ? latestTelemetry.eye_metrics.perclos_pct
+      : null;
+
+  // Honest Baseline Inspector values — never show fabricated numbers when uncalibrated
   const storedTemporal = useMemo(() => {
-    const rawZones = (savedProfile?.zoneBaselines || {}) as Record<string, any>;
+    if (!savedProfile?.isCalibrated) {
+      return {
+        blinkFreqMedianPerMin: null as number | null,
+        blinkFreqMadPerMin: null as number | null,
+        blinkDurationMedianMs: null as number | null,
+        blinkDurationMadMs: null as number | null,
+        blinkRcrMedian: null as number | null,
+        blinkRcrMad: null as number | null,
+        baselinePerclosPct: null as number | null,
+        temporalBlinksSampled: null as number | null,
+        hasCustomBlinkStream: false,
+      };
+    }
+    const rawZones = (savedProfile.zoneBaselines || {}) as Record<string, any>;
     const meta = (rawZones._temporalBaseline || {}) as Record<string, any>;
     return {
       blinkFreqMedianPerMin:
-        typeof meta.blinkFreqMedianPerMin === "number" ? meta.blinkFreqMedianPerMin : 16.0,
+        typeof meta.blinkFreqMedianPerMin === "number" ? meta.blinkFreqMedianPerMin : null,
       blinkFreqMadPerMin:
-        typeof meta.blinkFreqMadPerMin === "number" ? meta.blinkFreqMadPerMin : 4.5,
-      blinkDurationMedianMs: savedProfile?.blinkDurationMedianMs ?? 235.0,
-      blinkDurationMadMs: savedProfile?.blinkDurationMadMs ?? 40.0,
-      blinkRcrMedian: savedProfile?.blinkRcrMedian ?? 0.95,
-      blinkRcrMad: savedProfile?.blinkRcrMad ?? 0.18,
+        typeof meta.blinkFreqMadPerMin === "number" ? meta.blinkFreqMadPerMin : null,
+      blinkDurationMedianMs: savedProfile.blinkDurationMedianMs,
+      blinkDurationMadMs: savedProfile.blinkDurationMadMs,
+      blinkRcrMedian: savedProfile.blinkRcrMedian,
+      blinkRcrMad: savedProfile.blinkRcrMad,
       baselinePerclosPct:
-        typeof meta.baselinePerclosPct === "number" ? meta.baselinePerclosPct : 3.5,
+        typeof meta.baselinePerclosPct === "number" ? meta.baselinePerclosPct : null,
       temporalBlinksSampled:
         typeof meta.temporalBlinksSampled === "number" ? meta.temporalBlinksSampled : null,
       hasCustomBlinkStream: Boolean(meta.calibratedAt),
     };
   }, [savedProfile]);
+
+  const qualityWarnings = calState?.quality_warnings ?? [];
 
   return (
     <div
@@ -751,8 +542,8 @@ export function GuidedCalibrationWizard({
                   isCurrent
                     ? "border-primary bg-primary/10 text-foreground shadow-xs"
                     : isCompletedStage
-                    ? "border-emerald-500/40 bg-emerald-500/5 text-emerald-500"
-                    : "border-border/70 bg-muted/20 text-muted-foreground"
+                      ? "border-emerald-500/40 bg-emerald-500/5 text-emerald-500"
+                      : "border-border/70 bg-muted/20 text-muted-foreground"
                 }`}
               >
                 <div className="flex items-center justify-between gap-1 font-semibold">
@@ -831,16 +622,27 @@ export function GuidedCalibrationWizard({
               <Badge
                 variant="outline"
                 className={`text-xs font-mono flex items-center gap-1 ${
-                  isCalibrating
-                    ? "border-emerald-500/40 text-emerald-500 bg-emerald-500/10"
-                    : "text-muted-foreground"
+                  workerError || connectionStatus === "error"
+                    ? "border-rose-500/40 text-rose-500 bg-rose-500/10"
+                    : isStale
+                      ? "border-amber-500/40 text-amber-500 bg-amber-500/10"
+                      : isCalibrating
+                        ? "border-emerald-500/40 text-emerald-500 bg-emerald-500/10"
+                        : "text-muted-foreground"
                 }`}
               >
-                {isCalibrating ? (
+                {workerError || connectionStatus === "error" ? (
+                  "ERROR"
+                ) : isStale ? (
+                  "STALE STREAM"
+                ) : isCalibrating ? (
                   <>
                     <Wifi className="size-3" />
                     {isInBlinkPhase ? "BLINK STREAM" : "CALIBRATING"}
                   </>
+                ) : backendProcessingStatus === "connecting" ||
+                  backendProcessingStatus === "awaiting_telemetry" ? (
+                  "CONNECTING..."
                 ) : (
                   "STANDBY"
                 )}
@@ -880,9 +682,9 @@ export function GuidedCalibrationWizard({
                     4-Zone Spatial + 2-Minute Personal Blink Rate Calibration
                   </div>
                   <p className="text-xs text-muted-foreground max-w-md">
-                    First, align your gaze across the 4 cabin zones (~20s). Then sit naturally for a{" "}
-                    <strong className="text-foreground">2-minute stream</strong> while DriveGuard learns
-                    your personal blink rate, blink duration, and eyelid reopening speed.
+                    All spatial thresholds and blink kinematics are computed by the authoritative
+                    Python backend over LiveKit WebRTC. Align your gaze across 4 cabin zones (~20s),
+                    followed by a 2-minute natural blink baseline stream.
                   </p>
 
                   {/* Workflow Selector */}
@@ -931,8 +733,8 @@ export function GuidedCalibrationWizard({
                     {calibrationWorkflow === "FULL_4ZONE_AND_BLINK"
                       ? "Start 4-Zone + 2-Min Blink Calibration"
                       : calibrationWorkflow === "BLINK_2MIN_ONLY"
-                      ? "Start 2-Minute Blink Rate Stream"
-                      : "Start Quick 4-Zone Calibration"}
+                        ? "Start 2-Minute Blink Rate Stream"
+                        : "Start Quick 4-Zone Calibration"}
                   </Button>
                 </div>
               )}
@@ -941,7 +743,9 @@ export function GuidedCalibrationWizard({
               {cameraState === "active" && calState && !isInBlinkPhase && !isSuccess && (
                 <div className="absolute top-4 left-4 right-4 flex items-start justify-between pointer-events-none z-20">
                   <div className="px-3 py-1 rounded-lg bg-black/80 backdrop-blur-md border border-white/15 text-xs text-white font-mono flex items-center gap-2">
-                    <span>Zone {calState.phase_index}/4:</span>
+                    <span>
+                      Phase {calState.phase_index}/{calState.total_phases}:
+                    </span>
                     <strong className="text-primary">{calState.current_zone}</strong>
                   </div>
 
@@ -953,12 +757,16 @@ export function GuidedCalibrationWizard({
                         : "bg-rose-600/90 text-white"
                     }`}
                   >
-                    {calState.is_head_in_target_zone ? "ALIGNED [ACQUIRING]" : "TURN HEAD TO TARGET"}
+                    {isFaceVisible === false
+                      ? "NO FACE DETECTED"
+                      : calState.is_head_in_target_zone
+                        ? "ALIGNED [ACQUIRING]"
+                        : "TURN HEAD TO TARGET"}
                   </Badge>
                 </div>
               )}
 
-              {/* In-Video Heads Up Status Banner (2-Minute Blink Stream Phase) */}
+              {/* In-Video Heads Up Status Banner (Backend 2-Minute Blink Stream Phase) */}
               {cameraState === "active" && isInBlinkPhase && !isSuccess && (
                 <div className="absolute inset-x-4 top-4 bottom-4 flex flex-col justify-between pointer-events-none z-20">
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -973,14 +781,16 @@ export function GuidedCalibrationWizard({
                     <Badge
                       variant="outline"
                       className={`text-[11px] font-mono shadow-md ${
-                        isFaceVisibleInStream
-                          ? "border-emerald-500/60 text-emerald-400 bg-black/80"
-                          : "border-rose-500/60 text-rose-400 bg-black/85"
+                        isFaceVisible === false
+                          ? "border-rose-500/60 text-rose-400 bg-black/85"
+                          : "border-emerald-500/60 text-emerald-400 bg-black/80"
                       }`}
                     >
-                      {isFaceVisibleInStream
-                        ? `EAR ${liveEarValue.toFixed(3)} · TRACKING BLINKS`
-                        : "KEEP FACE IN CAMERA"}
+                      {isFaceVisible === false
+                        ? "KEEP FACE IN CAMERA"
+                        : liveEarValue !== null
+                          ? `EAR ${liveEarValue.toFixed(3)} · BACKEND TRACKING`
+                          : "AWAITING TELEMETRY"}
                     </Badge>
                   </div>
 
@@ -1016,18 +826,20 @@ export function GuidedCalibrationWizard({
                     <CheckCircle2 className="size-10" />
                   </div>
                   <div className="font-bold text-foreground text-base">
-                    Personal 4-Zone & Blink Cadence Profile Saved!
+                    Personal Calibrated Driver Profile Saved!
                   </div>
                   <p className="text-xs text-muted-foreground max-w-md">
-                    Your 4-zone spatial EAR thresholds, personal blink rate (
+                    Your authoritative spatial EAR baselines (Center EAR{" "}
                     <strong className="text-foreground">
-                      {storedTemporal.blinkFreqMedianPerMin.toFixed(1)} blinks/min
+                      {savedProfile?.centerEarMedian.toFixed(3) ?? "—"}
                     </strong>
-                    ), and personal blink duration (
+                    ) and blink duration baseline (
                     <strong className="text-foreground">
-                      {Math.round(storedTemporal.blinkDurationMedianMs)} ms
+                      {storedTemporal.blinkDurationMedianMs !== null
+                        ? `${Math.round(storedTemporal.blinkDurationMedianMs)} ms`
+                        : "—"}
                     </strong>
-                    ) are now active in PostgreSQL and the AI engine.
+                    ) are now active in PostgreSQL and the FastAPI backend.
                   </p>
                   <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
                     <Button
@@ -1061,50 +873,39 @@ export function GuidedCalibrationWizard({
                     <Square className="size-3.5 mr-1.5" />
                     Stop
                   </Button>
-                  {isInBlinkPhase ? (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={handleSkipZone}
-                      disabled={liveBlinkStats.elapsed < 15 && liveBlinkStats.count < 3}
-                      title="Save captured blinks and complete calibration early"
-                    >
-                      <CheckCircle2 className="size-3.5 mr-1.5 text-emerald-500" />
-                      {liveBlinkStats.elapsed < 15 && liveBlinkStats.count < 3
-                        ? `Sampling Blinks (${Math.max(0, 15 - Math.round(liveBlinkStats.elapsed))}s min)...`
-                        : "Finish & Save Blink Baseline Now"}
-                    </Button>
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={handleSkipZone}
-                      title="Skip current spatial zone"
-                    >
-                      <FastForward className="size-3.5 mr-1.5 text-primary" />
-                      Skip Zone
-                    </Button>
-                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleSkipZone}
+                    disabled={!isCalibrating || isSavingProfile}
+                    title="Ask backend to advance past current calibration stage"
+                  >
+                    <FastForward className="size-3.5 mr-1.5 text-primary" />
+                    {isInBlinkPhase ? "Complete Blink Stage Early" : "Skip Zone"}
+                  </Button>
                 </>
               ) : (
                 <Button
                   size="sm"
                   onClick={() => handleStartCalibration()}
+                  disabled={isSavingProfile}
                   className="bg-primary text-primary-foreground"
                 >
                   <Play className="size-3.5 mr-1.5" />
-                  {isSuccess ? "Recalibrate" : "Start Calibration"}
+                  {isSavingProfile
+                    ? "Saving Profile..."
+                    : isSuccess
+                      ? "Recalibrate"
+                      : "Start Calibration"}
                 </Button>
               )}
             </div>
             <span className="text-xs text-muted-foreground font-mono">
               {isInBlinkPhase
-                ? `Stage 5/5 · Blink Stream (${liveBlinkStats.remainingFormatted} left)`
+                ? `Phase ${calState?.phase_index ?? 5}/${calState?.total_phases ?? 5} · Blink Stream (${liveBlinkStats.remainingFormatted} left)`
                 : calState
-                ? `Stage ${calState.phase_index} of ${
-                    calibrationWorkflow === "FULL_4ZONE_AND_BLINK" ? 5 : calState.total_phases
-                  }`
-                : "Ready"}
+                  ? `Stage ${calState.phase_index} of ${calState.total_phases}`
+                  : "Ready"}
             </span>
           </CardFooter>
         </Card>
@@ -1122,7 +923,7 @@ export function GuidedCalibrationWizard({
               <CardDescription className="text-xs">
                 {isInBlinkPhase
                   ? "Look forward comfortably and blink at your normal pace"
-                  : "Align your head with each target zone until 100% locked"}
+                  : "Align your head with each target zone until backend locks 100%"}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4 text-xs">
@@ -1143,10 +944,33 @@ export function GuidedCalibrationWizard({
                 </div>
               </div>
 
+              {/* Connection / Worker / Save Error Feedback */}
+              {(workerError || saveError) && (
+                <div className="p-3 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive text-xs space-y-2">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="size-4 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-semibold block">Calibration Error</span>
+                      <p className="mt-0.5">{saveError || workerError}</p>
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-destructive/40 text-destructive hover:bg-destructive/10 h-7 text-xs"
+                    onClick={() => handleStartCalibration()}
+                  >
+                    <RotateCcw className="size-3.5 mr-1" />
+                    Retry Calibration
+                  </Button>
+                </div>
+              )}
+
+              {/* Rejection Feedback */}
               {calState?.rejection_reason && (
                 <div className="p-3 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive text-xs space-y-2">
                   <div>
-                    <span className="font-semibold block">⚠️ Calibration Session Rejected:</span>
+                    <span className="font-semibold block">Calibration Session Rejected</span>
                     <p className="mt-0.5">{calState.rejection_reason}</p>
                   </div>
                   <Button
@@ -1158,6 +982,18 @@ export function GuidedCalibrationWizard({
                     <RotateCcw className="size-3.5 mr-1" />
                     Retry Calibration
                   </Button>
+                </div>
+              )}
+
+              {/* Non-Fatal Backend Quality Warnings */}
+              {qualityWarnings.length > 0 && (
+                <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400 text-xs space-y-1">
+                  <span className="font-semibold block">Calibration Quality Advisories:</span>
+                  <ul className="list-disc pl-4 space-y-0.5">
+                    {qualityWarnings.map((w, idx) => (
+                      <li key={idx}>{w}</li>
+                    ))}
+                  </ul>
                 </div>
               )}
 
@@ -1174,7 +1010,7 @@ export function GuidedCalibrationWizard({
                     <Progress value={liveBlinkStats.progressPct} className="h-2" />
                   </div>
 
-                  {/* Live Blink Cadence Readouts */}
+                  {/* Live Backend Blink Cadence Readouts */}
                   <div className="grid grid-cols-2 gap-2.5 pt-2 border-t border-border font-mono">
                     <div className="p-2.5 rounded-lg border border-border bg-muted/20">
                       <span className="text-[10px] text-muted-foreground block">
@@ -1207,7 +1043,8 @@ export function GuidedCalibrationWizard({
                         MEDIAN RCR / PERCLOS
                       </span>
                       <span className="text-sm font-bold text-emerald-500">
-                        {liveBlinkStats.medianRcr ?? "0.95"} · {livePerclosPct.toFixed(1)}%
+                        {liveBlinkStats.medianRcr ?? "—"} ·{" "}
+                        {livePerclosPct !== null ? `${livePerclosPct.toFixed(1)}%` : "—"}
                       </span>
                     </div>
                   </div>
@@ -1215,12 +1052,11 @@ export function GuidedCalibrationWizard({
                   <div className="p-2.5 rounded-lg bg-emerald-500/5 border border-emerald-500/20 text-[11px] text-muted-foreground space-y-1">
                     <span className="font-semibold text-foreground flex items-center gap-1.5">
                       <Sparkles className="size-3.5 text-emerald-500" />
-                      Why 2 Minutes?
+                      Backend Kinematics Profiling
                     </span>
                     <span>
-                      Normal blink rate varies from 8 to 28 blinks/min across individuals, and webcam
-                      blink duration averages 210–280 ms. Profiling 2 minutes of natural blinking
-                      eliminates false &ldquo;Blink Duration Above Personal Baseline&rdquo; alerts.
+                      The authoritative backend records natural blink rate, blink duration, and
+                      reopening speed so monitoring thresholds adapt to your physiology.
                     </span>
                   </div>
                 </>
@@ -1240,7 +1076,7 @@ export function GuidedCalibrationWizard({
                       >
                         {calState?.is_head_in_target_zone
                           ? "HEAD ALIGNED [OK]"
-                          : (calState?.stability_feedback || "PLEASE TURN HEAD")}
+                          : calState?.stability_feedback || "WAITING FOR BACKEND"}
                       </Badge>
                     </div>
                     <p className="text-[11px] text-muted-foreground">
@@ -1261,7 +1097,12 @@ export function GuidedCalibrationWizard({
                     </div>
                     <Progress value={calState?.zone_progress_pct || 0} className="h-2" />
                     <div className="text-[10px] text-muted-foreground flex justify-between">
-                      <span>0% (Paused if Looking Away)</span>
+                      <span>
+                        Quality:{" "}
+                        {typeof calState?.zone_quality_score === "number"
+                          ? `${Math.round(calState.zone_quality_score * 100)}%`
+                          : "—"}
+                      </span>
                       <span>100% (Locked)</span>
                     </div>
                   </div>
@@ -1269,21 +1110,12 @@ export function GuidedCalibrationWizard({
                   {/* Overall Spatial Progress */}
                   <div className="space-y-1.5 pt-2 border-t border-border">
                     <div className="flex justify-between font-mono">
-                      <span className="text-muted-foreground">4-Zone Spatial Progress:</span>
+                      <span className="text-muted-foreground">Overall Calibration Progress:</span>
                       <span className="font-semibold text-foreground">
                         {calState ? `${Math.round(calState.total_progress_pct)}%` : "0%"}
                       </span>
                     </div>
                     <Progress value={calState?.total_progress_pct || 0} className="h-1.5" />
-                  </div>
-
-                  <div className="p-2.5 rounded-lg bg-muted/40 border border-border text-[11px] text-muted-foreground space-y-1">
-                    <span className="font-semibold text-foreground block">💡 Calibration Tip:</span>
-                    <span>
-                      Turn your head naturally toward each target zone until the bar reaches 100%.
-                      Right after Zone 4 (Dashboard), the 2-Minute Natural Blink Stream begins
-                      automatically.
-                    </span>
                   </div>
                 </>
               )}
@@ -1302,7 +1134,8 @@ export function GuidedCalibrationWizard({
                 Personal 4-Zone & Temporal Blink Baseline Inspector
               </CardTitle>
               <CardDescription className="text-xs">
-                Stored in Neon PostgreSQL (`DriverProfile`) and synced to the real-time AI Risk Engine.
+                Stored in Neon PostgreSQL (`DriverProfile`) and synced to the FastAPI authoritative
+                engine (`DrowsinessEngine`).
               </CardDescription>
             </div>
             <Badge
@@ -1313,7 +1146,7 @@ export function GuidedCalibrationWizard({
                   : "border-amber-500/40 text-amber-500 bg-amber-500/10 font-mono text-xs"
               }
             >
-              {savedProfile?.isCalibrated ? "CALIBRATED PROFILE ACTIVE" : "UNCALIBRATED DEFAULTS"}
+              {savedProfile?.isCalibrated ? "CALIBRATED PROFILE ACTIVE" : "CALIBRATION REQUIRED"}
             </Badge>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -1325,19 +1158,23 @@ export function GuidedCalibrationWizard({
                     BLINK RATE (/MIN)
                   </span>
                   <Badge variant="secondary" className="text-[10px] font-mono">
-                    {storedTemporal.hasCustomBlinkStream ? "2-Min Calibrated" : "Baseline"}
+                    {storedTemporal.hasCustomBlinkStream ? "Calibrated" : "Uncalibrated"}
                   </Badge>
                 </div>
                 <div className="flex items-baseline justify-between font-mono tabular-nums pt-1">
                   <span className="text-[11px] text-muted-foreground">Personal Median:</span>
                   <span className="text-base font-bold text-sky-500">
-                    {storedTemporal.blinkFreqMedianPerMin.toFixed(1)} /min
+                    {storedTemporal.blinkFreqMedianPerMin !== null
+                      ? `${storedTemporal.blinkFreqMedianPerMin.toFixed(1)} /min`
+                      : "—"}
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between font-mono tabular-nums">
                   <span className="text-[11px] text-muted-foreground">Robust MAD Spread:</span>
                   <span className="text-xs font-semibold text-foreground">
-                    ±{storedTemporal.blinkFreqMadPerMin.toFixed(1)} /min
+                    {storedTemporal.blinkFreqMadPerMin !== null
+                      ? `±${storedTemporal.blinkFreqMadPerMin.toFixed(1)} /min`
+                      : "—"}
                   </span>
                 </div>
               </div>
@@ -1348,27 +1185,23 @@ export function GuidedCalibrationWizard({
                     BLINK DURATION
                   </span>
                   <Badge variant="secondary" className="text-[10px] font-mono">
-                    Personal Cutoff
+                    Kinematics
                   </Badge>
                 </div>
                 <div className="flex items-baseline justify-between font-mono tabular-nums pt-1">
                   <span className="text-[11px] text-muted-foreground">Personal Median:</span>
                   <span className="text-base font-bold text-amber-500">
-                    {Math.round(storedTemporal.blinkDurationMedianMs)} ms
+                    {storedTemporal.blinkDurationMedianMs !== null
+                      ? `${Math.round(storedTemporal.blinkDurationMedianMs)} ms`
+                      : "—"}
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between font-mono tabular-nums">
-                  <span className="text-[11px] text-muted-foreground">Alert Cutoff (2.2z):</span>
-                  <span className="text-xs font-semibold text-emerald-500">
-                    ≥{" "}
-                    {Math.round(
-                      Math.max(
-                        310,
-                        storedTemporal.blinkDurationMedianMs +
-                          2.2 * Math.max(35, storedTemporal.blinkDurationMadMs)
-                      )
-                    )}{" "}
-                    ms
+                  <span className="text-[11px] text-muted-foreground">Robust MAD:</span>
+                  <span className="text-xs font-semibold text-foreground">
+                    {storedTemporal.blinkDurationMadMs !== null
+                      ? `±${Math.round(storedTemporal.blinkDurationMadMs)} ms`
+                      : "—"}
                   </span>
                 </div>
               </div>
@@ -1385,13 +1218,17 @@ export function GuidedCalibrationWizard({
                 <div className="flex items-baseline justify-between font-mono tabular-nums pt-1">
                   <span className="text-[11px] text-muted-foreground">Reopening Ratio:</span>
                   <span className="text-base font-bold text-foreground">
-                    {storedTemporal.blinkRcrMedian.toFixed(2)}
+                    {storedTemporal.blinkRcrMedian !== null
+                      ? storedTemporal.blinkRcrMedian.toFixed(2)
+                      : "—"}
                   </span>
                 </div>
                 <div className="flex items-baseline justify-between font-mono tabular-nums">
                   <span className="text-[11px] text-muted-foreground">Robust MAD:</span>
                   <span className="text-xs font-semibold text-foreground">
-                    ±{storedTemporal.blinkRcrMad.toFixed(2)}
+                    {storedTemporal.blinkRcrMad !== null
+                      ? `±${storedTemporal.blinkRcrMad.toFixed(2)}`
+                      : "—"}
                   </span>
                 </div>
               </div>
@@ -1405,13 +1242,15 @@ export function GuidedCalibrationWizard({
                     <Badge variant="secondary" className="text-[10px] font-mono">
                       {storedTemporal.temporalBlinksSampled !== null
                         ? `${storedTemporal.temporalBlinksSampled} blinks`
-                        : "Alert Anchor"}
+                        : "Uncalibrated"}
                     </Badge>
                   </div>
                   <div className="flex items-baseline justify-between font-mono tabular-nums pt-1">
                     <span className="text-[11px] text-muted-foreground">Resting Baseline:</span>
                     <span className="text-base font-bold text-emerald-500">
-                      {storedTemporal.baselinePerclosPct.toFixed(1)}%
+                      {storedTemporal.baselinePerclosPct !== null
+                        ? `${storedTemporal.baselinePerclosPct.toFixed(1)}%`
+                        : "—"}
                     </span>
                   </div>
                 </div>
@@ -1434,15 +1273,17 @@ export function GuidedCalibrationWizard({
                   string,
                   ZoneBaselineEntry
                 > | null;
-                const zb = zbMap?.[zone];
+                const zb = savedProfile?.isCalibrated ? zbMap?.[zone] : undefined;
                 const earMed =
-                  zb?.ear_median ??
-                  (zone === "CENTER" && savedProfile?.isCalibrated
-                    ? savedProfile.centerEarMedian
-                    : null);
+                  typeof zb?.ear_median === "number"
+                    ? zb.ear_median
+                    : zone === "CENTER" && savedProfile?.isCalibrated
+                      ? savedProfile.centerEarMedian
+                      : null;
                 const thresh =
-                  zb?.dynamic_closure_threshold ??
-                  (earMed ? Number((earMed * 0.72).toFixed(3)) : null);
+                  typeof zb?.dynamic_closure_threshold === "number"
+                    ? zb.dynamic_closure_threshold
+                    : null;
 
                 return (
                   <div
@@ -1455,7 +1296,7 @@ export function GuidedCalibrationWizard({
                           {zone.replace("_", " ")}
                         </span>
                         <Badge variant="secondary" className="text-[10px] font-mono">
-                          {earMed !== null ? "Calibrated" : "Default"}
+                          {earMed !== null ? "Calibrated" : "Uncalibrated"}
                         </Badge>
                       </div>
                       <div className="pt-1 flex items-baseline justify-between font-mono tabular-nums">

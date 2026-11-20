@@ -21,13 +21,13 @@ Controls:
 from __future__ import annotations
 
 import argparse
-import json
+from collections import deque
 import logging
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Deque, Optional, Tuple
 
 # Add project root to sys.path to allow running directly from anywhere
 project_root = Path(__file__).resolve().parent.parent
@@ -37,48 +37,28 @@ if str(project_root) not in sys.path:
 import cv2
 import numpy as np
 
-from backend.app.ai.blink_kinematics import (
-    BlinkClassification as AIBlinkClassification,
-    BlinkEvent as AIBlinkEvent,
-)
-from backend.app.ai.geometry import PoseZone
-from backend.app.ai.pdbp_calibration import (
-    DriverBehaviourProfile,
-    GuidedCalibrationSession,
-    create_immutable_profile_snapshot,
-)
-from backend.app.ai.eye_shadow_observer import (
-    BinocularShadowTelemetry,
-    EyeCNNInvocationPolicy,
-    EyeCNNShadowWorker,
-)
-from backend.app.ai.profile_adapter import dto_to_profile, profile_to_dto
+from backend.app.ai.eye_shadow_observer import BinocularShadowTelemetry
 from backend.app.alerts import (
-    AlertDispatcher,
     AlertState,
-    AlertStateManager,
-    AudioWarningEngine,
-    audio_settings_store,
     map_drowsiness_state_to_alert_state,
 )
 from backend.app.camera.camera_config import make_filename_safe, sanitize_source_identifier
 from backend.app.camera.camera_manager import create_camera, discover_local_devices
-from backend.app.camera.frame_quality import FrameQualityAnalyzer, FrameQualityResult, QualityStatus
+from backend.app.camera.frame_quality import FrameQualityResult, QualityStatus
 from backend.app.camera.positioning_guide import draw_positioning_guide, evaluate_camera_position
 from backend.app.camera.session_recorder import SessionRecorder
 from backend.app.features import DriverFeatureExtractor, DriverFeatures
-from backend.app.intelligence import (
-    DrowsinessAssessment,
-    DrowsinessEngine,
-    DrowsinessState,
+from backend.app.intelligence import DrowsinessAssessment
+from backend.app.services.frame_adapters import CameraFrameAdapter
+from backend.app.services.local_monitoring_service import (
+    LocalMonitoringConfig,
+    LocalMonitoringService,
+    commit_and_activate_profile,
+    compute_calibration_geometric_reliability,
+    load_profile_from_file,
 )
-from backend.app.schemas.profile import DriverProfileDTO
 from backend.app.services.profile_store import profile_store
-from backend.app.vision.face_landmarker import (
-    DriveGuardFaceLandmarker,
-    FaceLandmarkResult,
-    FaceLandmarkStatus,
-)
+from backend.app.vision.face_landmarker import FaceLandmarkResult, FaceLandmarkStatus
 
 logging.basicConfig(
     level=logging.INFO,
@@ -138,89 +118,27 @@ def put_fitted_text(
     return cv2.getTextSize(truncated, font, scale, thickness)[0][0]
 
 
-def commit_and_activate_profile(
-    profile: DriverBehaviourProfile,
-    feature_extractor: DriverFeatureExtractor,
-    store: Optional[ProfileStore] = None,
-) -> Tuple[bool, str]:
-    """
-    Coordinated transaction: validates feasibility, persists atomically to disk,
-    and activates on the runtime feature extractor with automatic disk rollback on activation failure.
-    If a valid profile already existed, rolls back to exact previous content; otherwise unlinks new file.
-    Rejects any new commit while another profile transaction is pending safe-latch activation.
-    """
-    target_store = store or profile_store
-
-    # 1. Reject conflicting recalibration transactions while one is pending
-    if getattr(feature_extractor, "has_pending_profile", False):
-        return False, (
-            f"Cannot commit profile for driver '{profile.driver_id}': "
-            "another profile transaction is currently pending safe-latch activation."
-        )
-
-    # 2. Validate feasibility
-    is_feasible, reason = feature_extractor.validate_profile_feasibility(profile)
-    if not is_feasible:
-        return False, f"Infeasible profile: {reason}"
-
-    # 3. Immutable snapshot and DTO preparation
-    try:
-        snapshot = create_immutable_profile_snapshot(profile)
-        dto = profile_to_dto(profile)
-    except Exception as prep_err:
-        return False, f"Profile preparation error: {prep_err}"
-
-    # 4. Read previous persisted content if it exists, to support exact restoration
-    # Since any pending switch was rejected above, existing disk content is true baseline
-    previous_content: Optional[str] = None
-    try:
-        target_path = target_store._file_path(profile.driver_id)
-        if target_path.is_file():
-            previous_content = target_path.read_text(encoding="utf-8")
-    except Exception as read_err:
-        logger.warning(f"Could not read previous profile for '{profile.driver_id}': {read_err}")
-
-    # 5. Disk persistence
-    try:
-        target_store.save_profile(dto)
-    except Exception as save_err:
-        return False, f"Persistence error: {save_err}"
-
-    # One-time rollback helper
-    rollback_executed = False
-
-    def do_rollback() -> None:
-        nonlocal rollback_executed
-        if not rollback_executed:
-            rollback_executed = True
-            target_store.rollback_new_profile(profile.driver_id, previous_content=previous_content)
-
-    # 6. Runtime activation with fingerprint-bound disk rollback on failure
-    try:
-        # Register fingerprint-bound rollback callback for deferred safe-latch activation
-        feature_extractor.set_pending_rollback_callback(
-            do_rollback,
-            fingerprint=snapshot.fingerprint,
-        )
-        activated = feature_extractor.set_profile(snapshot)
-        if not activated:
-            do_rollback()
-            feature_extractor.set_pending_rollback_callback(None)
-            return False, "Runtime activation rejected profile; disk persistence rolled back."
-    except Exception as act_err:
-        try:
-            do_rollback()
-        except Exception as rb_err:
-            logger.critical(f"Critical failure during persistence rollback: {rb_err}")
-            feature_extractor.set_pending_rollback_callback(None)
-            return False, f"Activation error: {act_err}; Rollback failed: {rb_err}"
-        feature_extractor.set_pending_rollback_callback(None)
-        return False, f"Runtime activation error: {act_err}; disk persistence rolled back."
-
-    if getattr(feature_extractor, "has_pending_profile", False):
-        return True, "Profile persisted and queued for deferred activation at next safe latch."
-
-    return True, "Profile successfully persisted and activated."
+def _blend_rect(
+    canvas: np.ndarray,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    bgr_color: Tuple[int, int, int],
+    alpha: float,
+) -> None:
+    """Alpha-blend a solid rectangle directly into a clipped ROI slice without copying the full frame."""
+    h, w = canvas.shape[:2]
+    cx1 = max(0, min(w, int(x1)))
+    cy1 = max(0, min(h, int(y1)))
+    cx2 = max(0, min(w, int(x2)))
+    cy2 = max(0, min(h, int(y2)))
+    if cx2 <= cx1 or cy2 <= cy1:
+        return
+    roi = canvas[cy1:cy2, cx1:cx2]
+    fill = np.empty_like(roi)
+    fill[:] = bgr_color
+    cv2.addWeighted(fill, alpha, roi, 1.0 - alpha, 0, roi)
 
 
 def draw_pill(
@@ -287,6 +205,7 @@ def draw_diagnostic_hud(
     audio_feedback_banner: Optional[str] = None,
     shadow_telemetry: Optional[BinocularShadowTelemetry] = None,
     shadow_enabled: bool = False,
+    active_reason_text: Optional[str] = None,
 ) -> np.ndarray:
     """
     Renders a semi-transparent diagnostic overlay with real-time performance indicators,
@@ -302,9 +221,7 @@ def draw_diagnostic_hud(
 
     # 1. Top Panel (Banner Height 192px with Glassmorphic Slate-900 Overlay)
     banner_height = 192
-    overlay = canvas.copy()
-    cv2.rectangle(overlay, (0, 0), (width, banner_height), (15, 23, 42), -1)  # Slate-900
-    cv2.addWeighted(overlay, 0.82, canvas, 0.18, 0, canvas)
+    _blend_rect(canvas, 0, 0, width, banner_height, (15, 23, 42), 0.82)
     # Bottom border line of top banner
     cv2.line(canvas, (0, banner_height), (width, banner_height), (51, 65, 85), 1)
 
@@ -491,9 +408,14 @@ def draw_diagnostic_hud(
         else:
             pose_str = f"Pose: {pose.zone.value} (P:{pose.pitch_deg:+.0f}\xb0 Y:{pose.yaw_deg:+.0f}\xb0)"
 
+        perclos_str = (
+            f"PERCLOS: {perclos.perclos_pct:.1f}%"
+            if perclos.is_reliable
+            else f"PERCLOS: N/A ({perclos.coverage_pct:.0f}% cov)"
+        )
         telemetry_line_3 = (
-            f"EAR: {ear.compensated_ear:.2f} (thr:{ear.closure_threshold:.2f} L:{ear.left_ear:.2f} R:{ear.right_ear:.2f}) | "
-            f"PERCLOS: {perclos.perclos_pct:.1f}% | "
+            f"EAR: {ear.weighted_ear:.2f} (thr:{ear.closure_threshold:.2f} L:{ear.left_ear:.2f} R:{ear.right_ear:.2f}) | "
+            f"{perclos_str} | "
             f"Blinks: {blink.total_blink_count} | "
             f"MAR: {mar.mar:.2f} (Yawns: {mar.total_yawn_count}) | "
             f"{pose_str}"
@@ -521,7 +443,7 @@ def draw_diagnostic_hud(
     state_color = effective_alert.hud_color_bgr
     rec_str = "[RECOVERING] " if is_recovering else ""
     if assessment is not None:
-        reason_text = assessment.primary_reason_text
+        reason_text = active_reason_text or assessment.primary_reason_text
         intel_line = (
             f"Alert State: {effective_alert.value} (Sev {effective_alert.severity}) | "
             f"{rec_str}Conf: {assessment.confidence.overall_confidence:.2f} [{assessment.confidence.tier.value}] | "
@@ -624,10 +546,8 @@ def draw_diagnostic_hud(
         box_y = height - 118
         b_color = (34, 197, 94) if is_aligned else (234, 179, 8)
 
-        # Background overlay
-        sub = canvas.copy()
-        cv2.rectangle(sub, (16, box_y), (width - 16, box_y + box_h), (15, 23, 42), -1)
-        cv2.addWeighted(sub, 0.90, canvas, 0.10, 0, canvas)
+        # Background overlay (ROI-clipped alpha blend)
+        _blend_rect(canvas, 16, box_y, width - 16, box_y + box_h, (15, 23, 42), 0.90)
         cv2.rectangle(canvas, (16, box_y), (width - 16, box_y + box_h), b_color, 2)
 
         # Line 1: Step Pill + Target Zone (Left) & Dedicated Progress Bar (Right)
@@ -680,12 +600,10 @@ def draw_diagnostic_hud(
     elif calibration_banner:
         box_y = height - 76
         box_h = 56
-        sub = canvas.copy()
         is_failure = "FAILED" in calibration_banner
         bg_color = (30, 27, 75) if is_failure else (6, 78, 59)
         border_color = (239, 68, 68) if is_failure else (34, 197, 94)
-        cv2.rectangle(sub, (16, box_y), (width - 16, box_y + box_h), bg_color, -1)
-        cv2.addWeighted(sub, 0.85, canvas, 0.15, 0, canvas)
+        _blend_rect(canvas, 16, box_y, width - 16, box_y + box_h, bg_color, 0.85)
         cv2.rectangle(canvas, (16, box_y), (width - 16, box_y + box_h), border_color, 2)
 
         # Auto-scale font if message is long
@@ -704,12 +622,10 @@ def draw_diagnostic_hud(
     elif audio_feedback_banner:
         box_y = height - 76
         box_h = 56
-        sub = canvas.copy()
         is_muted = "MUTED" in audio_feedback_banner or "OFF" in audio_feedback_banner
         bg_color = (40, 30, 20) if is_muted else (6, 78, 59)
         border_color = (234, 179, 8) if is_muted else (34, 197, 94)
-        cv2.rectangle(sub, (16, box_y), (width - 16, box_y + box_h), bg_color, -1)
-        cv2.addWeighted(sub, 0.85, canvas, 0.15, 0, canvas)
+        _blend_rect(canvas, 16, box_y, width - 16, box_y + box_h, bg_color, 0.85)
         cv2.rectangle(canvas, (16, box_y), (width - 16, box_y + box_h), border_color, 2)
 
         (tw, th), _ = cv2.getTextSize(audio_feedback_banner, font, 0.52, 2)
@@ -773,130 +689,48 @@ def run_benchmark(
             h = actual_res[1] if actual_res[1] > 0 else target_height
             cv2.resizeWindow(window_name, w, h)
 
-        # Profile loading & FeatureExtractor initialization (Phase 7 Task 2)
-        profile_loaded: Optional[DriverBehaviourProfile] = None
-        calibrated_label: Optional[str] = None
-        if profile_arg:
-            p_path = Path(profile_arg)
-            if p_path.is_file():
-                try:
-                    with open(p_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    if isinstance(data, dict) and "schema_version" in data and "zone_baselines" in data:
-                        dto = DriverProfileDTO.from_dict(data)
-                        profile_loaded = dto_to_profile(dto)
-                    else:
-                        profile_loaded = DriverBehaviourProfile.load_json(p_path)
-                    calibrated_label = profile_loaded.driver_id
-                    logger.info("Loaded driver profile from file: %s (driver_id: %s)", p_path, calibrated_label)
-                except Exception as e:
-                    logger.warning("Could not parse profile file %s: %s", p_path, e)
-            if profile_loaded is None:
-                profile_dto = profile_store.get_profile(profile_arg)
-                if profile_dto is not None:
-                    try:
-                        profile_loaded = dto_to_profile(profile_dto)
-                        calibrated_label = profile_dto.driver_id
-                        logger.info("Loaded driver profile '%s' from profile store via adapter.", profile_arg)
-                    except Exception as e:
-                        logger.warning("Failed to convert profile DTO '%s': %s", profile_arg, e)
-
-        # Auto-load existing driver profile from profile store if not explicitly supplied
-        if profile_loaded is None and driver_id:
-            profile_dto = profile_store.get_profile(driver_id)
-            if profile_dto is not None:
-                try:
-                    profile_loaded = dto_to_profile(profile_dto)
-                    calibrated_label = profile_dto.driver_id
-                    logger.info("Auto-loaded saved driver profile for '%s' from profile store.", driver_id)
-                except Exception as e:
-                    logger.warning("Failed to auto-convert profile DTO for '%s': %s", driver_id, e)
-
-        # Initialize feature extractor with profile (evaluates mathematical feasibility)
-        feature_extractor = DriverFeatureExtractor(profile=profile_loaded)
-        if profile_loaded is not None:
-            if not feature_extractor.is_profile_feasible:
-                logger.warning(
-                    "Loaded profile '%s' is mathematically infeasible. Ocular classification remains disabled.",
-                    calibrated_label,
-                )
-                calibrated_label = None
-            else:
-                logger.info(
-                    "Profile '%s' active: Center c=%.3f, r=%.3f (span=%.3f)",
-                    calibrated_label,
-                    feature_extractor.active_closure_threshold,
-                    feature_extractor.active_reopening_threshold,
-                    feature_extractor.active_reopening_threshold - feature_extractor.active_closure_threshold,
-                )
-
-        quality_analyzer = FrameQualityAnalyzer()
-        landmarker = DriveGuardFaceLandmarker()
-
-        drowsiness_engine = DrowsinessEngine()
-
-        # Phase 8: Alert State Machine & Audio Warning System
-        alert_manager = AlertStateManager()
-        audio_engine = AudioWarningEngine()
-        alert_dispatcher = AlertDispatcher(
-            audio_engine=audio_engine,
-            settings_store=audio_settings_store,
+        # Initialize authoritative LocalMonitoringService (encapsulates quality, landmarker,
+        # feature extractor, calibration, drowsiness engine, alert manager/dispatcher, shadow worker)
+        monitoring_service = LocalMonitoringService(
+            config=LocalMonitoringConfig(
+                driver_id=driver_id,
+                profile_arg=profile_arg,
+                is_mirrored=flip_h,
+                start_calibrating=start_calibrating,
+                calibration_step_duration_sec=6.0,
+                cnn_shadow_enabled=cnn_shadow,
+                cnn_shadow_hz=cnn_shadow_hz,
+            ),
+            store=profile_store,
         )
+        calibrated_label: Optional[str] = monitoring_service.calibrated_profile_id
         audio_feedback_banner_text: Optional[str] = None
         audio_feedback_banner_until: float = 0.0
-
-        # Phase B1: Passive Eye CNN Shadow Observer (Decoupled Diagnostic)
-        shadow_policy = EyeCNNInvocationPolicy(
-            enabled=cnn_shadow,
-            max_frequency_hz=cnn_shadow_hz,
-            max_staleness_ms=200.0,
-        )
-        shadow_worker = EyeCNNShadowWorker(policy=shadow_policy)
-        shadow_worker.start()
-        latest_shadow_obs: Optional[BinocularShadowTelemetry] = None
-        if cnn_shadow:
-            logger.info("Eye CNN Shadow Observer active at max %.1f Hz (passive diagnostic).", cnn_shadow_hz)
-
-        # Guided Calibration Session (Phase 7)
-        calibration_session: Optional[GuidedCalibrationSession] = None
         calibration_banner_text: Optional[str] = None
         calibration_banner_until: float = 0.0
-
-        if start_calibrating:
-            calibration_session = GuidedCalibrationSession(
-                driver_id=driver_id,
-                four_zone_mode=True,
-                step_duration_sec=6.0,
-            )
-            calibration_session.start()
-            logger.info("Started guided 4-zone calibration for driver '%s'.", driver_id)
 
         # Visualization toggles (Phase 4)
         draw_mesh: bool = False
         draw_eyes: bool = True
         show_position_guide: bool = not start_calibrating
 
-        # Performance tracking metrics
+        # Bounded performance tracking metrics (MEDIUM-10)
         start_time = time.monotonic()
         total_frames_displayed = 0
         display_fps = 0.0
         fps_timer = time.monotonic()
         fps_frame_count = 0
-        latencies_ms = []
-        inference_latencies_ms = []
+        latencies_ms: Deque[float] = deque(maxlen=10_000)
+        inference_latencies_ms: Deque[float] = deque(maxlen=10_000)
         total_face_hits = 0
-        latest_quality: Optional[FrameQualityResult] = None
-        latest_landmark: Optional[FaceLandmarkResult] = None
-        latest_features: Optional[DriverFeatures] = None
-        latest_assessment: Optional[DrowsinessAssessment] = None
 
         logger.info("Starting live capture loop. Press 'q' or ESC to terminate, 'c' to calibrate.")
 
         # Synchronized Session Recorder (Video + Telemetry)
+        f_w = actual_res[0] if actual_res[0] > 0 else target_width
+        f_h = actual_res[1] if actual_res[1] > 0 else target_height
         session_recorder: Optional[SessionRecorder] = None
         if record_session:
-            f_w = actual_res[0] if actual_res[0] > 0 else target_width
-            f_h = actual_res[1] if actual_res[1] > 0 else target_height
             session_recorder = SessionRecorder(
                 driver_id=driver_id,
                 frame_width=f_w,
@@ -933,201 +767,38 @@ def run_benchmark(
             frame_age = packet.age_ms
             latencies_ms.append(frame_age)
 
-            # Analyze optical quality (Phase 3)
-            latest_quality = quality_analyzer.analyze(packet.frame)
-
-            # Extract 478 3D facial landmarks (Phase 4)
-            latest_landmark = landmarker.detect(packet)
-            inference_latencies_ms.append(latest_landmark.inference_latency_ms)
-            if latest_landmark.has_face:
-                total_face_hits += 1
-
             # Check mirror status from camera adapter
             if hasattr(camera, "is_flip_horizontal"):
                 is_mirrored = camera.is_flip_horizontal() if callable(camera.is_flip_horizontal) else bool(camera.is_flip_horizontal)
             else:
                 is_mirrored = False
 
-            # Extract physiological driver features (Phase 5)
-            f_w = actual_res[0] if actual_res[0] > 0 else packet.frame.shape[1]
-            f_h = actual_res[1] if actual_res[1] > 0 else packet.frame.shape[0]
-            latest_features = feature_extractor.extract(
-                latest_landmark,
-                frame_width=f_w,
-                frame_height=f_h,
-                is_mirrored=is_mirrored,
-            )
+            # Execute complete authoritative local pipeline pass via canonical CameraFrameAdapter
+            adapted_frame = CameraFrameAdapter.adapt(packet, is_mirrored=is_mirrored)
+            frame_res = monitoring_service.process_adapted_frame(adapted_frame)
 
-            # Eye CNN Passive Shadow Observer Ingestion (Phase B1 - Decoupled Diagnostic)
-            try:
-                should_shadow, _ = shadow_policy.should_invoke(
-                    timestamp_ms=packet.timestamp_ms,
-                    has_face=latest_landmark.has_face if latest_landmark else False,
-                    ear_valid=latest_features.ear.is_geometric_valid if latest_features else False,
-                )
-                if should_shadow and latest_landmark is not None and latest_landmark.has_face:
-                    lms_xyz = np.array(
-                        [[lm.x * f_w, lm.y * f_h, lm.z * f_w] for lm in latest_landmark.landmarks],
-                        dtype=np.float64,
-                    )
-                    shadow_worker.submit_frame(
-                        frame_bgr=packet.frame,
-                        landmarks_pixel_xyz=lms_xyz,
-                        timestamp_ms=packet.timestamp_ms,
-                        frame_id=getattr(packet, "frame_index", total_frames_displayed),
-                        geom_left_closed=latest_features.ear.is_left_closed if latest_features else None,
-                        geom_right_closed=latest_features.ear.is_right_closed if latest_features else None,
-                        raw_left_ear=latest_features.ear.left_ear if latest_features else 0.0,
-                        raw_right_ear=latest_features.ear.right_ear if latest_features else 0.0,
-                        ear_threshold=latest_features.ear.closure_threshold if latest_features else 0.20,
-                    )
+            latest_quality = frame_res.quality
+            latest_landmark = frame_res.landmark
+            latest_features = frame_res.features
+            latest_assessment = frame_res.assessment
+            latest_shadow_obs = frame_res.shadow_observation
+            calib_info = frame_res.calibration_progress
+            calibrated_label = frame_res.calibrated_profile_id
 
-                # Retrieve freshest non-stale shadow telemetry observation
-                latest_shadow_obs = shadow_worker.get_latest_observation(packet.timestamp_ms)
-            except Exception as shadow_exc:
-                logger.warning("Error during eye shadow observer ingestion: %s", shadow_exc)
+            inference_latencies_ms.append(latest_landmark.inference_latency_ms)
+            if latest_landmark.has_face:
+                total_face_hits += 1
 
-            # Ingest frame into calibration session if active
-            calib_info = None
-            if calibration_session is not None and calibration_session.is_running:
-                calib_info = calibration_session.get_progress(packet.timestamp_ms)
-                if latest_landmark is not None and latest_features is not None:
-                    fb = latest_features.blink.completed_blink
-                    adapted_blink: Optional[AIBlinkEvent] = None
-                    if fb is not None:
-                        cls_name = getattr(fb.classification, "name", "NORMAL")
-                        ai_cls = getattr(AIBlinkClassification, cls_name, AIBlinkClassification.NORMAL)
-                        adapted_blink = AIBlinkEvent(
-                            start_ts_ms=fb.start_ts_ms,
-                            min_ts_ms=fb.min_ts_ms,
-                            end_ts_ms=fb.end_ts_ms,
-                            duration_ms=fb.duration_ms,
-                            open_ear_before=fb.open_ear_before,
-                            min_ear=fb.min_ear,
-                            amplitude=fb.amplitude,
-                            closing_velocity_per_s=fb.closing_velocity_per_s,
-                            reopening_velocity_per_s=fb.reopening_velocity_per_s,
-                            rcr=fb.rcr,
-                            classification=ai_cls,
-                            is_binocular=fb.is_binocular,
-                        )
-                    # Decouple calibration data collection from ocular classification
-                    is_closed_for_calib = (
-                        latest_features.ear.is_closed
-                        if feature_extractor.is_profile_feasible
-                        else None
-                    )
-                    completed_profile = calibration_session.ingest_frame(
-                        timestamp_ms=packet.timestamp_ms,
-                        face_detected=latest_landmark.has_face,
-                        geometric_reliability=0.95 if latest_landmark.has_face else 0.0,
-                        ear_value=latest_features.ear.compensated_ear,
-                        pitch_deg=latest_features.head_pose.pitch_deg,
-                        yaw_deg=latest_features.head_pose.yaw_deg,
-                        is_eye_currently_closed=is_closed_for_calib,
-                        completed_blink=adapted_blink,
-                        left_ear=latest_features.ear.left_ear,
-                        right_ear=latest_features.ear.right_ear,
-                        landmark_confidence=latest_landmark.presence_confidence,
-                        rot_mat=latest_features.head_pose.rot_mat,
-                        ear_geometric_valid=latest_features.ear.is_geometric_valid,
-                    )
-                    if completed_profile is not None:
-                        success, status_msg = commit_and_activate_profile(
-                            profile=completed_profile,
-                            feature_extractor=feature_extractor,
-                            store=profile_store,
-                        )
-                        if success:
-                            calibrated_label = completed_profile.driver_id
-                            c_ctr = feature_extractor.active_closure_threshold
-                            r_ctr = feature_extractor.active_reopening_threshold
-                            calibration_banner_text = (
-                                f"CALIBRATION COMPLETE: '{completed_profile.driver_id}' active! "
-                                f"Thresholds: Center c={c_ctr:.3f}/r={r_ctr:.3f}"
-                            )
-                            calibration_banner_until = loop_now + 5.0
-                            logger.info(
-                                "Calibration successfully completed, persisted, and hot-reloaded for driver '%s'.",
-                                completed_profile.driver_id,
-                            )
-                        else:
-                            logger.warning(
-                                "Calibration commit/activation failed for '%s': %s",
-                                completed_profile.driver_id,
-                                status_msg,
-                            )
-                            calibration_banner_text = f"CALIBRATION FAILED: {status_msg}"
-                            calibration_banner_until = loop_now + 5.0
-                        calibration_session = None
-                    elif not calibration_session.is_running:
-                        # Session ended without a completed profile (rejected or timed out)
-                        reason = getattr(calibration_session, "rejection_reason", "Session terminated")
-                        logger.warning("Calibration ended without completed profile: %s", reason)
-                        calibration_banner_text = f"CALIBRATION FAILED: {reason}"
-                        calibration_banner_until = loop_now + 5.0
-                        calibration_session = None
+            if frame_res.calibration_status_message is not None:
+                calibration_banner_text = frame_res.calibration_status_message
+                calibration_banner_until = loop_now + 5.0
 
-            # Evaluate Drowsiness Intelligence Engine (Phase 6)
-            latest_assessment = drowsiness_engine.evaluate(
-                features=latest_features,
-                quality=latest_quality,
-            )
-
-            # Evaluate Alert State Manager & Dispatcher (Phase 8)
-            alert_transition = alert_manager.update(latest_assessment)
-            alert_dispatcher.dispatch(
-                transition=alert_transition,
-                current_state=alert_manager.current_state,
-                timestamp_ms=packet.timestamp_ms,
-                is_recovering=alert_manager.is_recovering,
-            )
-
-            # Record synchronized video frame and telemetry row
+            # Record synchronized video frame and processed telemetry row
             if session_recorder is not None and session_recorder.is_recording:
-                t_dict = {
-                    "face_detected": latest_landmark.has_face if latest_landmark else False,
-                    "face_status": latest_landmark.status.value if latest_landmark else "UNKNOWN",
-                    "presence_confidence": latest_landmark.presence_confidence if latest_landmark else 0.0,
-                    "pose_zone": latest_features.head_pose.zone.value if latest_features else "UNKNOWN",
-                    "pitch_deg": latest_features.head_pose.pitch_deg if latest_features else 0.0,
-                    "yaw_deg": latest_features.head_pose.yaw_deg if latest_features else 0.0,
-                    "roll_deg": latest_features.head_pose.roll_deg if latest_features else 0.0,
-                    "rel_pitch_deg": latest_features.head_pose.rel_pitch_deg if latest_features else 0.0,
-                    "rel_yaw_deg": latest_features.head_pose.rel_yaw_deg if latest_features else 0.0,
-                    "rel_roll_deg": latest_features.head_pose.rel_roll_deg if latest_features else 0.0,
-                    "ear_left": latest_features.ear.left_ear if latest_features else 0.0,
-                    "ear_right": latest_features.ear.right_ear if latest_features else 0.0,
-                    "ear_compensated": latest_features.ear.compensated_ear if latest_features else 0.0,
-                    "ear_closure_threshold": latest_features.ear.closure_threshold if latest_features else 0.20,
-                    "is_eye_closed": latest_features.ear.is_closed if latest_features else False,
-                    "is_geometric_valid": latest_features.ear.is_geometric_valid if latest_features else False,
-                    "mar": latest_features.mar.mar if latest_features else 0.0,
-                    "is_yawning": bool(getattr(latest_features.mar, "is_yawn_in_progress", False)) if latest_features else False,
-                    "total_blinks": latest_features.blink.total_blink_count if latest_features else 0,
-                    "total_yawns": latest_features.mar.total_yawn_count if latest_features else 0,
-                    "perclos_pct": latest_features.perclos.perclos_pct if latest_features else 0.0,
-                    "drowsiness_state": latest_assessment.state.value if latest_assessment else "NORMAL",
-                    "drowsiness_severity": latest_assessment.severity if latest_assessment else 0,
-                    "primary_reason": latest_assessment.primary_reason_text if latest_assessment is not None else "NONE",
-                    "alert_state": alert_manager.current_state.value,
-                    "alert_severity": alert_manager.severity,
-                    "is_recovering": alert_manager.is_recovering,
-                    "audio_warnings_enabled": alert_dispatcher.is_audio_enabled,
-                    "luminance": latest_quality.mean_luminance if latest_quality else 0.0,
-                    "blur_variance": latest_quality.blur_variance if latest_quality else 0.0,
-                    "optical_status": latest_quality.status.value if latest_quality else "UNKNOWN",
-                    "inference_latency_ms": latest_landmark.inference_latency_ms if latest_landmark else 0.0,
-                    "shadow_status": latest_shadow_obs.status_label if latest_shadow_obs else "DISABLED",
-                    "shadow_left_cnn": latest_shadow_obs.left_eye.cnn_predicted_class if latest_shadow_obs else None,
-                    "shadow_right_cnn": latest_shadow_obs.right_eye.cnn_predicted_class if latest_shadow_obs else None,
-                    "shadow_binoc_agreement": latest_shadow_obs.binocular_agreement if latest_shadow_obs else None,
-                    "shadow_latency_ms": latest_shadow_obs.inference_latency_ms if latest_shadow_obs else 0.0,
-                }
                 session_recorder.record_frame(
                     frame=packet.frame,
                     timestamp_ms=packet.timestamp_ms,
-                    telemetry=t_dict,
+                    telemetry=frame_res.telemetry.to_dict(),
                 )
 
             # Measure consumer display FPS every 0.5s
@@ -1144,23 +815,27 @@ def run_benchmark(
                 audio_feedback_banner_text = None
 
             if not headless:
-                # 1. Render facial landmarks directly onto raw video frame
-                rendered_frame = landmarker.draw_landmarks(
-                    frame=packet.frame,
-                    result=latest_landmark,
-                    draw_mesh=draw_mesh,
-                    draw_eyes=draw_eyes,
-                    draw_irises=True,
-                )
+                # 1. Render facial landmarks onto a non-mutating copy of the frame
+                if monitoring_service.landmarker is not None:
+                    rendered_frame = monitoring_service.landmarker.draw_landmarks(
+                        frame=packet.frame,
+                        result=latest_landmark,
+                        draw_mesh=draw_mesh,
+                        draw_eyes=draw_eyes,
+                        draw_irises=True,
+                    )
+                else:
+                    rendered_frame = packet.frame.copy()
 
                 # Optional Camera Positioning & Framing Guide Overlay
-                if show_position_guide and (calibration_session is None or not calibration_session.is_running):
+                if show_position_guide and not monitoring_service.is_calibrating:
+                    curr_h, curr_w = packet.frame.shape[:2]
                     pos_res = evaluate_camera_position(
                         landmark_result=latest_landmark,
                         head_pose=latest_features.head_pose if latest_features else None,
                         quality=latest_quality,
-                        frame_width=f_w,
-                        frame_height=f_h,
+                        frame_width=curr_w,
+                        frame_height=curr_h,
                     )
                     rendered_frame = draw_positioning_guide(
                         canvas=rendered_frame,
@@ -1192,12 +867,13 @@ def run_benchmark(
                         session_recorder.frame_count,
                     ) if session_recorder is not None else None,
                     show_position_guide=show_position_guide,
-                    alert_state=alert_manager.current_state,
-                    is_recovering=alert_manager.is_recovering,
-                    audio_warnings_enabled=alert_dispatcher.is_audio_enabled,
+                    alert_state=frame_res.alert_state,
+                    is_recovering=frame_res.is_recovering,
+                    audio_warnings_enabled=monitoring_service.alert_dispatcher.is_audio_enabled,
                     audio_feedback_banner=audio_feedback_banner_text,
                     shadow_telemetry=latest_shadow_obs,
-                    shadow_enabled=shadow_policy.enabled,
+                    shadow_enabled=monitoring_service.shadow_policy.enabled,
+                    active_reason_text=frame_res.active_reason_text,
                 )
                 cv2.imshow(window_name, hud_frame)
 
@@ -1206,20 +882,17 @@ def run_benchmark(
                     logger.info("User requested termination.")
                     break
                 elif key in (ord("x"), ord("X")):
-                    shadow_policy.enabled = not shadow_policy.enabled
+                    new_shadow = monitoring_service.toggle_shadow()
                     audio_feedback_banner_text = (
-                        "CNN SHADOW: ENABLED" if shadow_policy.enabled else "CNN SHADOW: MUTED"
+                        "CNN SHADOW: ENABLED" if new_shadow else "CNN SHADOW: MUTED"
                     )
                     audio_feedback_banner_until = loop_now + 2.5
                     logger.info(
                         "Eye CNN Shadow Observer toggled to: %s",
-                        "ENABLED" if shadow_policy.enabled else "MUTED",
+                        "ENABLED" if new_shadow else "MUTED",
                     )
                 elif key in (ord("a"), ord("A")):
-                    new_audio_state = alert_dispatcher.toggle_audio(
-                        active_state=alert_manager.current_state,
-                        timestamp_ms=packet.timestamp_ms,
-                    )
+                    new_audio_state = monitoring_service.toggle_audio(timestamp_ms=packet.timestamp_ms)
                     audio_feedback_banner_text = (
                         "AUDIO WARNINGS: ENABLED" if new_audio_state else "AUDIO WARNINGS: MUTED"
                     )
@@ -1230,16 +903,13 @@ def run_benchmark(
                     )
                 elif key in (ord("c"), ord("C")):
                     show_position_guide = False
-                    if calibration_session is None or not calibration_session.is_running:
-                        calibration_session = GuidedCalibrationSession(
-                            driver_id=driver_id,
-                            four_zone_mode=True,
-                            step_duration_sec=6.0,
+                    if not monitoring_service.is_calibrating:
+                        monitoring_service.start_calibration(
+                            timestamp_ms=packet.timestamp_ms,
+                            is_mirrored=is_mirrored,
                         )
-                        calibration_session.start(timestamp_ms=packet.timestamp_ms)
-                        logger.info("Started interactive 4-zone guided calibration for driver '%s'.", driver_id)
                     else:
-                        calibration_session = None
+                        monitoring_service.cancel_calibration()
                         calibration_banner_text = "CALIBRATION FAILED: Cancelled by user"
                         calibration_banner_until = loop_now + 5.0
                         logger.info("Cancelled ongoing calibration.")
@@ -1289,18 +959,14 @@ def run_benchmark(
                         )
 
     finally:
-        if "shadow_worker" in locals() and shadow_worker is not None:
-            shadow_worker.stop()
-        if "alert_dispatcher" in locals() and alert_dispatcher is not None:
-            alert_dispatcher.shutdown()
+        if "monitoring_service" in locals() and monitoring_service is not None:
+            monitoring_service.close()
         if "session_recorder" in locals() and session_recorder is not None and session_recorder.is_recording:
             session_recorder.stop()
         total_time = time.monotonic() - start_time
         buffer_stats = camera.get_buffer_stats()
         hardware_fps = camera.get_actual_fps()
         camera.close()
-        if "landmarker" in locals() and landmarker is not None:
-            landmarker.close()
         if not headless:
             cv2.destroyAllWindows()
 

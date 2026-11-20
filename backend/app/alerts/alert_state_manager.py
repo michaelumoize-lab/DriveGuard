@@ -25,7 +25,7 @@ from backend.app.alerts.alert_state import (
     map_drowsiness_state_to_alert_state,
 )
 from backend.app.intelligence.drowsiness_engine import DrowsinessAssessment
-from backend.app.intelligence.reason_codes import DrowsinessState, ExplainableReason
+from backend.app.intelligence.reason_codes import DrowsinessState, ExplainableReason, ReasonCode
 
 logger = logging.getLogger("driveguard.alert_manager")
 
@@ -149,8 +149,20 @@ class AlertStateManager:
 
             target_state = self._active_alert_level
 
-            # If candidate state is NORMAL while alert_active is True, recovery cooldown is active
-            self._is_recovering = (candidate_alert == AlertState.NORMAL)
+            # Recovery status comes authoritatively from DecisionEngine's Timer 2.
+            # Never mark recovering while eyes are closed or unverified.
+            if assessment.is_alert_recovering is not None:
+                self._is_recovering = bool(assessment.is_alert_recovering)
+            else:
+                eye_closed = (
+                    assessment.temporal_metrics.is_eye_closed
+                    if assessment.temporal_metrics is not None
+                    else None
+                )
+                self._is_recovering = (
+                    candidate_alert == AlertState.NORMAL
+                    and eye_closed is not True
+                )
 
             # Update historical/active reason
             if assessment.primary_reason is not None and candidate_alert.severity >= target_state.severity:
@@ -229,7 +241,7 @@ class AlertStateManager:
         self._active_alert_level = None
         self._is_recovering = False
         self._last_reason = ExplainableReason(
-            code=DrowsinessState.NORMAL,  # Normal reset
+            code=ReasonCode.ALERT_NORMAL,
             message="Alert status returned to normal by explicit recovery.",
         )
 

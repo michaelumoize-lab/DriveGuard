@@ -3,6 +3,7 @@ import { getServerSession } from "@/lib/get-session";
 import { prisma } from "@/lib/prisma";
 import { resolveCloudFastApiUrl } from "@/lib/fastapi-url";
 import { createBackendAccessToken } from "@/lib/backend-auth";
+import { buildDriverProfileDtoPayload } from "@/lib/api/profile-mapper";
 
 export async function POST(req: NextRequest) {
   try {
@@ -14,8 +15,8 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const {
-      calibrationMode = "FOUR_ZONE_PLUS_BLINK",
-      centerEarMedian = 0.285,
+      calibrationMode = "FOUR_ZONE",
+      centerEarMedian,
       centerEarMadScaled = 0.018,
       blinkDurationMedianMs = 235.0,
       blinkDurationMadMs = 40.0,
@@ -30,16 +31,27 @@ export async function POST(req: NextRequest) {
       sensitivityLevel = "STANDARD",
       neutralPitchDeg = 0.0,
       neutralYawDeg = 0.0,
+      neutralRotMat = null,
+      calibrationIsMirrored = null,
       calibrationReliability = 0.85,
       zoneBaselines = null,
     } = body;
 
+    const numericCenterEar = Number(centerEarMedian);
+    if (!Number.isFinite(numericCenterEar) || numericCenterEar <= 0.0 || numericCenterEar > 1.0) {
+      return NextResponse.json(
+        { error: "Invalid calibration payload: centerEarMedian must be a valid EAR value in (0, 1]." },
+        { status: 400 }
+      );
+    }
+
     const baseZones =
       zoneBaselines && typeof zoneBaselines === "object" && !Array.isArray(zoneBaselines)
-        ? { ...(zoneBaselines as Record<string, any>) }
+        ? { ...(zoneBaselines as Record<string, unknown>) }
         : {};
 
-    const enrichedZoneBaselines = {
+    const calibratedAtNow = new Date();
+    const enrichedZoneBaselines: Record<string, unknown> = {
       ...baseZones,
       _temporalBaseline: {
         blinkFreqMedianPerMin: Number(blinkFreqMedianPerMin),
@@ -52,13 +64,18 @@ export async function POST(req: NextRequest) {
         blinkAmplitudeMedian: Number(blinkAmplitudeMedian),
         temporalBlinksSampled: Math.round(Number(temporalBlinksSampled)),
         temporalWindowSec: Number(temporalWindowSec),
-        calibratedAt: new Date().toISOString(),
+        calibratedAt: calibratedAtNow.toISOString(),
+      },
+      _poseMetadata: {
+        neutral_rot_mat: neutralRotMat ?? null,
+        calibration_is_mirrored:
+          typeof calibrationIsMirrored === "boolean" ? calibrationIsMirrored : null,
       },
     };
 
     const profileData = {
       calibrationMode: String(calibrationMode),
-      centerEarMedian: Number(centerEarMedian),
+      centerEarMedian: numericCenterEar,
       centerEarMadScaled: Number(centerEarMadScaled),
       blinkDurationMedianMs: Number(blinkDurationMedianMs),
       blinkDurationMadMs: Number(blinkDurationMadMs),
@@ -74,9 +91,9 @@ export async function POST(req: NextRequest) {
       neutralPitchDeg: Number(neutralPitchDeg),
       neutralYawDeg: Number(neutralYawDeg),
       calibrationReliability: Number(calibrationReliability),
-      zoneBaselines: enrichedZoneBaselines,
+      zoneBaselines: enrichedZoneBaselines as any,
       isCalibrated: true,
-      calibratedAt: new Date(),
+      calibratedAt: calibratedAtNow,
     };
 
     const profile = await prisma.driverProfile.upsert({
@@ -90,32 +107,18 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    // Extract pure spatial zones for FastAPI DriverProfileDTO validation
-    const spatialZonesForWorker: Record<string, any> = {};
-    for (const [k, v] of Object.entries(baseZones)) {
-      if (!k.startsWith("_") && v && typeof v === "object") {
-        const zv = v as Record<string, any>;
-        const earMed = Number(zv.ear_median ?? centerEarMedian);
-        const earMad = Number(zv.ear_mad_scaled ?? centerEarMadScaled);
-        const rawExpected = Math.min(earMed * 0.76, earMed - 2.3 * earMad);
-        const expectedThreshold = Math.min(0.22, Math.max(0.12, rawExpected));
-        const storedThreshold = Number(zv.dynamic_closure_threshold);
-        const finalThreshold =
-          !isNaN(storedThreshold) && Math.abs(storedThreshold - expectedThreshold) <= 0.0005
-            ? storedThreshold
-            : expectedThreshold;
-
-        spatialZonesForWorker[k] = {
-          zone: k,
-          ear_median: earMed,
-          ear_mad_scaled: earMad,
-          dynamic_closure_threshold: finalThreshold,
-          pitch_median_deg: Number(zv.pitch_median_deg ?? zv.pitch_deg_median ?? 0.0),
-          yaw_median_deg: Number(zv.yaw_median_deg ?? zv.yaw_deg_median ?? 0.0),
-          sample_count: Number(zv.sample_count ?? 35),
-        };
-      }
-    }
+    // Build strict snake_case FastAPI DriverProfileDTO using canonical shared mapper
+    const fastApiProfileDto = buildDriverProfileDtoPayload(
+      {
+        ...profile,
+        neutralRotMat,
+        calibrationIsMirrored,
+        zoneBaselines: enrichedZoneBaselines,
+        isCalibrated: true,
+        calibratedAt: calibratedAtNow,
+      },
+      userId
+    );
 
     // Authenticated best-effort sync to FastAPI worker so the live session uses the latest profile immediately
     const apiBaseUrl = resolveCloudFastApiUrl();
@@ -128,29 +131,7 @@ export async function POST(req: NextRequest) {
         "Content-Type": "application/json",
         Authorization: `Bearer ${backendToken}`,
       },
-      body: JSON.stringify({
-        version: 1,
-        driver_id: userId,
-        calibrated_at: new Date().toISOString(),
-        is_calibrated: true,
-        calibration_mode: profile.calibrationMode,
-        center_ear_median: profile.centerEarMedian,
-        blink_duration_median_ms: profile.blinkDurationMedianMs,
-        blink_duration_mad_ms: profile.blinkDurationMadMs,
-        blinkRcrMedian: profile.blinkRcrMedian,
-        blinkRcrMad: profile.blinkRcrMad,
-        blink_freq_median_per_min: Number(profile.blinkFreqMedianPerMin),
-        blink_freq_mad_per_min: Number(profile.blinkFreqMadPerMin),
-        baseline_perclos_pct: Number(profile.baselinePerclosPct),
-        blink_amplitude_median: Number(profile.blinkAmplitudeMedian),
-        temporal_blinks_sampled: Number(profile.temporalBlinksSampled),
-        temporal_window_sec: Number(profile.temporalWindowSec),
-        sensitivity_level: profile.sensitivityLevel,
-        neutral_pitch_deg: profile.neutralPitchDeg,
-        neutral_yaw_deg: profile.neutralYawDeg,
-        calibration_reliability: profile.calibrationReliability,
-        zone_baselines: spatialZonesForWorker,
-      }),
+      body: JSON.stringify(fastApiProfileDto),
     }).catch(() => {
       // Non-fatal if worker is offline during profile save
     });

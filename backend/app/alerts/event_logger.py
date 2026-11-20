@@ -9,11 +9,11 @@ local JSONL audit file without introducing cloud or external dependencies.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
 import threading
-import time
 from typing import Any, Dict, List, Optional
 
 from backend.app.core.config import settings
@@ -85,7 +85,7 @@ class AlertEventLogger:
         """
         entry = AlertLogEntry(
             timestamp_ms=timestamp_ms,
-            iso_time=time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(timestamp_ms / 1000.0)),
+            iso_time=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             previous_state=str(previous_state),
             new_state=str(new_state),
             severity=int(severity),

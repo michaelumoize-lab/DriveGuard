@@ -335,7 +335,7 @@ class TestDriveGuardFaultInjection(unittest.IsolatedAsyncioTestCase):
         """MediaPipe runtime exception returns LANDMARKER_EXCEPTION without crashing session."""
         engine = await session_manager.get_or_create_session(self.test_room, self.test_driver)
 
-        with patch.object(engine.landmarker, "process_frame", side_effect=RuntimeError("MediaPipe internal graph failure")):
+        with patch.object(engine.landmarker, "detect", side_effect=RuntimeError("MediaPipe internal graph failure")):
             valid_img = generate_benchmark_frame(1)
             dto = engine.process_frame(valid_img, 200.0)
 
@@ -347,16 +347,20 @@ class TestDriveGuardFaultInjection(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dto_recovered.state.value, "NORMAL")
 
     async def test_onnx_runtime_exception_graceful_fallback(self) -> None:
-        """ONNX runtime exception gracefully degrades to geometric baseline without crashing."""
+        """Downstream feature-extraction runtime exception is isolated without crashing session."""
         engine = await session_manager.get_or_create_session(self.test_room, self.test_driver)
 
-        with patch.object(engine.cascade, "evaluate", side_effect=Exception("ONNX Runtime execution failure")):
+        with patch.object(engine.feature_extractor, "extract", side_effect=RuntimeError("Simulated extractor execution failure")):
             valid_img = generate_benchmark_frame(2)
             dto = engine.process_frame(valid_img, 300.0)
 
-            # Successfully processed via GEOMETRIC_FALLBACK
-            self.assertEqual(dto.cascade.arbitration_winner, "GEOMETRIC_FALLBACK")
-            self.assertEqual(dto.state.value, "NORMAL")
+            self.assertEqual(dto.state.value, "MONITORING_UNAVAILABLE")
+            self.assertTrue(any("LANDMARKER_EXCEPTION" in r for r in dto.reason_codes))
+
+        # Subsequent frame recovers cleanly on authoritative engine
+        dto_ok = engine.process_frame(valid_img, 340.0)
+        self.assertEqual(dto_ok.state.value, "NORMAL")
+        self.assertEqual(dto_ok.authoritative_engine, "DrowsinessEngine")
 
     async def test_repeated_consecutive_inference_failures(self) -> None:
         """Worker accounts for repeated unhandled inference exceptions under frames_errored."""

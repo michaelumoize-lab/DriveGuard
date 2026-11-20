@@ -54,6 +54,7 @@ class AlertDispatcher:
         # State tracking for deduplication & cooldowns
         self._last_announced_state: Optional[AlertState] = None
         self._last_announced_ts_ms: Dict[AlertState, float] = {}
+        self._last_critical_reminder_log_ts_ms: Optional[float] = None
         self._listeners: List[Callable[[AlertTransition], None]] = []
 
         # Connect settings store listener
@@ -163,16 +164,37 @@ class AlertDispatcher:
         # Case 2: Ongoing state without transition
         # Check if periodic reminder is warranted for sustained CRITICAL alarm
         if current_state == AlertState.CRITICAL and not is_recovering:
-            last_ts = self._last_announced_ts_ms.get(AlertState.CRITICAL, 0.0)
-            if (timestamp_ms - last_ts) >= self.critical_reminder_cooldown_ms:
+            last_audio_ts = self._last_announced_ts_ms.get(AlertState.CRITICAL)
+            ref_candidates = [
+                t for t in (last_audio_ts, self._last_critical_reminder_log_ts_ms)
+                if t is not None
+            ]
+            last_ts = max(ref_candidates) if ref_candidates else None
+            if last_ts is None or (timestamp_ms - last_ts) >= self.critical_reminder_cooldown_ms:
+                playback_status = "MUTED" if not audio_enabled else "SKIPPED"
                 if audio_enabled:
                     queued = self._dispatch_audio_alert(
                         state=AlertState.CRITICAL,
                         timestamp_ms=timestamp_ms,
                         force=True,
                     )
+                    playback_status = "SUCCESS" if queued else "FAILED"
                     if queued:
                         logger.info("Dispatched periodic CRITICAL reminder audio announcement.")
+                self._last_critical_reminder_log_ts_ms = timestamp_ms
+                self.event_logger.log_event(
+                    timestamp_ms=timestamp_ms,
+                    previous_state=current_state.value,
+                    new_state=current_state.value,
+                    severity=current_state.severity,
+                    reason_code="CRITICAL_PERIODIC_REMINDER",
+                    reason_message="Periodic CRITICAL danger reminder dispatched.",
+                    is_recovery=False,
+                    announcement_requested=True,
+                    audio_enabled=audio_enabled,
+                    playback_status=playback_status,
+                    details={"periodic_reminder": True},
+                )
 
     def shutdown(self) -> None:
         """Shutdown dispatcher and underlying audio engine."""
@@ -192,11 +214,15 @@ class AlertDispatcher:
         """
         Evaluate cooldown and enqueue audio alert if eligible.
         """
-        last_announced_ts = self._last_announced_ts_ms.get(state, 0.0)
+        last_announced_ts = self._last_announced_ts_ms.get(state)
         cooldown = self._get_cooldown_for_state(state)
 
-        # Allow immediate dispatch on state escalation or if cooldown elapsed
-        if not force and (timestamp_ms - last_announced_ts) < cooldown:
+        # Allow immediate dispatch on state escalation, first announcement, or if cooldown elapsed
+        if (
+            not force
+            and last_announced_ts is not None
+            and (timestamp_ms - last_announced_ts) < cooldown
+        ):
             logger.debug("Suppressing audio alert (%s) due to active cooldown.", state.value)
             return False
 

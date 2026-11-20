@@ -22,15 +22,22 @@ import math
 from pathlib import Path
 import struct
 from types import MappingProxyType
-from typing import Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Mapping, Optional, Protocol, Sequence, Tuple, Union
 from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
-from backend.app.ai.blink_kinematics import BlinkEvent
-from backend.app.ai.geometry import PoseZone
+from backend.app.features.head_pose import PoseZone, is_valid_rotation_matrix
 from backend.app.core.time_utils import validate_iso_timestamp
-from backend.app.features.head_pose import is_valid_rotation_matrix
+
+
+class BlinkEventLike(Protocol):
+    """Structural protocol accepted by GuidedCalibrationSession for completed blinks."""
+
+    duration_ms: float
+    rcr: float
+    amplitude: float
+    is_binocular: bool
 
 
 def compute_median_and_scaled_mad(
@@ -114,6 +121,7 @@ class DriverBehaviourProfile:
     version: int = 1
     calibrated_at: Optional[str] = None
     neutral_rot_mat: Optional[np.ndarray] = None
+    calibration_is_mirrored: Optional[bool] = None
 
     def __post_init__(self) -> None:
         if self.active_center_ear_median is None:
@@ -239,6 +247,7 @@ class DriverBehaviourProfile:
             "sensitivity_level",
             "version",
             "neutral_rot_mat",
+            "calibration_is_mirrored",
         }
         clean_data = {k: v for k, v in data.items() if k in valid_profile_keys}
         if clean_data.get("neutral_rot_mat") is not None:
@@ -404,6 +413,11 @@ def compute_canonical_profile_fingerprint(
         rot_mat = profile._neutral_rot_mat_tuple
     h.update(_pack_matrix(rot_mat, "neutral_rot_mat"))
 
+    # 23b. calibration_is_mirrored (only mixed into digest when explicitly set to preserve legacy fingerprints)
+    cal_is_mirrored = getattr(profile, "calibration_is_mirrored", None)
+    if cal_is_mirrored is not None:
+        h.update(b"\x01" + _pack_bool(cal_is_mirrored, "calibration_is_mirrored"))
+
     # 24. zone_baselines
     zb_dict = profile.zone_baselines
     if not isinstance(zb_dict, (dict, Mapping)):
@@ -482,6 +496,7 @@ class ImmutableProfileSnapshot:
     is_calibrated: bool = True
     _neutral_rot_mat_tuple: Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float], Tuple[float, float, float]]] = None
     fingerprint: str = ""
+    calibration_is_mirrored: Optional[bool] = None
 
     @property
     def neutral_rot_mat(self) -> Optional[np.ndarray]:
@@ -569,6 +584,7 @@ class ImmutableProfileSnapshot:
                 if self._neutral_rot_mat_tuple is not None
                 else None
             ),
+            calibration_is_mirrored=self.calibration_is_mirrored,
         )
 
 
@@ -637,6 +653,7 @@ def create_immutable_profile_snapshot(profile: DriverBehaviourProfile) -> Immuta
         is_calibrated=is_cal,
         _neutral_rot_mat_tuple=rot_tuple,
         fingerprint=fp,
+        calibration_is_mirrored=getattr(profile, "calibration_is_mirrored", None),
     )
 
 
@@ -972,6 +989,7 @@ class GuidedCalibrationSession:
         initial_center_max_pitch_deg: float = DEFAULT_INITIAL_CENTER_MAX_PITCH_DEG,
         recalibration_center_max_yaw_deg: float = DEFAULT_RECALIBRATION_CENTER_MAX_YAW_DEG,
         recalibration_center_max_pitch_deg: float = DEFAULT_RECALIBRATION_CENTER_MAX_PITCH_DEG,
+        is_mirrored: Optional[bool] = None,
     ) -> None:
         self.driver_id = driver_id
         self.four_zone_mode = four_zone_mode
@@ -987,6 +1005,7 @@ class GuidedCalibrationSession:
         self.initial_center_max_pitch_deg = float(initial_center_max_pitch_deg)
         self.recalibration_center_max_yaw_deg = float(recalibration_center_max_yaw_deg)
         self.recalibration_center_max_pitch_deg = float(recalibration_center_max_pitch_deg)
+        self.is_mirrored: Optional[bool] = is_mirrored
 
         if self.blink_only_mode:
             base_steps: Tuple[CalibrationStepConfig, ...] = (
@@ -1063,7 +1082,7 @@ class GuidedCalibrationSession:
         self._yaw_samples_by_zone: Dict[str, List[float]] = {s.zone.value: [] for s in self.steps}
         self._confidence_by_zone: Dict[str, List[float]] = {s.zone.value: [] for s in self.steps}
         self._reliabilities: List[float] = []
-        self._collected_blinks: List[BlinkEvent] = []
+        self._collected_blinks: List[BlinkEventLike] = []
         self._candidate_rot_mats: List[np.ndarray] = []
 
         # 2-Minute Natural Blink Cadence Phase Accumulators
@@ -1290,7 +1309,7 @@ class GuidedCalibrationSession:
         pitch_deg: float,
         yaw_deg: float,
         is_eye_currently_closed: Optional[bool] = None,
-        completed_blink: Optional[BlinkEvent] = None,
+        completed_blink: Optional[BlinkEventLike] = None,
         left_ear: Optional[float] = None,
         right_ear: Optional[float] = None,
         blendshape_blink_mean: Optional[float] = None,
@@ -1721,12 +1740,36 @@ class GuidedCalibrationSession:
                     self.existing_profile.neutral_pitch_deg = new_zb.pitch_median_deg
                     self.existing_profile.neutral_yaw_deg = new_zb.yaw_median_deg
                     if self._candidate_rot_mats:
+                        min_rot_inliers = (
+                            max(3, int(self.step_duration_sec * 20))
+                            if (self.step_duration_sec is not None and self.step_duration_sec <= 1.0)
+                            else 18
+                        )
                         try:
-                            rot_res = aggregate_neutral_rotation_matrix(self._candidate_rot_mats)
+                            rot_res = aggregate_neutral_rotation_matrix(
+                                self._candidate_rot_mats,
+                                min_absolute_inliers=min_rot_inliers,
+                            )
                             if rot_res.is_accepted and rot_res.neutral_rot_mat is not None:
                                 self.existing_profile.neutral_rot_mat = rot_res.neutral_rot_mat
-                        except Exception:
-                            pass
+                                if self.is_mirrored is not None:
+                                    self.existing_profile.calibration_is_mirrored = self.is_mirrored
+                            else:
+                                self.quality_warnings.append(
+                                    f"ROTATION_REJECTED: Neutral head pose rotation aggregation rejected: {rot_res.rejection_reason}"
+                                )
+                                self.rejection_reason = (
+                                    f"REJECTED_HEAD_POSE_INSTABILITY: Neutral head pose rotation aggregation failed "
+                                    f"({rot_res.rejection_reason}; inliers={rot_res.inlier_count}/{rot_res.total_candidates}, "
+                                    f"rms={rot_res.inlier_rms_deg:.2f} deg)."
+                                )
+                                return None
+                        except Exception as e:
+                            self.quality_warnings.append(
+                                f"ROTATION_ERROR: Neutral head pose rotation aggregation error: {e}"
+                            )
+                            self.rejection_reason = f"REJECTED_HEAD_POSE_INSTABILITY: {e}"
+                            return None
                 self.is_completed = True
                 return self.existing_profile
             else:
@@ -1809,18 +1852,34 @@ class GuidedCalibrationSession:
         # Stage 2.1 SO(3) Neutral Head Pose Rotation Matrix Aggregation
         neutral_rot_mat: Optional[np.ndarray] = None
         if self._candidate_rot_mats:
+            min_rot_inliers = (
+                max(3, int(self.step_duration_sec * 20))
+                if (self.step_duration_sec is not None and self.step_duration_sec <= 1.0)
+                else 18
+            )
             try:
-                rot_res = aggregate_neutral_rotation_matrix(self._candidate_rot_mats)
+                rot_res = aggregate_neutral_rotation_matrix(
+                    self._candidate_rot_mats,
+                    min_absolute_inliers=min_rot_inliers,
+                )
                 if rot_res.is_accepted and rot_res.neutral_rot_mat is not None:
                     neutral_rot_mat = rot_res.neutral_rot_mat
                 else:
                     self.quality_warnings.append(
                         f"ROTATION_REJECTED: Neutral head pose rotation aggregation rejected: {rot_res.rejection_reason}"
                     )
+                    self.rejection_reason = (
+                        f"REJECTED_HEAD_POSE_INSTABILITY: Neutral head pose rotation aggregation failed "
+                        f"({rot_res.rejection_reason}; inliers={rot_res.inlier_count}/{rot_res.total_candidates}, "
+                        f"rms={rot_res.inlier_rms_deg:.2f} deg). Please hold head steady looking straight ahead."
+                    )
+                    return None
             except Exception as e:
                 self.quality_warnings.append(
                     f"ROTATION_ERROR: Neutral head pose rotation aggregation error: {e}"
                 )
+                self.rejection_reason = f"REJECTED_HEAD_POSE_INSTABILITY: {e}"
+                return None
 
         profile = DriverBehaviourProfile(
             driver_id=self.driver_id,
@@ -1847,6 +1906,7 @@ class GuidedCalibrationSession:
             version=1,
             calibrated_at=datetime.now(timezone.utc).isoformat(),
             neutral_rot_mat=neutral_rot_mat,
+            calibration_is_mirrored=self.is_mirrored,
         )
         self.is_completed = True
         return profile

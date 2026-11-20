@@ -180,7 +180,7 @@ class TestStreamLifecycleAndLatency(unittest.IsolatedAsyncioTestCase):
         # Check close releases resources
         engine.close()
         self.assertTrue(engine._is_closed)
-        self.assertIsNone(engine.cascade)
+        self.assertIsNotNone(engine.monitoring_service)
 
     async def test_stream_aclose_exception_recording(self):
         """aclose() raising an exception must be recorded in error diagnostics and surfaced."""
