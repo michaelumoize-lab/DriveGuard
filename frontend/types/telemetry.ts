@@ -152,22 +152,26 @@ export interface FrameTelemetry {
   cascade: CascadeStatus;
   comparison?: ConventionalComparison;
   engine_mode: string;
+  runtime_mode?: string;
+  runtimeMode?: string;
   inference_latency_ms: number;
   network_roundtrip_ms?: number;
   timing?: TimingBreakdown | null;
 }
 
 export interface SafetyEvent {
-  v: number;
-  type: "SAFETY_EVENT";
+  v?: number;
+  type?: "SAFETY_EVENT";
   event_id: string;
-  session_id: string;
-  event_seq: string | number;
+  session_id?: string;
+  event_seq?: string | number;
   frame_seq?: string;
   worker_boot_id?: string;
   session_epoch?: string;
   event_type: string;
-  previous_state: AlertState;
+  severity?: string;
+  prev_state?: AlertState;
+  previous_state?: AlertState;
   new_state: AlertState;
   timestamp: number;
   server_wall_epoch_ms?: number;
