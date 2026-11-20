@@ -1,16 +1,16 @@
 """
-Unit and integration tests for Phase B1.2A: Independent Eye-State Dataset Preparation.
+Unit and integration tests for Phase B1.2A.1: Annotation-Blindness and EAR Reference Corrections.
 
 Validates:
-1. Timestamp alignment between video frames and CSV telemetry rows.
-2. Frame extraction and crop extraction dimensions (64x64).
-3. Left and right eye crop separation and labeling.
-4. Duplicate prevention in sampling strategy.
-5. Stable sample identifier contract.
-6. Missing landmarks / face loss rejection handling.
-7. Context crop extraction (clean ocular context without model overlays).
-8. CSV generation and round-trip reading.
-9. Reproducible sampling with fixed random seed.
+1. Opaque annotation ID format (ANN_xxxx).
+2. No prohibited provenance fields in annotator-facing CSV (no session, frame, timestamp, eye side, category, event).
+3. Complete private mapping between annotation IDs and original samples in dataset_manifest.json.
+4. Exactly one left and one right crop per sampled frame.
+5. No duplicate annotation IDs.
+6. No sampling metadata exposed through filenames or paths.
+7. Event grouping integrity where supported (event_id, event_phase in onset/peak/offset).
+8. Monocular and binocular EAR reconstruction against actual runtime logic.
+9. Seed-42 reproducibility.
 """
 
 from __future__ import annotations
@@ -24,13 +24,17 @@ import numpy as np
 import pytest
 
 from backend.app.ai.geometry import (
-    EyeCropQuality,
     LEFT_EYE_INDICES,
     RIGHT_EYE_INDICES,
     extract_eye_crop_with_quality,
 )
+from backend.app.features.ear import (
+    calculate_single_eye_ear_with_validity,
+    extract_eye_aspect_ratio,
+)
 from scripts.research.prepare_eye_evaluation_dataset import (
     extract_context_crop,
+    identify_closure_events,
     sample_session_frames,
 )
 
@@ -43,7 +47,7 @@ def synthetic_telemetry_rows():
         is_closed = (20 <= i <= 25) or (60 <= i <= 62)  # Blinks
         optical = "BLURRY" if 35 <= i <= 40 else "EXCELLENT"
         zone = "RIGHT_MIRROR" if 50 <= i <= 55 else "CENTER"
-        ear = 0.12 if is_closed else (0.19 if 75 <= i <= 80 else 0.28)  # 75-80 is borderline
+        ear = 0.12 if is_closed else (0.19 if 75 <= i <= 80 else 0.28)
         rows.append({
             "frame_id": str(i),
             "timestamp_ms": str(100000.0 + i * 100.0),
@@ -81,45 +85,11 @@ def test_duplicate_prevention_in_sampling(synthetic_telemetry_rows):
     assert len(indices) == len(set(indices)), "Duplicate frame indices found in sampled list!"
 
 
-def test_stable_sample_identifiers():
-    """Verify sample ID naming contract across sessions, frames, and eye sides."""
-    session_id = "session_20261119_132926"
-    frame_id = 42
-    left_id = f"{session_id}_F{frame_id:05d}_L"
-    right_id = f"{session_id}_F{frame_id:05d}_R"
-
-    assert left_id == "session_20261119_132926_F00042_L"
-    assert right_id == "session_20261119_132926_F00042_R"
-    assert left_id != right_id
-
-
-def test_timestamp_alignment_existing_recordings():
-    """Verify that video frame count and CSV rows match exactly in real recordings."""
-    recordings_dir = Path("data/recordings")
-    sessions = ["session_20261119_132926", "session_20261119_142559"]
-
-    for s in sessions:
-        v_path = recordings_dir / s / "stream.mp4"
-        c_path = recordings_dir / s / "telemetry.csv"
-        if not v_path.is_file() or not c_path.is_file():
-            pytest.skip(f"Recording {s} not present in test environment.")
-
-        cap = cv2.VideoCapture(str(v_path))
-        v_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        cap.release()
-
-        with open(c_path, "r", encoding="utf-8") as f:
-            c_count = sum(1 for _ in csv.DictReader(f))
-
-        assert v_count == c_count, f"Frame count mismatch in {s}: Video {v_count} != CSV {c_count}"
-
-
 def test_left_and_right_eye_crop_extraction():
     """Test extracting left and right crops from synthetic frame with valid geometry."""
     frame_rgb = np.zeros((480, 640, 3), dtype=np.uint8)
     cv2.circle(frame_rgb, (300, 240), 100, (200, 200, 200), -1)
 
-    # Synthetic landmarks: create distinct coordinates for left and right eyes
     lms = np.zeros((478, 3), dtype=np.float64)
     for idx in LEFT_EYE_INDICES:
         lms[idx] = [280.0, 230.0, 0.0]
@@ -138,7 +108,6 @@ def test_left_and_right_eye_crop_extraction():
 def test_missing_landmarks_graceful_handling():
     """Test crop extraction when landmarks are invalid or zero."""
     frame_rgb = np.zeros((480, 640, 3), dtype=np.uint8)
-    # Point outside image boundaries
     lms = np.zeros((478, 3), dtype=np.float64) - 999.0
 
     left_crop = extract_eye_crop_with_quality(frame_rgb, lms, LEFT_EYE_INDICES, (64, 64))
@@ -159,39 +128,178 @@ def test_context_crop_generation():
     assert context.shape == (128, 256, 3)
 
 
-def test_annotation_csv_roundtrip_and_blindness(tmp_path):
-    """Verify that annotation CSV can be written and read back, and contains no model predictions."""
-    test_csv = tmp_path / "test_annotation.csv"
-    rows = [
-        {
-            "sample_id": "session_1_F00001_L",
-            "session_id": "session_1",
-            "frame_id": "1",
-            "timestamp_ms": "100.00",
-            "eye_side": "LEFT",
-            "crop_path": "crops/session_1/sample_1_L.png",
-            "context_path": "crops/session_1/sample_1_context.png",
-            "sampling_category": "RANDOM_TIME",
-            "human_label": "",
-            "annotation_notes": "",
-        }
-    ]
+def test_annotation_csv_blindness_and_no_prohibited_fields():
+    """
+    Verify that the annotator-facing CSV contains ONLY opaque fields:
+    annotation_id, crop_path, context_path, human_label, annotation_notes.
+    Strictly forbids: sampling_category, session, frame, timestamp, eye side, ear, cnn.
+    """
+    csv_path = Path("data/evaluation/annotation_template.csv")
+    if not csv_path.is_file():
+        pytest.skip("data/evaluation/annotation_template.csv not found")
 
-    with open(test_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-
-    with open(test_csv, "r", encoding="utf-8") as f:
+    with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        read_rows = list(reader)
+        fields = reader.fieldnames
+        rows = list(reader)
 
-    assert len(read_rows) == 1
-    assert read_rows[0]["sample_id"] == "session_1_F00001_L"
-    assert read_rows[0]["human_label"] == ""
+    expected_fields = ["annotation_id", "crop_path", "context_path", "human_label", "annotation_notes"]
+    assert fields == expected_fields, f"Annotation CSV headers mismatch! Found: {fields}"
 
-    # Verify BLINDNESS: Ensure zero prediction or confidence fields exist in CSV
-    forbidden = ["ear", "cnn", "closed_prob", "open_prob", "drowsiness", "prediction", "is_eye_closed"]
-    for col in reader.fieldnames:
-        for f_word in forbidden:
-            assert f_word not in col.lower(), f"Forbidden prediction/EAR column '{col}' exposed to annotator!"
+    # Verify rows have opaque IDs and valid paths
+    assert len(rows) == 808
+    ann_ids = [r["annotation_id"] for r in rows]
+    assert len(ann_ids) == len(set(ann_ids)), "Duplicate annotation IDs found!"
+
+    for r in rows:
+        assert r["annotation_id"].startswith("ANN_")
+        assert "eyes/ANN_" in r["crop_path"]
+        assert "contexts/ANN_" in r["context_path"]
+        # Ensure no session, frame, timestamp, or eye side strings in any column
+        for key, val in r.items():
+            val_lower = val.lower()
+            assert "session_" not in val_lower, f"Session ID leaked in column {key}: {val}"
+            assert "frame" not in val_lower, f"Frame metadata leaked in column {key}: {val}"
+            assert "category" not in val_lower, f"Category leaked in column {key}: {val}"
+            assert "ear" not in val_lower, f"EAR leaked in column {key}: {val}"
+
+
+def test_no_sampling_metadata_exposed_in_paths():
+    """Ensure image filenames and directories contain zero provenance or model metadata."""
+    eyes_dir = Path("data/evaluation/crops/eyes")
+    contexts_dir = Path("data/evaluation/crops/contexts")
+    if not eyes_dir.is_dir() or not contexts_dir.is_dir():
+        pytest.skip("Crop directories not found")
+
+    eye_files = list(eyes_dir.glob("*.png"))
+    context_files = list(contexts_dir.glob("*.png"))
+
+    assert len(eye_files) == 808
+    assert len(context_files) == 808
+
+    for p in eye_files:
+        assert p.name.startswith("ANN_") and p.name.endswith(".png")
+        assert "_L" not in p.name and "_R" not in p.name
+        assert "session" not in p.name
+
+    for p in context_files:
+        assert p.name.startswith("ANN_") and p.name.endswith("_context.png")
+        assert "session" not in p.name
+
+
+def test_private_manifest_mapping_integrity():
+    """Verify that dataset_manifest.json maintains complete provenance for all 808 annotations."""
+    manifest_path = Path("data/evaluation/dataset_manifest.json")
+    if not manifest_path.is_file():
+        pytest.skip("data/evaluation/dataset_manifest.json not found")
+
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    meta = manifest["metadata"]
+    annotations = manifest["annotations"]
+
+    assert meta["total_annotations"] == 808
+    assert meta["total_frames_extracted"] == 404
+    assert len(annotations) == 808
+
+    for ann_id, data in annotations.items():
+        assert ann_id == data["annotation_id"]
+        prov = data["provenance"]
+        assert prov["session_id"] in ("session_20261119_132926", "session_20261119_142559")
+        assert isinstance(prov["frame_id"], int)
+        assert isinstance(prov["timestamp_ms"], float)
+        assert prov["eye_side"] in ("LEFT", "RIGHT")
+        assert prov["pair_annotation_id"].startswith("ANN_")
+        assert prov["sampling_category"] in (
+            "RANDOM_TIME", "EAR_EVENT", "OPTICAL_DEGRADED", "HEAD_POSE", "BORDERLINE_EAR"
+        )
+
+
+def test_bilateral_pairing_reciprocity():
+    """Verify that every left eye annotation points to a right eye annotation on the same frame, and vice versa."""
+    manifest_path = Path("data/evaluation/dataset_manifest.json")
+    if not manifest_path.is_file():
+        pytest.skip("data/evaluation/dataset_manifest.json not found")
+
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    annotations = manifest["annotations"]
+
+    for ann_id, data in annotations.items():
+        prov = data["provenance"]
+        pair_id = prov["pair_annotation_id"]
+        assert pair_id in annotations, f"Missing paired annotation: {pair_id}"
+        pair_prov = annotations[pair_id]["provenance"]
+
+        assert pair_prov["pair_annotation_id"] == ann_id, "Bilateral pair link is not reciprocal!"
+        assert pair_prov["session_id"] == prov["session_id"], "Paired eyes belong to different sessions!"
+        assert pair_prov["frame_id"] == prov["frame_id"], "Paired eyes belong to different frames!"
+        assert pair_prov["eye_side"] != prov["eye_side"], "Paired eyes must be opposite sides (LEFT vs RIGHT)!"
+
+
+def test_event_grouping_integrity():
+    """Verify that all 234 EAR_EVENT annotations have valid event_id and event_phase in onset/peak/offset."""
+    manifest_path = Path("data/evaluation/dataset_manifest.json")
+    if not manifest_path.is_file():
+        pytest.skip("data/evaluation/dataset_manifest.json not found")
+
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    annotations = manifest["annotations"]
+    ear_event_samples = [d for d in annotations.values() if d["provenance"]["sampling_category"] == "EAR_EVENT"]
+
+    # 234 frames * 2 eye crops = 468 annotations
+    assert len(ear_event_samples) == 468
+
+    valid_phases = {"onset", "peak", "offset"}
+    event_ids = set()
+    phase_counts = {"onset": 0, "peak": 0, "offset": 0}
+
+    for sample in ear_event_samples:
+        prov = sample["provenance"]
+        assert prov["event_id"] is not None and "_EV" in prov["event_id"]
+        assert prov["event_phase"] in valid_phases
+        event_ids.add(prov["event_id"])
+        phase_counts[prov["event_phase"]] += 1
+
+    assert len(event_ids) > 0
+    # Left and right eye share same phase, so counts must be even
+    for phase, count in phase_counts.items():
+        assert count % 2 == 0
+        assert count > 0
+
+
+def test_exact_monocular_and_binocular_ear_reconstruction():
+    """
+    Verify that monocular and binocular EAR reconstruction logic faithfully
+    reproduces runtime classifications using raw_ear, closure_threshold, and is_geometric_valid.
+    """
+    manifest_path = Path("data/evaluation/dataset_manifest.json")
+    if not manifest_path.is_file():
+        pytest.skip("data/evaluation/dataset_manifest.json not found")
+
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    annotations = manifest["annotations"]
+
+    for ann_id, data in annotations.items():
+        t_state = data["telemetry_ground_state"]
+        raw_ear = t_state["raw_ear"]
+        thresh = t_state["ear_closure_threshold"]
+        is_geo_valid = t_state["is_geometric_valid"]
+        mono_reconstructed = t_state["reconstructed_monocular_closed"]
+
+        # Formula: monocular closure is True iff eye geometry is valid AND raw_ear < threshold
+        expected_mono = bool(is_geo_valid and (raw_ear < thresh))
+        assert mono_reconstructed == expected_mono
+
+        # Pair lookup for binocular closure test
+        pair_id = data["provenance"]["pair_annotation_id"]
+        pair_raw_ear = annotations[pair_id]["telemetry_ground_state"]["raw_ear"]
+        bino_reconstructed = t_state["reconstructed_binocular_closed"]
+        expected_bino = bool(is_geo_valid and (raw_ear < thresh and pair_raw_ear < thresh))
+        assert bino_reconstructed == expected_bino

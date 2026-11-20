@@ -153,9 +153,20 @@ class TemporalAnalyzer:
             downward_dwell_ms=0.0,
         )
 
-    def update(self, features: DriverFeatures, is_reliable: bool = True) -> TemporalMetrics:
+    def update(
+        self,
+        features: DriverFeatures,
+        is_reliable: bool = True,
+        is_ocular_viable: Optional[bool] = None,
+    ) -> TemporalMetrics:
         """
         Ingest current frame's DriverFeatures and return consolidated TemporalMetrics.
+
+        Args:
+            features: Per-frame DriverFeatures snapshot.
+            is_reliable: Legacy global reliability flag (used as fallback if is_ocular_viable is None).
+            is_ocular_viable: Explicit ocular-channel viability from SignalConfidenceEvaluator.
+                              Decouples eye-closure tracking from unrelated head-pose or mild-blur penalties.
         """
         ts_ms = features.timestamp_ms
 
@@ -198,7 +209,8 @@ class TemporalAnalyzer:
         # ------------------------------------------------------------------
         # 2. Continuous Eye Closure Tracking
         # ------------------------------------------------------------------
-        if not is_reliable:
+        ocular_channel_viable = is_reliable if is_ocular_viable is None else bool(is_ocular_viable)
+        if not ocular_channel_viable:
             is_eye_closed_val: Optional[bool] = None
             self._closure_start_ts_ms = None
             active_closure_ms = 0.0
@@ -219,9 +231,8 @@ class TemporalAnalyzer:
                 is_eye_closed_val = False
             elif ear_valid and not features.ear.is_closed and not blink_valid:
                 is_eye_closed_val = False
-            elif blink_valid and not features.blink.is_eye_closed and not ear_valid:
-                is_eye_closed_val = False
             else:
+                # Never fabricate verified-open eyes when EAR landmarks are invalid
                 is_eye_closed_val = None
 
             is_currently_closed = is_eye_closed_val is True
@@ -425,7 +436,9 @@ class TemporalAnalyzer:
         yawn_count_60s = len(self._yawns)
         yawn_count_30s = len(yawns_30s)
         active_yawn_ms = (
-            features.mar.observed_yawn_duration_ms if features.mar.is_yawn_in_progress else 0.0
+            features.mar.observed_yawn_duration_ms
+            if (features.mar.is_valid and features.mar.is_yawn_in_progress)
+            else 0.0
         )
 
         self._current_closure_duration_ms = active_closure_ms

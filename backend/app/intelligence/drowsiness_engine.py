@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from backend.app.camera.frame_quality import FrameQualityResult
+from backend.app.features.blink_detector import BlinkState
 from backend.app.features.feature_extractor import DriverFeatures
 from backend.app.intelligence.confidence import (
     ConfidenceAssessment,
@@ -19,6 +20,7 @@ from backend.app.intelligence.confidence import (
 from backend.app.intelligence.decision_engine import DecisionEngine, DecisionResult
 from backend.app.intelligence.reason_codes import DrowsinessState, ExplainableReason
 from backend.app.intelligence.temporal_analyzer import TemporalAnalyzer, TemporalMetrics
+from backend.app.vision.face_landmarker import FaceLandmarkStatus
 
 
 @dataclass(frozen=True)
@@ -36,6 +38,7 @@ class DrowsinessAssessment:
     alert_active: bool = False
     unresolved_alert_state: Optional[DrowsinessState] = None
     historical_reason: Optional[ExplainableReason] = None
+    is_alert_recovering: Optional[bool] = None
 
     @property
     def is_alert_active(self) -> bool:
@@ -77,6 +80,7 @@ class DrowsinessEngine:
         extended_closure_threshold_ms: float = 500.0,
         perclos_warning_threshold_pct: float = 15.0,
         perclos_attention_threshold_pct: float = 8.0,
+        severe_perclos_threshold_pct: float = 30.0,
         prolonged_blink_threshold_ms: float = 500.0,
         off_road_distraction_limit_ms: float = 3500.0,
         recovery_critical_ms: float = 2000.0,
@@ -93,6 +97,7 @@ class DrowsinessEngine:
             extended_closure_threshold_ms=extended_closure_threshold_ms,
             perclos_warning_threshold_pct=perclos_warning_threshold_pct,
             perclos_attention_threshold_pct=perclos_attention_threshold_pct,
+            severe_perclos_threshold_pct=severe_perclos_threshold_pct,
             prolonged_blink_threshold_ms=prolonged_blink_threshold_ms,
             off_road_distraction_limit_ms=off_road_distraction_limit_ms,
             recovery_critical_ms=recovery_critical_ms,
@@ -115,9 +120,27 @@ class DrowsinessEngine:
         confidence_res = self.confidence_evaluator.evaluate(features=features, quality=quality)
 
         # 2. Accumulate temporal observations across sliding windows
+        # Pass explicit ocular-channel viability so unrelated head-pose or mild-blur
+        # confidence penalties cannot silently suppress eye-closure tracking, while
+        # preserving resilience when blink kinematics confirms closure during a single
+        # degenerate EAR frame (and still gating off severely degraded optical frames).
+        is_optical_and_face_viable = (
+            features.has_face
+            and features.face_status in (
+                FaceLandmarkStatus.TRACKING,
+                FaceLandmarkStatus.OCCLUDED_OR_MARGINAL,
+            )
+            and (quality is None or quality.is_viable_for_inference)
+        )
+        ocular_tracking_viable = confidence_res.ocular_viable or (
+            is_optical_and_face_viable
+            and not features.blink.sampling_gap_detected
+            and features.blink.state != BlinkState.UNCERTAIN_GAP
+        )
         temporal_res = self.temporal_analyzer.update(
             features=features,
             is_reliable=confidence_res.is_reliable,
+            is_ocular_viable=ocular_tracking_viable,
         )
 
         # 3. Arbitrate alert state through deterministic decision engine
@@ -137,6 +160,7 @@ class DrowsinessEngine:
             alert_active=decision_res.alert_active,
             unresolved_alert_state=decision_res.unresolved_alert_state,
             historical_reason=decision_res.historical_reason,
+            is_alert_recovering=decision_res.is_alert_recovering,
         )
 
     def reset(self) -> None:

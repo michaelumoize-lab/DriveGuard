@@ -1,7 +1,11 @@
 "use client";
 
 import React from "react";
-import { FrameTelemetry } from "@/types/telemetry";
+import {
+  FrameTelemetry,
+  explainReasonCode,
+  resolveEffectiveDisplayState,
+} from "@/types/telemetry";
 import { CameraState } from "@/types/camera";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -105,18 +109,34 @@ export function DriverCockpitHUD({
   }
 
   const { state, risk_score, pose_zone, eye_metrics, comparison, reason_codes } = telemetry;
+  const effectiveState = resolveEffectiveDisplayState(telemetry, {
+    isConnected: isCameraActive,
+    isStale,
+  });
+  const isTrackingValid =
+    effectiveState !== "STALE" && effectiveState !== "MONITORING_UNAVAILABLE";
   const riskPct = Math.round(risk_score * 100);
   const alertnessPct = Math.max(0, Math.min(100, 100 - riskPct));
 
-  // Visual status banner styling
+  // Visual status banner styling (never renders green NORMAL when stale or unavailable)
   const getBannerState = () => {
-    switch (state) {
+    switch (effectiveState) {
+      case "STALE":
+        return {
+          pillBg: "bg-purple-900/90 text-purple-200 border border-purple-400/70 border-dashed",
+          icon: <Radio className="size-5 text-purple-300" />,
+          title: "TELEMETRY STALE",
+          sublabel: "No fresh frames from backend worker — do not rely on last reading",
+          cardBorder: "border-purple-500/40 border-dashed",
+          alertnessColor: "text-muted-foreground",
+          progressColor: "bg-purple-400",
+        };
       case "CRITICAL":
         return {
           pillBg: "bg-rose-600 text-white shadow-lg shadow-rose-600/30",
           icon: <Flame className="size-5 animate-pulse" />,
           title: "CRITICAL FATIGUE WARNING",
-          sublabel: "Pull over immediately — severe eye closure detected",
+          sublabel: "Pull over immediately — severe drowsiness indicator detected",
           cardBorder: "border-rose-500/50 ring-2 ring-rose-500/20",
           alertnessColor: "text-rose-500",
           progressColor: "bg-rose-500",
@@ -125,18 +145,28 @@ export function DriverCockpitHUD({
         return {
           pillBg: "bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20",
           icon: <AlertTriangle className="size-5" />,
-          title: "FATIGUE ADVISORY",
+          title: "FATIGUE WARNING",
           sublabel: "Drowsiness pattern detected — rest recommended",
           cardBorder: "border-amber-500/40 ring-1 ring-amber-500/20",
           alertnessColor: "text-amber-500",
           progressColor: "bg-amber-500",
         };
+      case "ATTENTION":
+        return {
+          pillBg: "bg-amber-500/20 text-amber-500 border border-amber-500/40",
+          icon: <AlertTriangle className="size-5" />,
+          title: "EARLY ATTENTION ADVISORY",
+          sublabel: "Early fatigue or gaze cue detected — stay focused",
+          cardBorder: "border-amber-500/30",
+          alertnessColor: "text-amber-500",
+          progressColor: "bg-amber-400",
+        };
       case "MONITORING_UNAVAILABLE":
         return {
           pillBg: "bg-slate-900 text-amber-300 border border-amber-400/80 border-dashed",
           icon: <EyeOff className="size-5 text-amber-400" />,
-          title: "FACE TRACKING UNAVAILABLE",
-          sublabel: "Face obstructed or out of camera frame",
+          title: "MONITORING UNAVAILABLE",
+          sublabel: "Face lost, occluded, or sensor quality insufficient",
           cardBorder: "border-amber-500/40 border-dashed",
           alertnessColor: "text-muted-foreground",
           progressColor: "bg-muted-foreground",
@@ -146,8 +176,8 @@ export function DriverCockpitHUD({
         return {
           pillBg: "bg-emerald-600 text-white shadow-md shadow-emerald-600/20",
           icon: <ShieldCheck className="size-5" />,
-          title: "ATTENTIVE & ROAD FOCUSED",
-          sublabel: "Eyelid dynamics and head posture within safe baseline",
+          title: telemetry.is_recovering ? "ATTENTIVE (RECOVERING)" : "ATTENTIVE & ROAD FOCUSED",
+          sublabel: "Authoritative DrowsinessEngine signals within baseline",
           cardBorder: "border-border",
           alertnessColor: "text-emerald-500",
           progressColor: "bg-emerald-500",
@@ -157,44 +187,33 @@ export function DriverCockpitHUD({
 
   const banner = getBannerState();
 
-  // Natural human-readable driver advisory
+  // Natural human-readable driver advisory derived from authoritative backend ReasonCodes
   const getDriverAdvisory = () => {
-    if (state === "CRITICAL") {
-      if (
-        reason_codes?.includes("MICRO_SLEEP") ||
-        reason_codes?.includes("MICROSLEEP") ||
-        reason_codes?.includes("PROLONGED_EYE_CLOSURE_MICROSLEEP")
-      ) {
-        return "Critical hazard: Microsleep episode detected! Sounding audio warning. Bring vehicle to a safe stop.";
-      }
-      if (reason_codes?.includes("COGNITIVE_TUNNELING_BLANK_STARE")) {
-        return "Critical: Motionless forward blank stare detected (>= 5.0s). Shift focus and check cabin mirrors.";
-      }
-      return "Prolonged eyelid closure detected. Immediate rest required before continuing to drive.";
+    if (effectiveState === "STALE") {
+      return "Live telemetry from the Python AI worker has stalled (>3.5s). Check connection or retry worker.";
+    }
+    if (effectiveState === "MONITORING_UNAVAILABLE") {
+      return "Align your face with the camera viewport. Avoid glare or obstructing the lens so tracking can resume.";
     }
 
-    if (state === "WARNING") {
-      if (reason_codes?.includes("VISUAL_DISTRACTION_OFF_ROAD_DWELL")) {
-        return "Visual distraction: Eyes off road exceeded 3.0s (Euro NCAP limit). Return focus to forward roadway.";
-      }
-      if (reason_codes?.includes("ELEVATED_BLINK_AMPLITUDE_VELOCITY_RATIO")) {
-        return "Sluggish eyelid reopening dynamics detected (Optalert AVR). Onset of pre-drowsiness.";
-      }
-      if (reason_codes?.includes("INVOLUNTARY_BROW_STRAIN_AU4")) {
-        return "Facial muscle strain detected: fighting drooping eyelids. Schedule a rest break.";
-      }
-      if (reason_codes?.includes("HIGH_PERCLOS") || reason_codes?.includes("INCREASED_PERCLOS")) {
-        return "Cumulative eye closure rate is elevated. Your alertness is declining — plan a rest stop.";
-      }
-      return "Drowsiness indicators detected. Cabin siren chime armed.";
+    const activeReasons = (reason_codes ?? []).filter(
+      (c) => c !== "ALERT_NORMAL" && c !== "MIRROR_CHECK_CONTEXT" && c !== "DASHBOARD_CHECK_CONTEXT"
+    );
+
+    if (activeReasons.length > 0) {
+      const top = explainReasonCode(activeReasons[0]);
+      return `${top.title}: ${top.description}`;
     }
 
-    if (state === "MONITORING_UNAVAILABLE") {
-      return "Align your face with the camera viewport. Avoid bright direct glare or obstructing the lens.";
+    if (
+      comparison?.is_mirror_check_suppressed ||
+      reason_codes?.includes("MIRROR_CHECK_CONTEXT")
+    ) {
+      return "Natural mirror check recognized. False drowsiness alert suppressed.";
     }
 
-    if (comparison?.is_mirror_check_suppressed) {
-      return "Natural mirror check recognized (under 3.0s). False alarm suppressed.";
+    if (telemetry.is_recovering) {
+      return "Driver alertness recovering steadily toward baseline. Stay focused on the road.";
     }
 
     return "Driver awareness nominal. Maintain safe following distance and speed.";
@@ -210,6 +229,9 @@ export function DriverCockpitHUD({
         return { label: "Right Side Mirror", hint: "Side Check (Safe)", color: "text-amber-400" };
       case "DASHBOARD":
         return { label: "Dashboard Cluster", hint: "Speed/Instrument Check", color: "text-purple-400" };
+      case "OFF_ROAD":
+      case "OUT_OF_BOUNDS":
+        return { label: "Off-Road Gaze", hint: "Eyes Off Road", color: "text-rose-400" };
       case "UNKNOWN":
         return { label: "Tracking Unavailable", hint: "Face tracking lost", color: "text-muted-foreground" };
       default:
@@ -244,13 +266,13 @@ export function DriverCockpitHUD({
                 Driver Alertness
               </span>
               <span className={`text-base font-extrabold font-mono tabular-nums ${banner.alertnessColor}`}>
-                {alertnessPct}%
+                {isTrackingValid ? `${alertnessPct}%` : "N/A"}
               </span>
             </div>
             <div className="w-16 h-2 bg-muted/80 rounded-full overflow-hidden">
               <div
                 className={`h-full transition-all duration-300 rounded-full ${banner.progressColor}`}
-                style={{ width: `${alertnessPct}%` }}
+                style={{ width: `${isTrackingValid ? alertnessPct : 0}%` }}
               />
             </div>
           </div>

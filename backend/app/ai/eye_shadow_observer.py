@@ -28,6 +28,7 @@ Architecture & Invariants:
 
 from __future__ import annotations
 
+from collections import deque
 import dataclasses
 from dataclasses import dataclass
 import logging
@@ -35,7 +36,7 @@ from pathlib import Path
 import queue
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -206,8 +207,8 @@ class EyeCNNShadowWorker:
         self._queries_stale_count: int = 0
         self._queries_none_count: int = 0
 
-        # Completed inference timestamps for inter-inference interval tracking
-        self._completed_inference_timestamps_ms: List[float] = []
+        # Completed inference timestamps for inter-inference interval tracking (bounded)
+        self._completed_inference_timestamps_ms: Deque[float] = deque(maxlen=600)
 
         self._initialize_model()
 
@@ -282,13 +283,49 @@ class EyeCNNShadowWorker:
         if not self.is_available or not self.is_running:
             return False
 
-        self._jobs_submitted_count += 1
+        with self._lock:
+            self._jobs_submitted_count += 1
 
-        # Make a shallow frame copy to isolate worker from any downstream in-place landmark rendering
+        # Slice a tight padded ROI covering both eyes instead of copying the full 1280x720 frame
+        roi_bgr = frame_bgr
+        roi_landmarks = landmarks_pixel_xyz
+        try:
+            h, w = frame_bgr.shape[:2]
+            all_eye_idx = list(LEFT_EYE_INDICES) + list(RIGHT_EYE_INDICES)
+            if (
+                isinstance(landmarks_pixel_xyz, np.ndarray)
+                and landmarks_pixel_xyz.ndim >= 2
+                and len(landmarks_pixel_xyz) > max(all_eye_idx)
+            ):
+                eye_pts = landmarks_pixel_xyz[all_eye_idx, :2]
+                if np.all(np.isfinite(eye_pts)):
+                    # Pad generously (>= 1.5x eye span) so extract_eye_crop_with_quality sees identical pixels
+                    min_x, min_y = np.min(eye_pts, axis=0)
+                    max_x, max_y = np.max(eye_pts, axis=0)
+                    pad = max(64.0, 0.75 * max(float(max_x - min_x), float(max_y - min_y)))
+                    rx1 = max(0, int(np.floor(min_x - pad)))
+                    ry1 = max(0, int(np.floor(min_y - pad)))
+                    rx2 = min(w, int(np.ceil(max_x + pad)))
+                    ry2 = min(h, int(np.ceil(max_y + pad)))
+                    if (rx2 - rx1) >= 16 and (ry2 - ry1) >= 16:
+                        roi_bgr = frame_bgr[ry1:ry2, rx1:rx2].copy()
+                        roi_landmarks = landmarks_pixel_xyz.copy()
+                        roi_landmarks[:, 0] -= float(rx1)
+                        roi_landmarks[:, 1] -= float(ry1)
+                    else:
+                        roi_bgr = frame_bgr.copy()
+                else:
+                    roi_bgr = frame_bgr.copy()
+            else:
+                roi_bgr = frame_bgr.copy()
+        except Exception:
+            roi_bgr = frame_bgr.copy()
+            roi_landmarks = landmarks_pixel_xyz
+
         job = {
             "type": "FRAME",
-            "frame_bgr": frame_bgr.copy(),
-            "landmarks_pixel_xyz": landmarks_pixel_xyz,
+            "frame_bgr": roi_bgr,
+            "landmarks_pixel_xyz": roi_landmarks,
             "timestamp_ms": timestamp_ms,
             "frame_id": frame_id,
             "geom_left_closed": geom_left_closed,
@@ -301,7 +338,8 @@ class EyeCNNShadowWorker:
         # Drop oldest pending job if queue is occupied
         try:
             self._queue.get_nowait()
-            self._dropped_jobs_count += 1
+            with self._lock:
+                self._dropped_jobs_count += 1
         except queue.Empty:
             pass
 
@@ -309,7 +347,8 @@ class EyeCNNShadowWorker:
             self._queue.put_nowait(job)
             return True
         except queue.Full:
-            self._dropped_jobs_count += 1
+            with self._lock:
+                self._dropped_jobs_count += 1
             return False
 
     def submit_crops(
@@ -330,7 +369,8 @@ class EyeCNNShadowWorker:
         if not self.is_available or not self.is_running:
             return False
 
-        self._jobs_submitted_count += 1
+        with self._lock:
+            self._jobs_submitted_count += 1
 
         job = {
             "type": "CROPS",
@@ -347,7 +387,8 @@ class EyeCNNShadowWorker:
 
         try:
             self._queue.get_nowait()
-            self._dropped_jobs_count += 1
+            with self._lock:
+                self._dropped_jobs_count += 1
         except queue.Empty:
             pass
 
@@ -355,7 +396,8 @@ class EyeCNNShadowWorker:
             self._queue.put_nowait(job)
             return True
         except queue.Full:
-            self._dropped_jobs_count += 1
+            with self._lock:
+                self._dropped_jobs_count += 1
             return False
 
     def get_latest_observation(
@@ -368,25 +410,25 @@ class EyeCNNShadowWorker:
         if older than policy.max_staleness_ms (200 ms), marks is_stale=True.
         Guarantees consistent monotonic time calculations.
         """
-        self._queries_total_count += 1
         with self._lock:
+            self._queries_total_count += 1
             telemetry = self._latest_telemetry
 
-        if telemetry is None:
-            self._queries_none_count += 1
-            return None
+            if telemetry is None:
+                self._queries_none_count += 1
+                return None
 
-        age_ms = max(0.0, current_timestamp_ms - telemetry.capture_timestamp_ms)
-        if age_ms > self.policy.max_staleness_ms:
-            self._queries_stale_count += 1
-            return dataclasses.replace(
-                telemetry,
-                is_stale=True,
-                status_label="STALE",
-            )
+            age_ms = max(0.0, current_timestamp_ms - telemetry.capture_timestamp_ms)
+            if age_ms > self.policy.max_staleness_ms:
+                self._queries_stale_count += 1
+                return dataclasses.replace(
+                    telemetry,
+                    is_stale=True,
+                    status_label="STALE",
+                )
 
-        self._queries_fresh_count += 1
-        return telemetry
+            self._queries_fresh_count += 1
+            return telemetry
 
     def _worker_loop(self) -> None:
         """Main loop executed by the background worker thread."""
@@ -404,7 +446,8 @@ class EyeCNNShadowWorker:
             try:
                 self._process_job(job)
             except Exception as exc:
-                self._error_count += 1
+                with self._lock:
+                    self._error_count += 1
                 logger.error("Unhandled exception in EyeCNNShadowWorker loop: %s", exc, exc_info=True)
 
             if self._stop_event.is_set() and self._queue.empty():
@@ -412,7 +455,8 @@ class EyeCNNShadowWorker:
 
     def _process_job(self, job: dict) -> None:
         """Process a single frame or crop job through MobileNetV3 inference."""
-        self._jobs_processed_count += 1
+        with self._lock:
+            self._jobs_processed_count += 1
         t_capture_ms = job["timestamp_ms"]
         frame_id = job["frame_id"]
         geom_left_closed = job["geom_left_closed"]
@@ -636,30 +680,30 @@ class EyeCNNShadowWorker:
                 self._completed_inference_timestamps_ms[i] - self._completed_inference_timestamps_ms[i - 1]
                 for i in range(1, len(self._completed_inference_timestamps_ms))
             ]
-        return {
-            # Invocation Funnel
-            "evaluations_total": self.policy.evaluations_count,
-            "eligible_opportunities": self.policy.accepted_count + self.policy.rejections_rate_limited,
-            "evaluations_accepted": self.policy.accepted_count,
-            "rejections_disabled": self.policy.rejections_disabled,
-            "rejections_no_face": self.policy.rejections_no_face,
-            "rejections_ear_invalid": self.policy.rejections_ear_invalid,
-            "rejections_rate_limited": self.policy.rejections_rate_limited,
-            # Worker Funnel
-            "jobs_submitted": self._jobs_submitted_count,
-            "jobs_dropped_queue": self._dropped_jobs_count,
-            "jobs_processed": self._jobs_processed_count,
-            "crop_quality_rejections": self._crop_quality_rejections_count,
-            "inferences_successful": self._total_inferences_count,
-            "inference_errors": self._error_count,
-            # Staleness Query Metrics
-            "queries_total": self._queries_total_count,
-            "queries_fresh": self._queries_fresh_count,
-            "queries_stale": self._queries_stale_count,
-            "queries_none": self._queries_none_count,
-            # Inter-inference intervals
-            "inter_inference_intervals_ms": intervals,
-        }
+            return {
+                # Invocation Funnel
+                "evaluations_total": self.policy.evaluations_count,
+                "eligible_opportunities": self.policy.accepted_count + self.policy.rejections_rate_limited,
+                "evaluations_accepted": self.policy.accepted_count,
+                "rejections_disabled": self.policy.rejections_disabled,
+                "rejections_no_face": self.policy.rejections_no_face,
+                "rejections_ear_invalid": self.policy.rejections_ear_invalid,
+                "rejections_rate_limited": self.policy.rejections_rate_limited,
+                # Worker Funnel
+                "jobs_submitted": self._jobs_submitted_count,
+                "jobs_dropped_queue": self._dropped_jobs_count,
+                "jobs_processed": self._jobs_processed_count,
+                "crop_quality_rejections": self._crop_quality_rejections_count,
+                "inferences_successful": self._total_inferences_count,
+                "inference_errors": self._error_count,
+                # Staleness Query Metrics
+                "queries_total": self._queries_total_count,
+                "queries_fresh": self._queries_fresh_count,
+                "queries_stale": self._queries_stale_count,
+                "queries_none": self._queries_none_count,
+                # Inter-inference intervals
+                "inter_inference_intervals_ms": intervals,
+            }
 
     @staticmethod
     def _derive_binocular_state(

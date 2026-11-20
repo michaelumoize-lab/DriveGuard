@@ -25,7 +25,6 @@ import cv2
 import numpy as np
 from livekit import api, rtc
 
-from backend.app.ai.cascade_classifier import ExperimentMode
 from backend.app.ai.pipeline import SessionAIEngine
 from backend.app.core.config import settings
 from backend.app.services.profile_store import profile_store
@@ -274,12 +273,8 @@ class LiveKitAIWorkerSession:
                 session_id=self.room_name,
                 driver_id=self.driver_id,
                 experiment_mode=self.experiment_mode,
+                owner_id=self.owner_id,
             )
-
-            # Auto-activate calibration mode if room is designated for calibration
-            if self.room_name.startswith("cal_"):
-                cal_dto = self.engine.start_calibration(four_zone_mode=False, zone_duration_sec=5.0)
-                print(f"[LiveKit Worker] Auto-activated calibration for room '{self.room_name}' (Zone 1: {cal_dto.current_zone})")
 
             # 2. Mint LiveKit JWT for the AI Worker
             worker_identity = f"ai_worker_{self.room_name}"
@@ -544,7 +539,7 @@ class LiveKitAIWorkerSession:
                 "ear": 0.0,
                 "ear_raw": 0.0,
                 "perclos": 0.0,
-                "pose_zone": "OUT_OF_BOUNDS",
+                "pose_zone": "UNKNOWN",
                 "reasons": [reason],
             },
         }
@@ -702,8 +697,12 @@ class LiveKitAIWorkerSession:
                                 "ear": telemetry_dto.eye_metrics.ear_normalized,
                                 "ear_raw": telemetry_dto.eye_metrics.ear_raw,
                                 "perclos": telemetry_dto.eye_metrics.perclos_pct,
+                                "mar_yawn": telemetry_dto.eye_metrics.mar_yawn,
                                 "pose_zone": telemetry_dto.pose_zone.value,
                                 "reasons": telemetry_dto.reason_codes,
+                                "drowsiness_state": telemetry_dto.drowsiness_state,
+                                "alert_state": telemetry_dto.alert_state,
+                                "is_recovering": telemetry_dto.is_recovering,
                             },
                         }
                         self._last_state = current_state_str

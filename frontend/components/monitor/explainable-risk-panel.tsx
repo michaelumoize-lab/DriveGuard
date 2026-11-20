@@ -1,33 +1,44 @@
 "use client";
 
 import React from "react";
-import { FrameTelemetry, LatencyDiagnostics, explainReasonCode } from "@/types/telemetry";
+import {
+  FrameTelemetry,
+  LatencyDiagnostics,
+  explainReasonCode,
+  resolveEffectiveDisplayState,
+} from "@/types/telemetry";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { ShieldCheck, AlertTriangle, Flame, Clock, Cpu, Info } from "lucide-react";
+import { ShieldCheck, AlertTriangle, Flame, Clock, Cpu, Info, EyeOff, WifiOff } from "lucide-react";
 
 interface ExplainableRiskPanelProps {
   telemetry: FrameTelemetry | null;
   latencyDiagnostics: LatencyDiagnostics | null;
+  isStale?: boolean;
 }
 
 export const ExplainableRiskPanel = React.memo(function ExplainableRiskPanel({
   telemetry,
   latencyDiagnostics,
+  isStale = false,
 }: ExplainableRiskPanelProps) {
   const reasons = telemetry?.reason_codes ?? [];
   const explained = reasons.map(explainReasonCode);
-  const state = telemetry?.state ?? "NORMAL";
+  const effectiveState = resolveEffectiveDisplayState(telemetry, {
+    isConnected: Boolean(telemetry),
+    isStale,
+  });
 
-  // Separate primary fatigue/safety reasons from passive observation/quality notes when state is NORMAL
+  // Filter out passive ALERT_NORMAL when surfacing active risk indicators
+  const nonNormalReasons = explained.filter((r) => r.code !== "ALERT_NORMAL");
   const primaryReasons =
-    state === "NORMAL"
-      ? explained.filter((r) => r.subsystem !== "QUALITY" && r.severity === "CRITICAL")
-      : explained.filter((r) => r.subsystem !== "QUALITY");
+    effectiveState === "NORMAL"
+      ? nonNormalReasons.filter((r) => r.subsystem !== "QUALITY" && r.severity === "CRITICAL")
+      : nonNormalReasons.filter((r) => r.subsystem !== "QUALITY");
   const qualityNotes =
-    state === "NORMAL"
-      ? explained.filter((r) => !primaryReasons.includes(r))
-      : explained.filter((r) => r.subsystem === "QUALITY");
+    effectiveState === "NORMAL"
+      ? nonNormalReasons.filter((r) => !primaryReasons.includes(r))
+      : nonNormalReasons.filter((r) => r.subsystem === "QUALITY");
 
   const queueMs =
     latencyDiagnostics?.queue_latency_ms ?? telemetry?.timing?.queue_latency_ms ?? 0;
@@ -36,35 +47,88 @@ export const ExplainableRiskPanel = React.memo(function ExplainableRiskPanel({
     telemetry?.timing?.infer_duration_ms ??
     telemetry?.inference_latency_ms ??
     0;
-  const cnnMs = telemetry?.cascade?.cnn_latency_ms ?? 0;
   const rttMs =
     latencyDiagnostics?.datachannel_rtt_ms ?? telemetry?.network_roundtrip_ms ?? 0;
+  const signalConfidence =
+    telemetry && typeof telemetry.cascade?.geom_reliability === "number"
+      ? `${Math.round(telemetry.cascade.geom_reliability * 100)}%`
+      : "—";
 
   return (
     <Card className="border-border/80 bg-card/60">
-      <CardHeader className="py-3 px-4 border-b border-border/60 flex flex-row items-center justify-between space-y-0">
+      <CardHeader className="py-3 px-4 border-b border-border/60 flex flex-row items-center justify-between gap-2 space-y-0 flex-wrap">
         <CardTitle className="text-xs font-mono uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
           <Cpu className="size-3.5 text-primary" />
           Explainable Risk Rationale &amp; Stage Timings
         </CardTitle>
-        <Badge variant="outline" className="text-[10px] font-mono tabular-nums">
-          Risk: {telemetry ? `${(telemetry.risk_score * 100).toFixed(0)}%` : "—"}
-        </Badge>
+        <div className="flex items-center gap-1.5">
+          {telemetry?.drowsiness_state && (
+            <Badge variant="secondary" className="text-[10px] font-mono">
+              {telemetry.drowsiness_state}
+            </Badge>
+          )}
+          <Badge variant="outline" className="text-[10px] font-mono tabular-nums">
+            Risk:{" "}
+            {telemetry && effectiveState !== "STALE" && effectiveState !== "MONITORING_UNAVAILABLE"
+              ? `${(telemetry.risk_score * 100).toFixed(0)}%`
+              : "—"}
+          </Badge>
+        </div>
       </CardHeader>
       <CardContent className="p-3.5 space-y-3">
-        {/* Active Explainable Reasons */}
+        {/* Active Explainable Reasons — never show green nominal when stale or unavailable */}
         {!telemetry ? (
           <div className="text-xs text-muted-foreground py-2">
-            Awaiting live telemetry stream to evaluate physiological risk factors.
+            Awaiting live telemetry stream from authoritative DrowsinessEngine.
+          </div>
+        ) : effectiveState === "STALE" ? (
+          <div className="p-2.5 rounded-lg border border-purple-500/40 bg-purple-500/10 flex items-center gap-2.5 text-xs">
+            <WifiOff className="size-4 text-purple-400 shrink-0" />
+            <div>
+              <div className="font-semibold text-foreground">Telemetry Stream Stale</div>
+              <div className="text-muted-foreground text-[11px]">
+                No recent frame processed by backend worker. Risk rationale paused until stream recovers.
+              </div>
+            </div>
+          </div>
+        ) : effectiveState === "MONITORING_UNAVAILABLE" ? (
+          <div className="space-y-2">
+            <div className="p-2.5 rounded-lg border border-amber-500/40 bg-amber-500/10 flex items-center gap-2.5 text-xs">
+              <EyeOff className="size-4 text-amber-500 shrink-0" />
+              <div>
+                <div className="font-semibold text-foreground">Monitoring Unavailable</div>
+                <div className="text-muted-foreground text-[11px]">
+                  Driver face not reliably tracked or sensor quality degraded. Drowsiness evaluation paused.
+                </div>
+              </div>
+            </div>
+            {qualityNotes.length > 0 && (
+              <div className="px-2.5 py-1.5 rounded-lg bg-muted/40 border border-border/60 flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
+                <Info className="size-3.5 text-amber-500 shrink-0" />
+                {qualityNotes.map((note) => (
+                  <span
+                    key={note.code}
+                    title={note.description}
+                    className="px-1.5 py-0.5 rounded bg-background border border-border text-[10px] font-mono"
+                  >
+                    {note.title}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         ) : primaryReasons.length === 0 ? (
           <div className="space-y-2">
             <div className="p-2.5 rounded-lg border border-emerald-500/30 bg-emerald-500/5 flex items-center gap-2.5 text-xs">
               <ShieldCheck className="size-4 text-emerald-500 shrink-0" />
               <div>
-                <div className="font-semibold text-foreground">All Physiological Signals Nominal</div>
+                <div className="font-semibold text-foreground">
+                  {telemetry.is_recovering
+                    ? "Physiological Signals Recovering"
+                    : "All Physiological Signals Nominal"}
+                </div>
                 <div className="text-muted-foreground text-[11px]">
-                  EAR, blink reopening velocity (RCR), 60s PERCLOS, and head pitch are within safe bounds.
+                  EAR, blink dynamics, 60s PERCLOS, MAR yawn tracking, and head pose are within safe bounds.
                 </div>
               </div>
             </div>
@@ -140,7 +204,7 @@ export const ExplainableRiskPanel = React.memo(function ExplainableRiskPanel({
         <div className="pt-2 border-t border-border/60">
           <div className="flex items-center gap-1.5 text-[11px] font-mono text-muted-foreground mb-2">
             <Clock className="size-3 text-primary" />
-            <span>PIPELINE STAGE INSTRUMENTATION (MS)</span>
+            <span>PIPELINE STAGE INSTRUMENTATION</span>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono tabular-nums">
             <div className="p-2 rounded-lg bg-muted/40 border border-border/60">
@@ -148,14 +212,12 @@ export const ExplainableRiskPanel = React.memo(function ExplainableRiskPanel({
               <span className="font-semibold text-foreground">{queueMs.toFixed(1)} ms</span>
             </div>
             <div className="p-2 rounded-lg bg-muted/40 border border-border/60">
-              <span className="text-[10px] text-muted-foreground block">Total AI Infer</span>
+              <span className="text-[10px] text-muted-foreground block">Engine Infer</span>
               <span className="font-semibold text-foreground">{inferMs.toFixed(1)} ms</span>
             </div>
             <div className="p-2 rounded-lg bg-muted/40 border border-border/60">
-              <span className="text-[10px] text-muted-foreground block">CNN Stage 2</span>
-              <span className="font-semibold text-foreground">
-                {telemetry?.cascade?.cnn_triggered ? `${cnnMs.toFixed(1)} ms` : "Bypassed"}
-              </span>
+              <span className="text-[10px] text-muted-foreground block">Signal Conf.</span>
+              <span className="font-semibold text-foreground">{signalConfidence}</span>
             </div>
             <div className="p-2 rounded-lg bg-muted/40 border border-border/60">
               <span className="text-[10px] text-muted-foreground block">WebRTC RTT</span>

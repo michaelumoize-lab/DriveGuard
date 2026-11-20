@@ -59,6 +59,8 @@ class TestSessionIsolation(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await session_manager.terminate_session(self.session_id_a)
         await session_manager.terminate_session(self.session_id_b)
+        from backend.app.services.profile_store import profile_store
+        profile_store.delete_profile("driver_cal_a")
 
     async def test_session_epoch_and_boot_id_scoping(self):
         """worker_boot_id must be process-scoped; session_epoch must be unique per session lifecycle."""

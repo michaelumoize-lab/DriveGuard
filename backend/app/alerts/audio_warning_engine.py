@@ -18,6 +18,7 @@ Provides:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import importlib.util
 import logging
 import os
 from pathlib import Path
@@ -34,6 +35,39 @@ from backend.app.alerts.alert_state import AlertState
 logger = logging.getLogger("driveguard.audio_engine")
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+DESKTOP_AUDIO_INSTALL_HINT = (
+    "Optional desktop audio dependency 'sounddevice' is not installed. "
+    "Install it for local desktop speakers via `pip install -r requirements-desktop-audio.txt` "
+    "(browser deployments use Web Audio API and do not require sounddevice)."
+)
+
+
+def check_sounddevice_availability() -> Tuple[bool, Optional[str]]:
+    """Probe whether optional `sounddevice` package is importable for local desktop audio."""
+    try:
+        spec = importlib.util.find_spec("sounddevice")
+    except (ImportError, ValueError):
+        spec = None
+    if spec is None:
+        return False, DESKTOP_AUDIO_INSTALL_HINT
+    try:
+        import sounddevice  # noqa: F401
+        return True, None
+    except Exception as exc:
+        return False, f"Optional desktop audio backend 'sounddevice' unavailable: {exc}"
+
+
+class NullAudioBackend:
+    """Graceful no-op audio backend used in headless/server mode or when sounddevice is absent."""
+
+    def play_wav(self, file_path: Path, interrupt_check: Optional[Callable[[], bool]] = None) -> bool:
+        return False
+
+    def stop(self) -> None:
+        return None
+
+    def is_playing(self) -> bool:
+        return False
 
 
 class AudioBackend(Protocol):
@@ -200,7 +234,21 @@ class AudioWarningEngine:
         enabled_by_default: bool = True,
     ) -> None:
         self.assets_dir = assets_dir or ASSETS_DIR
-        self.backend = backend or SoundDeviceAudioBackend()
+        self.audio_available: bool = True
+        self.audio_unavailable_reason: Optional[str] = None
+
+        if backend is not None:
+            self.backend: AudioBackend = backend
+        else:
+            is_avail, reason = check_sounddevice_availability()
+            if is_avail:
+                self.backend = SoundDeviceAudioBackend()
+            else:
+                self.backend = NullAudioBackend()
+                self.audio_available = False
+                self.audio_unavailable_reason = reason
+                logger.warning("Desktop audio disabled (headless fallback active): %s", reason)
+
         self._enabled = enabled_by_default
 
         self._queue: queue.PriorityQueue[AudioQueueItem] = queue.PriorityQueue()
@@ -224,6 +272,15 @@ class AudioWarningEngine:
     def is_enabled(self) -> bool:
         with self._lock:
             return self._enabled
+
+    def get_audio_status(self) -> Dict[str, Any]:
+        """Return explicit diagnostic status of desktop audio playback availability."""
+        return {
+            "enabled": self.is_enabled,
+            "available": self.audio_available,
+            "backend": type(self.backend).__name__,
+            "unavailable_reason": self.audio_unavailable_reason,
+        }
 
     @property
     def is_playing(self) -> bool:

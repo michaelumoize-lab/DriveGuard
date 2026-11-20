@@ -39,6 +39,7 @@ DriveGuard — Face Landmark Tracking Module.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 import urllib.request
@@ -187,14 +188,36 @@ class DriveGuardFaceLandmarker:
 
         # Monotonic timestamp tracking (prevents MediaPipe C++ crashes)
         self._last_timestamp_ms: Optional[int] = None
+        self._duplicate_or_unordered_count: int = 0
 
         # Face-loss tracking state machine
+        self._last_face_seen_ms: Optional[int] = None
         self._last_face_seen_time: Optional[float] = None
         self._total_inferences: int = 0
         self._total_face_hits: int = 0
 
         self._resolved_model_path = self._resolve_model_path(self._config.model_path)
         self._initialize_mediapipe()
+
+    @property
+    def active_implementation(self) -> str:
+        """Human-readable name of the active MediaPipe implementation."""
+        return "MEDIAPIPE_TASKS"
+
+    def get_diagnostics(self) -> dict:
+        """Return thread-safe runtime diagnostics for session monitoring and health checks."""
+        with self._lock:
+            return {
+                "is_closed": self._is_closed,
+                "running_mode": "VIDEO",
+                "use_tasks_api": True,
+                "active_implementation": self.active_implementation,
+                "last_timestamp_ms": self._last_timestamp_ms,
+                "duplicate_or_unordered_count": self._duplicate_or_unordered_count,
+                "total_inferences": self._total_inferences,
+                "total_face_hits": self._total_face_hits,
+                "model_path": str(self._resolved_model_path),
+            }
 
     @staticmethod
     def _resolve_model_path(user_path: Optional[Path]) -> Path:
@@ -292,6 +315,63 @@ class DriveGuardFaceLandmarker:
             self._resolved_model_path.name,
         )
 
+    @staticmethod
+    def _estimate_landmark_confidence(raw_landmarks: Sequence) -> float:
+        """
+        Compute a non-hardcoded landmark quality & framing confidence in [0.0, 1.0].
+
+        MediaPipe Tasks FaceLandmarker does not always populate scalar per-face presence
+        scores in Python bindings, so we combine any populated native presence scores with
+        geometric framing/scale health across 16 canonical facial anchor points.
+        """
+        if len(raw_landmarks) < 468:
+            return 0.0
+
+        anchor_indices = (1, 6, 10, 13, 14, 33, 61, 133, 145, 152, 159, 263, 291, 362, 374, 386)
+        bounds_sum = 0.0
+        native_presences: List[float] = []
+
+        for idx in anchor_indices:
+            lm = raw_landmarks[idx]
+            x = float(lm.x)
+            y = float(lm.y)
+            if not (math.isfinite(x) and math.isfinite(y)):
+                continue
+            if 0.02 <= x <= 0.98 and 0.02 <= y <= 0.98:
+                bounds_sum += 1.0
+            elif 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0:
+                bounds_sum += 0.75
+
+            p = getattr(lm, "presence", None)
+            if isinstance(p, (int, float)) and not isinstance(p, bool) and math.isfinite(p) and 0.0 < float(p) <= 1.0:
+                native_presences.append(float(p))
+
+        bounds_score = bounds_sum / float(len(anchor_indices))
+
+        # Geometric scale checks (interocular span and vertical face height)
+        lm_l = raw_landmarks[33]
+        lm_r = raw_landmarks[263]
+        lm_top = raw_landmarks[10]
+        lm_bot = raw_landmarks[152]
+        if not all(
+            math.isfinite(v)
+            for v in (lm_l.x, lm_l.y, lm_r.x, lm_r.y, lm_top.y, lm_bot.y)
+        ):
+            return 0.0
+
+        iod = math.hypot(float(lm_r.x) - float(lm_l.x), float(lm_r.y) - float(lm_l.y))
+        span_y = abs(float(lm_bot.y) - float(lm_top.y))
+        scale_x = min(1.0, iod / 0.05)
+        scale_y = min(1.0, span_y / 0.08)
+        scale_score = min(scale_x, scale_y)
+
+        native_factor = (
+            (sum(native_presences) / float(len(native_presences)))
+            if len(native_presences) == len(anchor_indices)
+            else 1.0
+        )
+        return float(np.clip(bounds_score * scale_score * native_factor, 0.0, 1.0))
+
     def detect(self, input_data: Union[FramePacket, np.ndarray], timestamp_ms: Optional[int] = None) -> FaceLandmarkResult:
         """
         Execute facial landmark localization on a frame.
@@ -336,6 +416,7 @@ class DriveGuardFaceLandmarker:
         with self._lock:
             # Enforce strict timestamp monotonicity required by MediaPipe VIDEO mode
             if self._last_timestamp_ms is not None and inferred_ms <= self._last_timestamp_ms:
+                self._duplicate_or_unordered_count += 1
                 inferred_ms = self._last_timestamp_ms + 1
             self._last_timestamp_ms = inferred_ms
 
@@ -368,11 +449,12 @@ class DriveGuardFaceLandmarker:
                 landmarks_tuple = tuple(
                     NormalizedLandmark(x=lm.x, y=lm.y, z=lm.z) for lm in raw_landmarks
                 )
+                self._last_face_seen_ms = inferred_ms
                 self._last_face_seen_time = now_sec
                 self._total_face_hits += 1
 
-                # Extract confidence if available
-                confidence = 1.0
+                # Derive landmark quality & framing confidence (never hardcoded 1.0)
+                confidence = self._estimate_landmark_confidence(raw_landmarks)
 
                 if confidence < self._config.min_face_presence_confidence:
                     status = FaceLandmarkStatus.OCCLUDED_OR_MARGINAL
@@ -391,9 +473,12 @@ class DriveGuardFaceLandmarker:
                     reasons=reasons,
                 )
 
-            # Face lost branch — evaluate grace state machine
-            if self._last_face_seen_time is not None:
-                elapsed_lost_sec = now_sec - self._last_face_seen_time
+            # Face lost branch — evaluate grace state machine using frame timestamps
+            # (with fallback to wall-clock monotonic time if only _last_face_seen_time was set)
+            if self._last_face_seen_ms is not None:
+                elapsed_lost_sec = max(0.0, (inferred_ms - self._last_face_seen_ms) / 1000.0)
+            elif self._last_face_seen_time is not None:
+                elapsed_lost_sec = max(0.0, now_sec - self._last_face_seen_time)
             else:
                 elapsed_lost_sec = float("inf")
 
@@ -442,16 +527,17 @@ class DriveGuardFaceLandmarker:
             The annotated BGR frame.
         """
         if not result.has_face or len(result.landmarks) == 0:
-            return frame
+            return frame.copy()
 
-        h, w = frame.shape[:2]
+        canvas = frame.copy()
+        h, w = canvas.shape[:2]
 
         # 1. Full Mesh Wireframe (optional toggle)
         if draw_mesh:
             for i, lm in enumerate(result.landmarks[:468]):
                 px = int(lm.x * w)
                 py = int(lm.y * h)
-                cv2.circle(frame, (px, py), 1, (180, 180, 180), -1, cv2.LINE_AA)
+                cv2.circle(canvas, (px, py), 1, (180, 180, 180), -1, cv2.LINE_AA)
 
         # 2. Eye Contours
         if draw_eyes:
@@ -460,19 +546,19 @@ class DriveGuardFaceLandmarker:
                 valid_pts = [p for p in pts if p is not None]
                 if len(valid_pts) == len(contour_indices):
                     poly = np.array(valid_pts, dtype=np.int32).reshape((-1, 1, 2))
-                    cv2.polylines(frame, [poly], isClosed=True, color=color, thickness=1, lineType=cv2.LINE_AA)
+                    cv2.polylines(canvas, [poly], isClosed=True, color=color, thickness=1, lineType=cv2.LINE_AA)
                     for px, py in valid_pts:
-                        cv2.circle(frame, (px, py), 2, (0, 200, 255), -1, cv2.LINE_AA)
+                        cv2.circle(canvas, (px, py), 2, (0, 200, 255), -1, cv2.LINE_AA)
 
         # 3. Iris Refinement Points
         if draw_irises and len(result.landmarks) >= 478:
             for iris_center_idx in (LEFT_IRIS_CENTER, RIGHT_IRIS_CENTER):
                 pt = result.get_pixel_coords(iris_center_idx, w, h)
                 if pt is not None:
-                    cv2.circle(frame, pt, 3, (0, 255, 0), -1, cv2.LINE_AA)
-                    cv2.circle(frame, pt, 5, (0, 255, 0), 1, cv2.LINE_AA)
+                    cv2.circle(canvas, pt, 3, (0, 255, 0), -1, cv2.LINE_AA)
+                    cv2.circle(canvas, pt, 5, (0, 255, 0), 1, cv2.LINE_AA)
 
-        return frame
+        return canvas
 
     def close(self) -> None:
         """Release underlying MediaPipe C++ runtime descriptors cleanly."""
@@ -492,3 +578,8 @@ class DriveGuardFaceLandmarker:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
+
+
+def ensure_face_landmarker_model(user_path: Optional[Path] = None) -> Path:
+    """Verify or download the authoritative MediaPipe `face_landmarker.task` bundle."""
+    return DriveGuardFaceLandmarker._resolve_model_path(user_path)

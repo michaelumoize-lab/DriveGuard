@@ -22,35 +22,32 @@ from backend.app.ai.cascade_classifier import ExperimentMode
 from backend.app.ai.pdbp_calibration import DriverBehaviourProfile
 from backend.app.ai.pipeline import SessionAIEngine
 from backend.app.schemas.calibration import CalibrationPhaseDTO
+from backend.app.vision.face_landmarker import FaceLandmarkResult, FaceLandmarkStatus
+from backend.tests.test_end_to_end_authoritative_pipeline import _make_synthetic_landmarks
 
 
 class SlowMockLandmarker:
-    """Mock landmarker with configurable artificial latency to simulate heavy frame processing."""
+    """Authoritative mock landmarker with configurable artificial latency to simulate heavy frame processing."""
 
     def __init__(self, delay_sec: float = 0.08):
         self.delay_sec = delay_sec
+        self.active_implementation = "MOCK_TASKS"
 
-    def process_frame(self, *args, **kwargs):
+    def detect(self, input_data, timestamp_ms: int = 100):
         if self.delay_sec > 0:
             time.sleep(self.delay_sec)
-        from backend.app.ai.geometry import FrameGeometryFeatures, PoseZone
-        return FrameGeometryFeatures(
-            timestamp_ms=100.0,
-            face_detected=True,
-            landmark_confidence=0.95,
-            left_ear=0.28,
-            right_ear=0.28,
-            yaw_weighted_ear=0.28,
-            blendshape_blink_left=0.05,
-            blendshape_blink_right=0.05,
-            blendshape_blink_mean=0.05,
-            mar=0.10,
-            pitch_deg=0.0,
-            yaw_deg=0.0,
-            roll_deg=0.0,
-            pose_zone=PoseZone.CENTER,
-            geometric_reliability=0.95,
-        ), None
+        return FaceLandmarkResult(
+            has_face=True,
+            landmarks=_make_synthetic_landmarks(ear_target=0.28, yaw_deg=0.0, pitch_deg=0.0, is_mirrored=True),
+            presence_confidence=0.95,
+            timestamp_ms=int(timestamp_ms or 100),
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=self.delay_sec * 1000.0,
+            reasons=("OK",),
+        )
+
+    def close(self) -> None:
+        pass
 
 
 class TestSerializedEngineMutations(unittest.IsolatedAsyncioTestCase):
@@ -116,7 +113,6 @@ class TestSerializedEngineMutations(unittest.IsolatedAsyncioTestCase):
         # First frame should have been processed under initial mode
         self.assertEqual(new_mode, ExperimentMode.A_GEOMETRIC_ONLY)
         self.assertEqual(self.engine.experiment_mode, ExperimentMode.A_GEOMETRIC_ONLY)
-        self.assertEqual(self.engine.cascade.mode, ExperimentMode.A_GEOMETRIC_ONLY)
 
         # Subsequent frame runs under the new mode
         next_frame_dto = await loop.run_in_executor(
@@ -153,7 +149,6 @@ class TestSerializedEngineMutations(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Invalid experiment mode", str(ctx.exception))
         self.assertEqual(self.engine.experiment_mode, original_mode)
-        self.assertEqual(self.engine.cascade.mode, original_mode)
 
     async def test_command_rejected_after_shutdown_begins(self):
         """Commands submitted after close() raise RuntimeError immediately."""

@@ -12,7 +12,6 @@ import logging
 from typing import Optional
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
-from backend.app.ai.cascade_classifier import ExperimentMode
 from backend.app.core.auth import verify_ws_token
 from backend.app.core.config import settings
 from backend.app.services.profile_store import profile_store
@@ -102,6 +101,9 @@ async def websocket_session_stream(
                     {"type": "DISCONNECT", "detail": f"Session idle timeout ({settings.WS_IDLE_TIMEOUT_SEC}s) reached."}
                 )
                 await websocket.close(code=1000, reason="Idle timeout")
+                break
+
+            if message.get("type") == "websocket.disconnect":
                 break
 
             # Handle Binary Frame Stream (JPEG / PNG from webcam canvas)
@@ -221,12 +223,14 @@ async def websocket_session_stream(
                     )
 
     except WebSocketDisconnect:
-        # Client closed connection — clean up session and persist profile if calibrated
-        await session_manager.terminate_session(session_id)
+        # Client closed connection cleanly
+        pass
     except Exception as exc:
         try:
             await websocket.send_json({"type": "FATAL_ERROR", "detail": str(exc)})
             await websocket.close()
         except Exception:
             pass
-        await session_manager.terminate_session(session_id)
+    finally:
+        # Always clean up session and release native landmarker resources on any exit path
+        await asyncio.shield(session_manager.terminate_session(session_id))

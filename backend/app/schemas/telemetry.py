@@ -8,21 +8,14 @@ from enum import Enum
 from typing import Any, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from backend.app.features.head_pose import PoseZone as PoseZoneEnum
+
 
 class AlertStateEnum(str, Enum):
     NORMAL = "NORMAL"
     WARNING = "WARNING"
     CRITICAL = "CRITICAL"
     MONITORING_UNAVAILABLE = "MONITORING_UNAVAILABLE"
-
-
-class PoseZoneEnum(str, Enum):
-    CENTER = "CENTER"
-    LEFT_MIRROR = "LEFT_MIRROR"
-    RIGHT_MIRROR = "RIGHT_MIRROR"
-    DASHBOARD = "DASHBOARD"
-    OUT_OF_BOUNDS = "OUT_OF_BOUNDS"
-    UNKNOWN = "UNKNOWN"
 
 
 class HeadPoseDTO(BaseModel):
@@ -173,6 +166,22 @@ class FrameTelemetryDTO(BaseModel):
     
     # State & Risk
     state: AlertStateEnum = Field(description="DriveGuard FSM state: NORMAL, WARNING, CRITICAL, MONITORING_UNAVAILABLE")
+    drowsiness_state: Optional[str] = Field(
+        default=None,
+        description="Authoritative 5-level DrowsinessState: NORMAL, ATTENTION, DROWSINESS_WARNING, CRITICAL_WARNING, INSUFFICIENT_DATA",
+    )
+    alert_state: Optional[str] = Field(
+        default=None,
+        description="Authoritative 4-level AlertState: NORMAL, ATTENTION, WARNING, CRITICAL",
+    )
+    is_recovering: bool = Field(
+        default=False,
+        description="True when authoritative DecisionEngine/AlertStateManager is tracking verified recovery",
+    )
+    authoritative_engine: str = Field(
+        default="DrowsinessEngine",
+        description="Identifier of the authoritative drowsiness intelligence engine",
+    )
     monitoring_status: str = Field(default="MONITORING_ACTIVE", description="Monitoring availability: MONITORING_ACTIVE, FACE_VISIBILITY_DEGRADED, MONITORING_UNAVAILABLE, MONITORING_RECOVERING")
     risk_score: float = Field(description="Composite personalised fatigue risk score in [0.0, 1.0]", ge=0.0, le=1.0)
     pose_zone: PoseZoneEnum = Field(description="Classified spatial zone: CENTER, LEFT_MIRROR, RIGHT_MIRROR, DASHBOARD")

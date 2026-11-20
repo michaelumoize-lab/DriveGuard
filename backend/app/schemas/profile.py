@@ -73,6 +73,10 @@ class DriverProfileDTO(BaseModel):
         default=None,
         description="Learned 3x3 orthonormal neutral rotation matrix in camera coordinate frame",
     )
+    calibration_is_mirrored: Optional[bool] = Field(
+        default=None,
+        description="Camera horizontal mirror state (is_mirrored) active when neutral_rot_mat was calibrated",
+    )
 
     # Quality & Reliability
     calibration_reliability: float = Field(default=1.0, description="Overall calibration quality reliability score in [0, 1]")

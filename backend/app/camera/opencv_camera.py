@@ -221,8 +221,12 @@ class OpenCVCamera(BaseCamera):
 
         try:
             while not self._stop_event.is_set():
-                if self._cap is None or not self._cap.isOpened():
-                    self._is_connected = False
+                with self._lock:
+                    cap = self._cap
+                    cap_open = cap is not None and cap.isOpened()
+                if not cap_open:
+                    with self._lock:
+                        self._is_connected = False
                     self._buffer.clear()
                     if self._config.auto_reconnect:
                         self._attempt_reconnect()
@@ -231,7 +235,7 @@ class OpenCVCamera(BaseCamera):
                     continue
 
                 try:
-                    grabbed, frame = self._cap.read()
+                    grabbed, frame = cap.read()
                     capture_time_ns = time.monotonic_ns()
                 except Exception as exc:
                     logger.warning("Exception during frame capture from %s: %s", source_id, exc)
@@ -246,7 +250,8 @@ class OpenCVCamera(BaseCamera):
                             source_id,
                             consecutive_read_failures,
                         )
-                        self._is_connected = False
+                        with self._lock:
+                            self._is_connected = False
                         self._buffer.clear()
                         if self._config.auto_reconnect:
                             self._attempt_reconnect()
@@ -258,16 +263,19 @@ class OpenCVCamera(BaseCamera):
 
                 # Reset failure count on valid frame
                 consecutive_read_failures = 0
-                self._is_connected = True
+                with self._lock:
+                    self._is_connected = True
+                    flip_h = self._flip_horizontal
+                    flip_v = self._flip_vertical
                 self._frame_count += 1
                 self._fps_window_frames += 1
 
                 # Apply orientation/mirror transforms if requested
-                if self._flip_horizontal and self._flip_vertical:
+                if flip_h and flip_v:
                     frame = cv2.flip(frame, -1)
-                elif self._flip_horizontal:
+                elif flip_h:
                     frame = cv2.flip(frame, 1)
-                elif self._flip_vertical:
+                elif flip_v:
                     frame = cv2.flip(frame, 0)
 
                 # Update rolling measured ingestion FPS every 0.5s
@@ -371,7 +379,9 @@ class OpenCVCamera(BaseCamera):
         """
         Pull the newest frame packet from the buffer.
         """
-        if not self._is_connected:
+        with self._lock:
+            connected = self._is_connected
+        if not connected:
             return False, None
         packet = self._buffer.pop(timeout_sec=timeout_sec)
         if packet is None:
@@ -407,7 +417,8 @@ class OpenCVCamera(BaseCamera):
 
     def is_opened(self) -> bool:
         """Returns True if the camera device is currently acquiring frames."""
-        return self._is_connected and self._cap is not None and self._cap.isOpened()
+        with self._lock:
+            return self._is_connected and self._cap is not None and self._cap.isOpened()
 
     def get_actual_fps(self) -> float:
         """Return the actual measured hardware ingestion FPS."""
@@ -415,18 +426,22 @@ class OpenCVCamera(BaseCamera):
 
     def get_actual_resolution(self) -> Tuple[int, int]:
         """Return the negotiated video frame resolution (width, height)."""
-        return self._actual_width, self._actual_height
+        with self._lock:
+            return self._actual_width, self._actual_height
 
     @property
     def is_flip_horizontal(self) -> bool:
         """Return True if horizontal mirroring/flipping is currently active."""
-        return self._flip_horizontal
+        with self._lock:
+            return self._flip_horizontal
 
     def toggle_flip_horizontal(self) -> bool:
         """Toggle horizontal mirroring dynamically at runtime."""
-        self._flip_horizontal = not self._flip_horizontal
-        logger.info("Camera horizontal mirroring toggled to: %s", self._flip_horizontal)
-        return self._flip_horizontal
+        with self._lock:
+            self._flip_horizontal = not self._flip_horizontal
+            new_val = self._flip_horizontal
+        logger.info("Camera horizontal mirroring toggled to: %s", new_val)
+        return new_val
 
     def get_buffer_stats(self) -> dict:
         """Return buffer performance statistics."""

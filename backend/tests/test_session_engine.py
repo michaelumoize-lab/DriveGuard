@@ -1,17 +1,13 @@
 """
-Unit Tests for DriveGuard SessionAIEngine Orchestrator and Pydantic Schemas.
+Unit Tests for DriveGuard SessionAIEngine Thin Adapter and Pydantic Schemas.
+Verifies that SessionAIEngine delegates end-to-end to the authoritative
+LocalMonitoringService (DriverFeatureExtractor -> DrowsinessEngine -> AlertStateManager).
 """
 
 import unittest
-from datetime import datetime
 import cv2
 import numpy as np
 
-from backend.app.ai.geometry import (
-    FrameGeometryFeatures,
-    PoseZone,
-    classify_pose_zone,
-)
 from backend.app.ai.pipeline import SessionAIEngine
 from backend.app.schemas.calibration import CalibrationPhaseDTO
 from backend.app.schemas.profile import DriverProfileDTO
@@ -20,43 +16,40 @@ from backend.app.schemas.telemetry import (
     FrameTelemetryDTO,
     PoseZoneEnum,
 )
+from backend.app.vision.face_landmarker import FaceLandmarkResult, FaceLandmarkStatus
+from backend.tests.test_end_to_end_authoritative_pipeline import (
+    _make_sharp_frame,
+    _make_synthetic_landmarks,
+)
 
 
 class DummyMockLandmarker:
-    """Deterministic mock landmarker to test engine orchestration without webcam hardware."""
+    """Deterministic authoritative mock landmarker returning synthetic 478-point FaceLandmarkResult."""
 
     def __init__(self, ear: float = 0.28, pitch: float = 0.0, yaw: float = 0.0) -> None:
         self.ear = ear
         self.pitch = pitch
         self.yaw = yaw
+        self.active_implementation = "MOCK_TASKS"
 
-    def process_frame(
-        self,
-        frame_bgr: np.ndarray,
-        timestamp_ms: float,
-        neutral_pitch_deg: float = 0.0,
-        neutral_yaw_deg: float = 0.0,
-        reference_open_ear: float = 0.28,
-        extract_crops: bool = True,
-    ):
-        geom = FrameGeometryFeatures(
-            timestamp_ms=timestamp_ms,
-            face_detected=True,
-            landmark_confidence=0.95,
-            left_ear=self.ear,
-            right_ear=self.ear,
-            yaw_weighted_ear=self.ear,
-            blendshape_blink_left=0.05,
-            blendshape_blink_right=0.05,
-            blendshape_blink_mean=0.05,
-            mar=0.12,
-            pitch_deg=self.pitch,
-            yaw_deg=self.yaw,
-            roll_deg=0.0,
-            pose_zone=classify_pose_zone(self.pitch, self.yaw),
-            geometric_reliability=0.92,
+    def detect(self, input_data, timestamp_ms: int = 0) -> FaceLandmarkResult:
+        return FaceLandmarkResult(
+            has_face=True,
+            landmarks=_make_synthetic_landmarks(
+                ear_target=self.ear,
+                yaw_deg=self.yaw,
+                pitch_deg=self.pitch,
+                is_mirrored=True,
+            ),
+            presence_confidence=0.96,
+            timestamp_ms=int(timestamp_ms or 0),
+            status=FaceLandmarkStatus.TRACKING,
+            inference_latency_ms=4.0,
+            reasons=("OK",),
         )
-        return geom, None
+
+    def close(self) -> None:
+        pass
 
 
 class TestSessionAIEngine(unittest.TestCase):
@@ -69,6 +62,9 @@ class TestSessionAIEngine(unittest.TestCase):
             landmarker=DummyMockLandmarker(ear=0.28, pitch=0.0, yaw=0.0),
         )
 
+    def tearDown(self) -> None:
+        self.engine.close()
+
     def test_engine_initialization_defaults(self) -> None:
         """Engine must initialize with correct identifiers and uncalibrated fallback defaults."""
         self.assertEqual(self.engine.session_id, "test_sess_001")
@@ -77,17 +73,18 @@ class TestSessionAIEngine(unittest.TestCase):
         self.assertAlmostEqual(self.engine.profile.center_ear_median, 0.28, places=2)
 
     def test_process_frame_with_numpy_and_raw_bytes(self) -> None:
-        """Engine must process both NumPy BGR frames and raw encoded image bytes into valid DTOs."""
-        # 1. NumPy frame
-        synthetic_frame = np.full((240, 320, 3), 120, dtype=np.uint8)
+        """Engine must process both NumPy frames and raw encoded image bytes into valid DTOs."""
+        # 1. NumPy frame (16:9 matching canonical synthetic landmarks)
+        synthetic_frame = _make_sharp_frame(width=1280, height=720)
         dto_numpy = self.engine.process_frame(synthetic_frame, timestamp_ms=1000.0)
         self.assertIsInstance(dto_numpy, FrameTelemetryDTO)
         self.assertEqual(dto_numpy.session_id, "test_sess_001")
         self.assertTrue(dto_numpy.face_detected)
         self.assertEqual(dto_numpy.state, AlertStateEnum.NORMAL)
         self.assertEqual(dto_numpy.pose_zone, PoseZoneEnum.CENTER)
+        self.assertEqual(dto_numpy.authoritative_engine, "DrowsinessEngine")
 
-        # 2. Raw JPEG bytes (as received from WebSockets)
+        # 2. Raw JPEG bytes (as received from WebSockets / HTTP uploads)
         ok, encoded_bytes = cv2.imencode(".jpg", synthetic_frame)
         self.assertTrue(ok)
         raw_bytes = encoded_bytes.tobytes()
@@ -104,7 +101,6 @@ class TestSessionAIEngine(unittest.TestCase):
 
     def test_profile_export_and_import_cycle(self) -> None:
         """Exporting a profile to DTO and loading it into another engine must preserve baselines."""
-        # Customize profile
         self.engine.profile.center_ear_median = 0.245
         self.engine.profile.blink_duration_median_ms = 195.0
         self.engine.profile.calibration_mode = "4ZONE"
@@ -115,101 +111,118 @@ class TestSessionAIEngine(unittest.TestCase):
         self.assertAlmostEqual(exported_dto.center_ear_median, 0.245, places=3)
         self.assertAlmostEqual(exported_dto.blink_duration_median_ms, 195.0, places=1)
 
-        # Load into brand new engine
-        new_engine = SessionAIEngine(session_id="new_sess", driver_id="driver_bob")
-        new_engine.load_profile_dto(exported_dto)
-
-        self.assertAlmostEqual(new_engine.profile.center_ear_median, 0.245, places=3)
-        self.assertAlmostEqual(new_engine.profile.blink_duration_median_ms, 195.0, places=1)
-        self.assertEqual(new_engine.profile.calibration_mode, "4ZONE")
+        new_engine = SessionAIEngine(
+            session_id="new_sess",
+            driver_id="driver_bob",
+            landmarker=DummyMockLandmarker(),
+        )
+        try:
+            new_engine.load_profile_dto(exported_dto)
+            self.assertAlmostEqual(new_engine.profile.center_ear_median, 0.245, places=3)
+            self.assertAlmostEqual(new_engine.profile.blink_duration_median_ms, 195.0, places=1)
+            self.assertEqual(new_engine.profile.calibration_mode, "4ZONE")
+        finally:
+            new_engine.close()
 
     def test_calibration_session_workflow(self) -> None:
         """Engine must handle calibration initiation, frame ingestion, and profile activation."""
-        cal_dto = self.engine.start_calibration(four_zone_mode=False, zone_duration_sec=0.2)
+        cal_dto = self.engine.start_calibration(
+            four_zone_mode=False, zone_duration_sec=5.0, timestamp_ms=2000.0
+        )
         self.assertIsInstance(cal_dto, CalibrationPhaseDTO)
         self.assertTrue(self.engine.is_calibrating)
         self.assertEqual(cal_dto.current_zone, "CENTER")
+        self.engine.calibration_session.target_samples_per_zone = 22
 
-        frame = np.full((120, 160, 3), 100, dtype=np.uint8)
+        frame = _make_sharp_frame(width=1280, height=720)
         ts = 2000.0
-        # Ingest frames to complete calibration
-        for _ in range(12):
-            dto = self.engine.process_frame(frame, timestamp_ms=ts)
-            ts += 33.3
+        for _ in range(30):
+            ts += 40.0
+            self.engine.process_frame(frame, timestamp_ms=ts)
+            if not self.engine.is_calibrating:
+                break
 
-        # Calibration should now be completed
         status = self.engine.get_calibration_status()
         self.assertIsNotNone(status)
         self.assertTrue(status.is_completed)
+        self.assertIsNone(status.rejection_reason)
         self.assertFalse(self.engine.is_calibrating)
+        self.assertTrue(self.engine.feature_extractor.is_profile_feasible)
 
     def test_side_by_side_comparison_mirror_check(self) -> None:
         """Lateral mirror turn should trigger mirror-check suppression without false alert."""
-        # Driver looks at left mirror (yaw = +24 deg) with apparent lower EAR (0.20)
-        mirror_landmarker = DummyMockLandmarker(ear=0.20, pitch=0.0, yaw=24.0)
+        mirror_landmarker = DummyMockLandmarker(ear=0.20, pitch=0.0, yaw=20.0)
         engine = SessionAIEngine(landmarker=mirror_landmarker)
+        try:
+            frame = _make_sharp_frame(width=1280, height=720)
+            ts = 5000.0
+            dto = None
+            for _ in range(16):
+                dto = engine.process_frame(frame, timestamp_ms=ts)
+                ts += 33.3
 
-        frame = np.full((120, 160, 3), 100, dtype=np.uint8)
-        # Mirror check lasting 500ms (> 350ms threshold of conventional detector)
-        ts = 5000.0
-        dto = None
-        for _ in range(16):
-            dto = engine.process_frame(frame, timestamp_ms=ts)
-            ts += 33.3
-
-        self.assertIsNotNone(dto)
-        self.assertEqual(dto.pose_zone, PoseZoneEnum.LEFT_MIRROR)
-        self.assertTrue(dto.comparison.is_mirror_check_suppressed)
-        # Conventional fixed rule (EAR < 0.22) trips false alarm after 350ms, DriveGuard stays NORMAL
-        self.assertEqual(dto.state, AlertStateEnum.NORMAL)
-        self.assertTrue(dto.comparison.fixed_false_alarm)
+            self.assertIsNotNone(dto)
+            self.assertEqual(dto.pose_zone, PoseZoneEnum.LEFT_MIRROR)
+            self.assertTrue(dto.comparison.is_mirror_check_suppressed)
+            self.assertEqual(dto.state, AlertStateEnum.NORMAL)
+            self.assertTrue(dto.comparison.fixed_false_alarm)
+        finally:
+            engine.close()
 
     def test_target_acquisition_spatial_gating_calibration(self) -> None:
         """Calibration progress must ONLY fill when driver is actively looking in target zone."""
         mock_lm = DummyMockLandmarker(ear=0.28, pitch=0.0, yaw=0.0)
         engine = SessionAIEngine(landmarker=mock_lm)
-        cal_dto = engine.start_calibration(four_zone_mode=True, zone_duration_sec=0.2)
-        self.assertTrue(engine.is_calibrating)
-        self.assertEqual(cal_dto.current_zone, "CENTER")
+        try:
+            cal_dto = engine.start_calibration(
+                four_zone_mode=True, zone_duration_sec=5.0, timestamp_ms=3000.0
+            )
+            self.assertTrue(engine.is_calibrating)
+            self.assertEqual(cal_dto.current_zone, "CENTER")
+            engine.calibration_session.target_samples_per_zone = 20
 
-        frame = np.full((120, 160, 3), 100, dtype=np.uint8)
-        ts = 3000.0
+            frame = _make_sharp_frame(width=1280, height=720)
+            ts = 3000.0
 
-        # Step 1: Center (mock_lm yaw=0.0 is Center). Ingest 6 frames to complete Center
-        for _ in range(6):
-            dto = engine.process_frame(frame, timestamp_ms=ts)
-            ts += 33.3
+            # Step 1: Center (yaw=0.0). Ingest frames until CENTER completes.
+            for _ in range(25):
+                ts += 40.0
+                engine.process_frame(frame, timestamp_ms=ts)
+                if engine.get_calibration_status().current_zone == "LEFT_MIRROR":
+                    break
 
-        # Should now be on Step 2 (LEFT_MIRROR)
-        status = engine.get_calibration_status()
-        self.assertIsNotNone(status)
-        self.assertEqual(status.current_zone, "LEFT_MIRROR")
-        self.assertEqual(status.phase_index, 2)
-        self.assertEqual(status.zone_progress_pct, 0.0)
+            status = engine.get_calibration_status()
+            self.assertIsNotNone(status)
+            self.assertEqual(status.current_zone, "LEFT_MIRROR")
+            self.assertEqual(status.phase_index, 2)
+            self.assertEqual(status.zone_progress_pct, 0.0)
 
-        # Advance past the 2.0-second inter-step grace period
-        ts += 2100.0
+            # Advance past the 2.0-second inter-step grace period
+            ts += 2100.0
 
-        # Driver still looking CENTER (mock_lm yaw=0.0). Ingest 5 frames: progress MUST NOT advance!
-        for _ in range(5):
-            dto = engine.process_frame(frame, timestamp_ms=ts)
-            ts += 33.3
+            # Driver still looking CENTER (yaw=0.0). Progress MUST NOT advance!
+            for _ in range(5):
+                ts += 40.0
+                engine.process_frame(frame, timestamp_ms=ts)
 
-        status_after_unaligned = engine.get_calibration_status()
-        self.assertEqual(status_after_unaligned.zone_progress_pct, 0.0)
-        self.assertFalse(status_after_unaligned.is_head_in_target_zone)
-        self.assertIn("Driver Mirror", status_after_unaligned.stability_feedback)
+            status_after_unaligned = engine.get_calibration_status()
+            self.assertEqual(status_after_unaligned.zone_progress_pct, 0.0)
+            self.assertFalse(status_after_unaligned.is_head_in_target_zone)
+            self.assertIn("Driver Mirror", status_after_unaligned.stability_feedback)
 
-        # Now driver turns to LEFT_MIRROR (yaw = +18.0)
-        mock_lm.yaw = 18.0
-        for _ in range(15):
-            dto = engine.process_frame(frame, timestamp_ms=ts)
-            ts += 33.3
+            # Now driver turns to LEFT_MIRROR (yaw = +20.0)
+            mock_lm.yaw = 20.0
+            for _ in range(25):
+                ts += 40.0
+                engine.process_frame(frame, timestamp_ms=ts)
+                if engine.get_calibration_status().current_zone == "RIGHT_MIRROR":
+                    break
 
-        # Step 2 must now have completed and transitioned to Step 3 (RIGHT_MIRROR)
-        status_after_aligned = engine.get_calibration_status()
-        self.assertEqual(status_after_aligned.current_zone, "RIGHT_MIRROR")
-        self.assertEqual(status_after_aligned.phase_index, 3)
+            status_after_aligned = engine.get_calibration_status()
+            self.assertEqual(status_after_aligned.current_zone, "RIGHT_MIRROR")
+            self.assertEqual(status_after_aligned.phase_index, 3)
+        finally:
+            engine.close()
 
 
 if __name__ == "__main__":

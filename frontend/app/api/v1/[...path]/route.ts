@@ -3,6 +3,7 @@ import { PRODUCTION_FASTAPI_URL, resolveCloudFastApiUrl } from "@/lib/fastapi-ur
 import { getServerSession } from "@/lib/get-session";
 import { createBackendAccessToken, verifyBackendAccessToken } from "@/lib/backend-auth";
 import { prisma } from "@/lib/prisma";
+import { buildDriverProfileDtoPayload } from "@/lib/api/profile-mapper";
 
 export const dynamic = "force-dynamic";
 
@@ -61,38 +62,18 @@ async function proxyToFastApi(
         const dbProfile = await prisma.driverProfile.findUnique({ where: { userId } });
         if (dbProfile && dbProfile.isCalibrated) {
           const syncUrl = `${primaryBase}/api/v1/profiles`;
-          const baseZones =
-            dbProfile.zoneBaselines &&
-            typeof dbProfile.zoneBaselines === "object" &&
-            !Array.isArray(dbProfile.zoneBaselines)
-              ? (dbProfile.zoneBaselines as Record<string, any>)
-              : {};
-          const spatialZones: Record<string, any> = {};
-          for (const [k, v] of Object.entries(baseZones)) {
-            if (!k.startsWith("_") && v && typeof v === "object") {
-              const zv = v as Record<string, any>;
-              const earMed = Number(zv.ear_median ?? dbProfile.centerEarMedian);
-              const earMad = Number(zv.ear_mad_scaled ?? dbProfile.centerEarMadScaled);
-              // Authoritative physiological formula: min(0.22, max(0.12, min(earMed * 0.76, earMed - 2.3 * earMad)))
-              const rawExpected = Math.min(earMed * 0.76, earMed - 2.3 * earMad);
-              const expectedThreshold = Math.min(0.22, Math.max(0.12, rawExpected));
-              const storedThreshold = Number(zv.dynamic_closure_threshold);
-              const finalThreshold =
-                !isNaN(storedThreshold) && Math.abs(storedThreshold - expectedThreshold) <= 0.0005
-                  ? storedThreshold
-                  : expectedThreshold;
-
-              spatialZones[k] = {
-                zone: k,
-                ear_median: earMed,
-                ear_mad_scaled: earMad,
-                dynamic_closure_threshold: finalThreshold,
-                pitch_median_deg: Number(zv.pitch_median_deg ?? zv.pitch_deg_median ?? 0.0),
-                yaw_median_deg: Number(zv.yaw_median_deg ?? zv.yaw_deg_median ?? 0.0),
-                sample_count: Number(zv.sample_count ?? 35),
-              };
-            }
-          }
+          const fastApiProfileDto = buildDriverProfileDtoPayload(
+            {
+              ...dbProfile,
+              zoneBaselines:
+                dbProfile.zoneBaselines &&
+                typeof dbProfile.zoneBaselines === "object" &&
+                !Array.isArray(dbProfile.zoneBaselines)
+                  ? (dbProfile.zoneBaselines as Record<string, unknown>)
+                  : null,
+            },
+            userId
+          );
 
           fetch(syncUrl, {
             method: "POST",
@@ -100,29 +81,7 @@ async function proxyToFastApi(
               "Content-Type": "application/json",
               Authorization: `Bearer ${backendToken}`,
             },
-            body: JSON.stringify({
-              version: 1,
-              driver_id: userId,
-              calibrated_at: dbProfile.calibratedAt?.toISOString() || new Date().toISOString(),
-              is_calibrated: true,
-              calibration_mode: dbProfile.calibrationMode,
-              center_ear_median: dbProfile.centerEarMedian,
-              blink_duration_median_ms: dbProfile.blinkDurationMedianMs,
-              blink_duration_mad_ms: dbProfile.blinkDurationMadMs,
-              blink_rcr_median: dbProfile.blinkRcrMedian,
-              blink_rcr_mad: dbProfile.blinkRcrMad,
-              blink_freq_median_per_min: dbProfile.blinkFreqMedianPerMin,
-              blink_freq_mad_per_min: dbProfile.blinkFreqMadPerMin,
-              baseline_perclos_pct: dbProfile.baselinePerclosPct,
-              blink_amplitude_median: dbProfile.blinkAmplitudeMedian,
-              temporal_blinks_sampled: dbProfile.temporalBlinksSampled,
-              temporal_window_sec: dbProfile.temporalWindowSec,
-              sensitivity_level: dbProfile.sensitivityLevel,
-              neutral_pitch_deg: dbProfile.neutralPitchDeg,
-              neutral_yaw_deg: dbProfile.neutralYawDeg,
-              calibration_reliability: dbProfile.calibrationReliability,
-              zone_baselines: spatialZones,
-            }),
+            body: JSON.stringify(fastApiProfileDto),
             signal: AbortSignal.timeout(3000),
           }).catch((syncErr) => {
             console.warn("[API Proxy] Background profile sync warning:", syncErr);

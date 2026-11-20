@@ -233,20 +233,21 @@ class TestMediaPipeVideoPhase3(unittest.IsolatedAsyncioTestCase):
     def test_09_frame_drops_and_large_temporal_gaps(self):
         """Verify large time gaps (e.g. dropped frames) do not corrupt tracker or generate false blinks."""
         engine = SessionAIEngine(session_id="gap_test", driver_id="driver_gap")
+        try:
+            # Initial frames
+            engine.process_frame(self.frame, timestamp_ms=1000.0)
+            engine.process_frame(self.frame, timestamp_ms=1033.0)
 
-        # Initial frames
-        engine.process_frame(self.frame, timestamp_ms=1000.0)
-        engine.process_frame(self.frame, timestamp_ms=1033.0)
+            # Large 1.5-second frame drop gap
+            dto_gap = engine.process_frame(self.frame, timestamp_ms=2533.0)
 
-        # Large 1.5-second frame drop gap
-        dto_gap = engine.process_frame(self.frame, timestamp_ms=2533.0)
-
-        self.assertIsNotNone(dto_gap)
-        self.assertEqual(dto_gap.frame_index, 3)
-        # Should not fabricate false blinks
-        self.assertEqual(len(engine.kinematics.blink_history), 0)
-
-        engine.close()
+            self.assertIsNotNone(dto_gap)
+            self.assertEqual(dto_gap.frame_index, 3)
+            # Should not fabricate false blinks
+            self.assertEqual(engine.feature_extractor.blink_detector._total_blinks, 0)
+            self.assertIsNone(dto_gap.eye_metrics.blink_duration_ms)
+        finally:
+            engine.close()
 
     def test_10_regression_pipeline_metrics(self):
         """Verify pipeline output format remains fully compatible with downstream telemetry DTOs."""

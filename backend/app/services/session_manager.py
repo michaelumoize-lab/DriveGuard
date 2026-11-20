@@ -7,11 +7,11 @@ from __future__ import annotations
 import asyncio
 from typing import Dict, List, Optional
 
-from backend.app.ai.cascade_classifier import ExperimentMode
-from backend.app.ai.landmarker import ensure_face_landmarker_model
+from backend.app.core.experiment_mode import ExperimentMode
 from backend.app.ai.pipeline import SessionAIEngine
 from backend.app.schemas.profile import DriverProfileDTO
 from backend.app.services.profile_store import profile_store
+from backend.app.vision.face_landmarker import ensure_face_landmarker_model
 
 
 class SessionManager:

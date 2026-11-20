@@ -37,11 +37,11 @@ START_TIME = time.time()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Preload AI models into GPU/CPU memory on server startup asynchronously."""
-    print("[Lifespan] Preloading MediaPipe Face Landmarker & ONNX Runtime models...")
+    """Preload authoritative MediaPipe Face Landmarker assets on server startup asynchronously."""
+    print("[Lifespan] Verifying authoritative MediaPipe Face Landmarker model bundle...")
     try:
         await asyncio.to_thread(session_manager.preload_shared_models)
-        print("[Lifespan] Shared AI models successfully loaded and ready for inference.")
+        print("[Lifespan] Authoritative monitoring assets ready for inference.")
     except Exception as exc:
         print(f"[Lifespan WARNING] Lazy model initialization will be used: {exc}")
     yield
@@ -53,8 +53,9 @@ app = FastAPI(
     version=settings.VERSION,
     description=(
         "Personalised Adaptive AI Driver Drowsiness Detection & Early Warning System. "
-        "Provides 4-Zone Pose-Conditioned Calibration, Reliability-Weighted Confidence-Gated "
-        "Cascade, and Explainable Hysteresis Risk Scoring."
+        "Powered by the authoritative LocalMonitoringService & DrowsinessEngine pipeline "
+        "(4-Zone Pose-Conditioned PDBP Calibration, Yaw-Weighted EAR, Sub-Frame Blink Kinematics, "
+        "Boundary-Clipped PERCLOS, MAR Yawn Detection, and Deterministic Explainable Alerting)."
     ),
     lifespan=lifespan,
 )
@@ -98,6 +99,8 @@ def root_info() -> Dict[str, str]:
         "service": settings.PROJECT_NAME,
         "version": settings.VERSION,
         "status": "RUNNING",
+        "authoritative_engine": "DrowsinessEngine",
+        "orchestrator": "LocalMonitoringService",
         "docs_url": "/docs",
         "websocket_url": "/ws/v1/session/{session_id}",
     }
@@ -123,6 +126,10 @@ def readiness_check() -> JSONResponse:
     has_task_model = task_model_path.is_file() and task_model_path.stat().st_size >= 100_000
     has_onnx_model = onnx_model_path.is_file()
 
+    from backend.app.alerts.audio_warning_engine import check_sounddevice_availability
+
+    desktop_audio_available, desktop_audio_reason = check_sounddevice_availability()
+
     # System is ready if face landmarker asset is present (verifier can use ONNX or analytical fallback)
     is_ready = has_task_model
     status_code = 200 if is_ready else 503
@@ -132,6 +139,12 @@ def readiness_check() -> JSONResponse:
         "ready": is_ready,
         "uptime_sec": uptime_sec,
         "components": {
+            "authoritative_pipeline": {
+                "engine": "DrowsinessEngine",
+                "orchestrator": "LocalMonitoringService",
+                "feature_extractor": "DriverFeatureExtractor",
+                "alert_manager": "AlertStateManager",
+            },
             "face_landmarker_task": {
                 "present": has_task_model,
                 "path": str(task_model_path),
@@ -139,6 +152,12 @@ def readiness_check() -> JSONResponse:
             "eye_verifier": {
                 "mode": "MOBILENET_ONNX" if has_onnx_model else "ANALYTICAL_FALLBACK",
                 "onnx_present": has_onnx_model,
+            },
+            "desktop_audio": {
+                "optional": True,
+                "available": desktop_audio_available,
+                "unavailable_reason": desktop_audio_reason,
+                "web_client_audio": "BROWSER_WEB_AUDIO_API",
             },
             "livekit": {
                 "configured": bool(settings.LIVEKIT_URL and settings.LIVEKIT_API_KEY and settings.LIVEKIT_API_SECRET),

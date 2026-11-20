@@ -37,6 +37,7 @@ class DecisionResult:
     alert_active: bool = False
     unresolved_alert_state: Optional[DrowsinessState] = None
     historical_reason: Optional[ExplainableReason] = None
+    is_alert_recovering: Optional[bool] = None
 
     @property
     def summary_text(self) -> str:
@@ -48,6 +49,16 @@ class DecisionEngine:
     """
     Stateful decision arbiter enforcing priority rules, hysteresis, and explainability.
     """
+
+    OCULAR_REASON_CODES = frozenset({
+        ReasonCode.SUSTAINED_EYE_CLOSURE,
+        ReasonCode.NODDING_MICROSLEEP,
+        ReasonCode.SEVERE_PERCLOS_CRISIS,
+        ReasonCode.PERCLOS_ELEVATED,
+        ReasonCode.PROLONGED_BLINK,
+        ReasonCode.EXTENDED_CLOSURE,
+        ReasonCode.MILD_PERCLOS,
+    })
 
     SEVERITY_MAP = {
         DrowsinessState.NORMAL: 0,
@@ -100,7 +111,9 @@ class DecisionEngine:
         self.alert_active: bool = False
         self._unresolved_alert_state: Optional[DrowsinessState] = None
         self._historical_reason: Optional[ExplainableReason] = None
+        self._last_elevated_reason: Optional[ExplainableReason] = None
         self._alert_recovery_start_ts_ms: Optional[float] = None
+        self._ocular_elevated_active: bool = False
 
     def evaluate(
         self,
@@ -127,6 +140,7 @@ class DecisionEngine:
                 alert_active=self.alert_active,
                 unresolved_alert_state=self._unresolved_alert_state,
                 historical_reason=self._historical_reason,
+                is_alert_recovering=bool(self.alert_active and self._alert_recovery_start_ts_ms is not None),
             )
 
         if self._prev_ts_ms is not None:
@@ -143,6 +157,7 @@ class DecisionEngine:
                     alert_active=self.alert_active,
                     unresolved_alert_state=self._unresolved_alert_state,
                     historical_reason=self._historical_reason,
+                    is_alert_recovering=bool(self.alert_active and self._alert_recovery_start_ts_ms is not None),
                 )
             if dt_ms > self.max_sampling_gap_ms:
                 # Interrupted by camera freeze / sampling gap: cancel in-flight recovery
@@ -205,6 +220,7 @@ class DecisionEngine:
                 alert_active=self.alert_active,
                 unresolved_alert_state=self._unresolved_alert_state,
                 historical_reason=self._historical_reason,
+                is_alert_recovering=False,
             )
 
         if is_face_lost or is_sensor_unreliable:
@@ -238,6 +254,7 @@ class DecisionEngine:
                 alert_active=self.alert_active,
                 unresolved_alert_state=self._unresolved_alert_state,
                 historical_reason=self._historical_reason,
+                is_alert_recovering=False,
             )
 
         # Track stable face presence recovery
@@ -263,12 +280,13 @@ class DecisionEngine:
 
         if metrics.is_nodding_microsleep:
             candidate_state = DrowsinessState.CRITICAL_WARNING
+            nodding_threshold_ms = 500.0 if metrics.active_closure_duration_ms < 800.0 else 800.0
             reasons.append(
                 ExplainableReason(
                     code=ReasonCode.NODDING_MICROSLEEP,
                     message="Head nodding slump detected during active eye closure",
                     metric_value=metrics.active_closure_duration_ms,
-                    threshold=800.0,
+                    threshold=nodding_threshold_ms,
                 )
             )
 
@@ -338,7 +356,7 @@ class DecisionEngine:
                 reasons.append(
                     ExplainableReason(
                         code=ReasonCode.PERSISTENT_DISTRACTION,
-                        message=f"Off-road gaze dwell of {metrics.active_off_road_dwell_ms / 1000.0:.1f}s exceeds safety threshold",
+                        message=f"Off-road head orientation (gaze proxy) dwell of {metrics.active_off_road_dwell_ms / 1000.0:.1f}s exceeds safety threshold",
                         metric_value=metrics.active_off_road_dwell_ms,
                         threshold=self.off_road_distraction_limit_ms,
                     )
@@ -373,12 +391,19 @@ class DecisionEngine:
                     )
                 )
 
-            if metrics.yawn_count_30s >= 1 or metrics.active_yawn_duration_ms >= 1500.0:
+            has_completed_yawn = metrics.yawn_count_30s >= 1
+            has_active_yawn = confidence.yawn_viable and metrics.active_yawn_duration_ms >= 1500.0
+            if has_completed_yawn or has_active_yawn:
                 candidate_state = DrowsinessState.ATTENTION
+                yawn_msg = (
+                    "Authentic yawn detected"
+                    if has_completed_yawn
+                    else f"Sustained mouth opening (candidate yawn in progress: {metrics.active_yawn_duration_ms:.0f}ms)"
+                )
                 reasons.append(
                     ExplainableReason(
                         code=ReasonCode.AUTHENTIC_YAWN,
-                        message="Authentic yawn detected",
+                        message=yawn_msg,
                         metric_value=max(metrics.active_yawn_duration_ms, 1500.0),
                         threshold=1500.0,
                     )
@@ -423,16 +448,28 @@ class DecisionEngine:
             reasons.append(
                 ExplainableReason(
                     code=ReasonCode.ALERT_NORMAL,
-                    message="Driver alert; gaze and eye metrics within nominal ranges",
+                    message="Driver alert; head orientation and eye metrics within nominal ranges",
                 )
             )
 
         # ------------------------------------------------------------------
         # STEP 3: Hysteresis and Persistence State Machine
         # ------------------------------------------------------------------
+        # Exiting INSUFFICIENT_DATA while an alert remains unresolved must restore
+        # the unresolved alert level rather than dropping abruptly to NORMAL.
+        if (
+            self.current_state == DrowsinessState.INSUFFICIENT_DATA
+            and self.alert_active
+            and self._unresolved_alert_state is not None
+        ):
+            self.current_state = self._unresolved_alert_state
+
         current_sev = self.SEVERITY_MAP[self.current_state]
         candidate_sev = self.SEVERITY_MAP[candidate_state]
         candidate_primary_reason = reasons[0] if reasons else None
+        candidate_has_ocular_reason = any(r.code in self.OCULAR_REASON_CODES for r in reasons)
+        if candidate_sev > 0 and candidate_primary_reason is not None:
+            self._last_elevated_reason = candidate_primary_reason
 
         # Alert Lifecycle (Timer 2 Initiation / Escalation)
         if candidate_sev >= 2:
@@ -456,41 +493,63 @@ class DecisionEngine:
             self.current_state = candidate_state
             self._recovery_start_ts_ms = None
             self._recovery_candidate_sev = None
+            if candidate_sev > 0 and candidate_has_ocular_reason:
+                self._ocular_elevated_active = True
+            elif candidate_sev == 0:
+                self._ocular_elevated_active = False
 
         # Case B: De-escalation (Requires Continuous Recovery Cooldown)
         elif candidate_sev < current_sev:
-            required_cooldown = self.recovery_attention_ms
-            if current_sev == 3:  # CRITICAL -> lower
-                required_cooldown = self.recovery_critical_ms
-            elif current_sev == 2:  # WARNING -> lower
-                required_cooldown = self.recovery_warning_ms
-
-            if (
-                self._recovery_start_ts_ms is None
-                or self._recovery_candidate_sev is None
-                or candidate_sev > self._recovery_candidate_sev
-            ):
-                # Start recovery or restart because candidate severity deteriorated
-                self._recovery_start_ts_ms = ts_ms
-                self._recovery_candidate_sev = candidate_sev
-            elif candidate_sev < self._recovery_candidate_sev:
-                # Candidate severity improved: track improved severity without restarting timer
-                self._recovery_candidate_sev = candidate_sev
-
-            elapsed_recovery = ts_ms - self._recovery_start_ts_ms
-            if elapsed_recovery >= required_cooldown:
-                # Cooldown satisfied, safely downgrade state
-                self.current_state = candidate_state
+            # An ocular-triggered elevated state cannot de-escalate while eyes are
+            # unobservable (e.g. ocular occlusion while head pose remains viable).
+            ocular_unobservable = (not confidence.ocular_viable) or (
+                confidence.is_ocular_available is not None
+                and metrics.is_eye_closed is None
+            )
+            if self._ocular_elevated_active and ocular_unobservable:
                 self._recovery_start_ts_ms = None
                 self._recovery_candidate_sev = None
             else:
-                # Still within cooldown; hold elevated state to prevent alert flapping
-                pass
+                required_cooldown = self.recovery_attention_ms
+                if current_sev == 3:  # CRITICAL -> lower
+                    required_cooldown = self.recovery_critical_ms
+                elif current_sev == 2:  # WARNING -> lower
+                    required_cooldown = self.recovery_warning_ms
+
+                if (
+                    self._recovery_start_ts_ms is None
+                    or self._recovery_candidate_sev is None
+                    or candidate_sev > self._recovery_candidate_sev
+                ):
+                    # Start recovery or restart because candidate severity deteriorated
+                    self._recovery_start_ts_ms = ts_ms
+                    self._recovery_candidate_sev = candidate_sev
+                elif candidate_sev < self._recovery_candidate_sev:
+                    # Candidate severity improved: track improved severity without restarting timer
+                    self._recovery_candidate_sev = candidate_sev
+
+                elapsed_recovery = ts_ms - self._recovery_start_ts_ms
+                if elapsed_recovery >= required_cooldown:
+                    # Cooldown satisfied, safely downgrade state
+                    self.current_state = candidate_state
+                    self._recovery_start_ts_ms = None
+                    self._recovery_candidate_sev = None
+                    if candidate_sev == 0:
+                        self._ocular_elevated_active = False
+                    elif candidate_has_ocular_reason:
+                        self._ocular_elevated_active = True
+                else:
+                    # Still within cooldown; hold elevated state to prevent alert flapping
+                    pass
 
         # Case C: State matches candidate
         else:
             self._recovery_start_ts_ms = None
             self._recovery_candidate_sev = None
+            if candidate_sev > 0 and candidate_has_ocular_reason:
+                self._ocular_elevated_active = True
+            elif candidate_sev == 0:
+                self._ocular_elevated_active = False
 
         # Timer 2: Alert Resolution Cooldown
         if self.alert_active:
@@ -543,7 +602,21 @@ class DecisionEngine:
                     self._historical_reason = None
                     self._alert_recovery_start_ts_ms = None
 
+        if self.current_state == DrowsinessState.NORMAL and not self.alert_active:
+            self._last_elevated_reason = None
+
         primary_reason = reasons[0] if reasons else None
+        if (
+            self.SEVERITY_MAP[self.current_state] > candidate_sev
+            and (primary_reason is None or primary_reason.code == ReasonCode.ALERT_NORMAL)
+        ):
+            # During hysteresis cooldown hold, retain the active elevated/historical reason
+            # rather than emitting a contradictory ALERT_NORMAL reason for an elevated state.
+            held_reason = self._historical_reason or self._last_elevated_reason
+            if held_reason is not None:
+                primary_reason = held_reason
+
+        is_alert_recovering = bool(self.alert_active and self._alert_recovery_start_ts_ms is not None)
 
         return DecisionResult(
             timestamp_ms=ts_ms,
@@ -555,6 +628,7 @@ class DecisionEngine:
             alert_active=self.alert_active,
             unresolved_alert_state=self._unresolved_alert_state,
             historical_reason=self._historical_reason,
+            is_alert_recovering=is_alert_recovering,
         )
 
     def reset(self) -> None:
@@ -568,4 +642,6 @@ class DecisionEngine:
         self.alert_active = False
         self._unresolved_alert_state = None
         self._historical_reason = None
+        self._last_elevated_reason = None
         self._alert_recovery_start_ts_ms = None
+        self._ocular_elevated_active = False

@@ -1,0 +1,6 @@
+# Optional Desktop CLI Audio Alert Dependency
+# Only required when running local webcam monitoring (`scripts/run_camera_test.py`) with
+# host desktop speaker playback enabled. Headless FastAPI/LiveKit servers and browser clients
+# (which use the browser Web Audio API) do NOT require this package.
+
+sounddevice>=0.4.6
