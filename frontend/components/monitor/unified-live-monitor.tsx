@@ -5,6 +5,8 @@ import Link from "next/link";
 import { toast } from "sonner";
 import { useCamera } from "@/hooks/use-camera";
 import { useLivekitTelemetryStream } from "@/hooks/use-livekit-telemetry-stream";
+import { useBrowserDetection } from "@/hooks/use-browser-detection";
+import { convertBrowserTelemetryToFrameTelemetry, DrowsinessState } from "@/lib/ai";
 import { CapturedFrame } from "@/types/camera";
 import {
   AlertState,
@@ -102,6 +104,7 @@ export function UnifiedLiveMonitor({
   }, [setSidebarOpen]);
 
   // Layout & UI States
+  const [runtimeMode, setRuntimeMode] = useState<"browser" | "remote">("browser");
   const [viewOrientation, setViewOrientation] = useState<"portrait" | "landscape">("landscape");
   const [consoleMode, setConsoleMode] = useState<"cockpit" | "diagnostics">("diagnostics");
   const [framingMode, setFramingMode] = useState<"cover" | "fit">("cover");
@@ -115,9 +118,13 @@ export function UnifiedLiveMonitor({
     initialDriverProfile?.centerEarMedian ?? 0.285
   );
 
-  // Restore saved view mode preference (defaults to diagnostics in development)
+  // Restore saved view mode and runtime mode preferences
   useEffect(() => {
     try {
+      const savedMode = localStorage.getItem("driveguard_runtime_mode");
+      if (savedMode === "browser" || savedMode === "remote") {
+        setRuntimeMode(savedMode);
+      }
       const saved = localStorage.getItem("driveguard_console_mode");
       if (saved === "cockpit" || saved === "diagnostics") {
         setConsoleMode(saved);
@@ -438,8 +445,78 @@ export function UnifiedLiveMonitor({
     },
   });
 
-  // Sync saved PostgreSQL DriverProfile to FastAPI via canonical DTO mapper
+  // Handle safety alerts triggered by Browser Detection Engine
+  const handleBrowserSafetyAlert = useCallback(
+    (decision: any, t: any) => {
+      const isCritical = decision.state === DrowsinessState.CRITICAL_WARNING;
+      const isWarning = decision.state === DrowsinessState.DROWSINESS_WARNING;
+      if (!isCritical && !isWarning) return;
+
+      const safetyEvent: SafetyEvent = {
+        event_id: `evt_browser_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        event_type: "DROWSINESS_ALERT",
+        severity: isCritical ? "CRITICAL" : "WARNING",
+        new_state: isCritical ? "CRITICAL" : "WARNING",
+        prev_state: "NORMAL",
+        timestamp: (t.timestampMs || Date.now()) / 1000,
+        metrics: {
+          ear: t.ear,
+          perclos: t.perclosPct,
+          risk_score: isCritical ? 0.95 : 0.65,
+          reasons: t.reasons,
+          pose_zone: t.poseZone,
+        },
+      };
+      handleSafetyEvent(safetyEvent);
+    },
+    [handleSafetyEvent]
+  );
+
+  // Browser-Side AI Detection Hook (Local MediaPipe Face Landmarker & TypeScript detection)
+  const {
+    engineStatus: browserEngineStatus,
+    telemetry: browserTelemetry,
+    calibration: browserCalibration,
+    sessionCode: browserSessionCode,
+    syncStatus: browserSyncStatus,
+    startMonitoring: startBrowserMonitoring,
+    pauseMonitoring: pauseBrowserMonitoring,
+    resumeMonitoring: resumeBrowserMonitoring,
+    stopMonitoring: stopBrowserMonitoring,
+    startCalibration: startBrowserCalibration,
+    cancelCalibration: cancelBrowserCalibration,
+    queueSessionEnd: queueBrowserSessionEnd,
+  } = useBrowserDetection({
+    driverId,
+    initialProfile: (initialDriverProfile as unknown) as any,
+    isMirrored,
+    targetInferenceFps: 12,
+    autoStartSession: true,
+    onSafetyAlert: handleBrowserSafetyAlert,
+  });
+
+  // Convert browser telemetry to FrameTelemetry for existing HUD components
+  const convertedBrowserTelemetry = useMemo(() => {
+    if (!browserTelemetry) return null;
+    return convertBrowserTelemetryToFrameTelemetry(browserTelemetry);
+  }, [browserTelemetry]);
+
+  // Unified telemetry & processing state
+  const effectiveTelemetry = runtimeMode === "browser" ? convertedBrowserTelemetry : telemetry;
+  const effectiveProcessingStatus = runtimeMode === "browser"
+    ? (browserEngineStatus === "running" ? "processing" : browserEngineStatus === "initializing" ? "connecting" : "idle")
+    : backendProcessingStatus;
+
+  // Sync browser session code
+  useEffect(() => {
+    if (runtimeMode === "browser" && browserSessionCode) {
+      activeSessionCodeRef.current = browserSessionCode;
+    }
+  }, [runtimeMode, browserSessionCode]);
+
+  // Sync saved PostgreSQL DriverProfile to FastAPI via canonical DTO mapper (Remote AI mode)
   const syncProfileToWorker = useCallback(async () => {
+    if (runtimeMode !== "remote") return;
     if (!initialDriverProfile?.isCalibrated || !driverId) return;
 
     const fastApiProfileDto = buildDriverProfileDtoPayload(
@@ -458,51 +535,59 @@ export function UnifiedLiveMonitor({
     } catch {
       // Non-fatal if worker is still spinning up; Next.js /api/v1 proxy also hydrates on token minting
     }
-  }, [backendType, driverId, initialDriverProfile]);
+  }, [backendType, driverId, initialDriverProfile, runtimeMode]);
 
-  // Reactive Stream Trigger: automatically start/stop WebRTC loop when camera becomes active
+  // Reactive Stream Trigger: automatically start/stop inference loop when camera becomes active
   useEffect(() => {
     if (cameraState === "active" && videoRef.current) {
-      syncProfileToWorker().finally(() => {
-        if (videoRef.current) {
-          startStreamingLoop(videoRef.current, isMirrored);
-        }
-      });
+      if (runtimeMode === "browser") {
+        startBrowserMonitoring(videoRef.current);
+      } else {
+        syncProfileToWorker().finally(() => {
+          if (videoRef.current) {
+            startStreamingLoop(videoRef.current, isMirrored);
+          }
+        });
+      }
     } else if (cameraState === "stopped" || cameraState === "paused") {
-      stopStreamingLoop();
+      if (runtimeMode === "browser") {
+        stopBrowserMonitoring();
+      } else {
+        stopStreamingLoop();
+      }
     }
-  }, [cameraState, isMirrored, startStreamingLoop, stopStreamingLoop, syncProfileToWorker, videoRef]);
+  }, [cameraState, runtimeMode, isMirrored, startBrowserMonitoring, stopBrowserMonitoring, startStreamingLoop, stopStreamingLoop, syncProfileToWorker, videoRef]);
 
   // Handle telemetry updates: session accumulators, rolling 60s chart buffer, and audio sync
   useEffect(() => {
-    if (!telemetry) return;
+    if (!effectiveTelemetry) return;
 
     const stats = sessionStatsRef.current;
     stats.totalFrames++;
-    if (telemetry.state === "NORMAL") {
+    if (effectiveTelemetry.state === "NORMAL") {
       stats.normalFramesCount++;
     }
-    stats.fpsSum += telemetry.fps || 0;
+    stats.fpsSum += effectiveTelemetry.fps || 0;
     const inferLat =
-      telemetry.timing?.infer_duration_ms ?? telemetry.inference_latency_ms ?? 0;
+      effectiveTelemetry.timing?.infer_duration_ms ?? effectiveTelemetry.inference_latency_ms ?? 0;
     stats.latencySum += inferLat;
 
-    const perclos = telemetry.eye_metrics?.perclos_pct ?? 0;
+    const perclos = effectiveTelemetry.eye_metrics?.perclos_pct ?? 0;
     stats.perclosSum += perclos;
     if (perclos > stats.maxPerclos) {
       stats.maxPerclos = perclos;
     }
 
-    const blinkRate = telemetry.eye_metrics?.blink_rate_per_min ?? 0;
+    const blinkRate = effectiveTelemetry.eye_metrics?.blink_rate_per_min ?? 0;
     stats.blinkRateSum += blinkRate;
 
-    const blinkDur = telemetry.eye_metrics?.blink_duration_ms ?? null;
+    const blinkDur = effectiveTelemetry.eye_metrics?.blink_duration_ms ?? null;
     if (blinkDur !== null && blinkDur !== stats.lastBlinkDurationSeen) {
       stats.lastBlinkDurationSeen = blinkDur;
       stats.totalBlinks++;
     }
 
-    if (telemetry.comparison?.is_mirror_check_suppressed) {
+    if (effectiveTelemetry.comparison?.is_mirror_check_suppressed) {
       stats.mirrorSuppressions++;
     }
 
@@ -515,10 +600,10 @@ export function UnifiedLiveMonitor({
           minute: "2-digit",
           second: "2-digit",
         }),
-        ear: Number((telemetry.eye_metrics?.ear_raw ?? 0).toFixed(3)),
-        threshold: Number((telemetry.eye_metrics?.ear_closure_threshold ?? 0.21).toFixed(3)),
+        ear: Number((effectiveTelemetry.eye_metrics?.ear_raw ?? 0).toFixed(3)),
+        threshold: Number((effectiveTelemetry.eye_metrics?.ear_closure_threshold ?? 0.21).toFixed(3)),
         perclos: Number(perclos.toFixed(1)),
-        riskPct: Math.round((telemetry.risk_score ?? 0) * 100),
+        riskPct: Math.round((effectiveTelemetry.risk_score ?? 0) * 100),
       };
       setChartHistory((prev) => {
         const next = [...prev, point];
@@ -527,35 +612,35 @@ export function UnifiedLiveMonitor({
     }
 
     // Synchronize audio subsystem with continuous telemetry state
-    if (telemetry.state) {
-      audioEngine?.setRiskState(telemetry.state, undefined, telemetry.timestamp_ms);
+    if (effectiveTelemetry.state) {
+      audioEngine?.setRiskState(effectiveTelemetry.state, undefined, effectiveTelemetry.timestamp_ms);
     }
 
     // Fallback sustained CRITICAL logging if state remains CRITICAL for > 8s without a transition packet
-    if (telemetry.state === "CRITICAL" && activeSessionCodeRef.current) {
+    if (effectiveTelemetry.state === "CRITICAL" && activeSessionCodeRef.current) {
       if (nowMs - lastAlertTimeRef.current >= 8000) {
         lastAlertTimeRef.current = nowMs;
         stats.criticalCount++;
         const earVal =
-          telemetry.eye_metrics?.ear_normalized ?? (telemetry.eye_metrics?.ear_raw ?? 0.15);
+          effectiveTelemetry.eye_metrics?.ear_normalized ?? (effectiveTelemetry.eye_metrics?.ear_raw ?? 0.15);
         fetch("/api/alerts/log", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             sessionCode: activeSessionCodeRef.current,
             severity: "CRITICAL",
-            riskScore: telemetry.risk_score ?? 0.85,
+            riskScore: effectiveTelemetry.risk_score ?? 0.85,
             earValue: earVal,
             perclosPct: perclos,
-            poseZone: telemetry.pose_zone ?? "CENTER",
-            reasons: telemetry.reason_codes ?? ["CRITICAL_STATE"],
-            cascadeDecision: telemetry.cascade?.arbitration_winner || "GEOMETRY",
+            poseZone: effectiveTelemetry.pose_zone ?? "CENTER",
+            reasons: effectiveTelemetry.reason_codes ?? ["CRITICAL_STATE"],
+            cascadeDecision: effectiveTelemetry.cascade?.arbitration_winner || (runtimeMode === "browser" ? "BROWSER_AI" : "GEOMETRY"),
             timestampMs: nowMs,
           }),
         }).catch(() => {});
       }
     }
-  }, [telemetry, audioEngine]);
+  }, [effectiveTelemetry, audioEngine, runtimeMode]);
 
   // Flush active session on pagehide / tab close / component unmount so no session is left with 0s duration
   useEffect(() => {
@@ -632,6 +717,30 @@ export function UnifiedLiveMonitor({
     }
   }, []);
 
+  // Switch between Browser AI and Remote AI runtime modes
+  const handleSwitchRuntimeMode = useCallback(
+    async (targetMode: "browser" | "remote") => {
+      if (targetMode === runtimeMode) return;
+      if (cameraState === "active" && videoRef.current) {
+        if (runtimeMode === "browser") {
+          stopBrowserMonitoring();
+        } else {
+          stopStreamingLoop();
+        }
+      }
+      setRuntimeMode(targetMode);
+      try {
+        localStorage.setItem("driveguard_runtime_mode", targetMode);
+      } catch {}
+      toast.info(
+        targetMode === "browser"
+          ? "Switched to Browser AI (Edge MediaPipe — zero server video streaming)."
+          : "Switched to Remote AI (LiveKit WebRTC + Python DrowsinessEngine)."
+      );
+    },
+    [runtimeMode, cameraState, stopBrowserMonitoring, stopStreamingLoop, videoRef]
+  );
+
   // Start live monitoring (Hardware Camera + Database Driving Session)
   const handleStartMonitoring = useCallback(async () => {
     unlockAudio();
@@ -639,29 +748,35 @@ export function UnifiedLiveMonitor({
     setChartHistory([]);
     await startCamera();
 
-    try {
-      const startRes = await fetch("/api/sessions/start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: experimentMode,
-          device: isMobileDevice ? "MOBILE_PORTRAIT" : "DESKTOP_HUD",
-        }),
-      });
-      if (startRes.ok) {
-        const data = await startRes.json();
-        if (data?.sessionCode) {
-          activeSessionCodeRef.current = data.sessionCode;
+    if (runtimeMode === "remote") {
+      try {
+        const startRes = await fetch("/api/sessions/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mode: experimentMode,
+            device: isMobileDevice ? "MOBILE_PORTRAIT" : "DESKTOP_HUD",
+          }),
+        });
+        if (startRes.ok) {
+          const data = await startRes.json();
+          if (data?.sessionCode) {
+            activeSessionCodeRef.current = data.sessionCode;
+          }
         }
-      }
-    } catch (_) {}
-  }, [startCamera, experimentMode, isMobileDevice, unlockAudio, resetSessionStats]);
+      } catch (_) {}
+    }
+  }, [startCamera, runtimeMode, experimentMode, isMobileDevice, unlockAudio, resetSessionStats]);
 
   // Stop live monitoring, persist full session summary & completely clear the cockpit
   const handleStopMonitoring = useCallback(async () => {
     audioEngine?.stopCurrentAlert();
     audioEngine?.setRiskState("NORMAL");
-    stopStreamingLoop();
+    if (runtimeMode === "browser") {
+      stopBrowserMonitoring();
+    } else {
+      stopStreamingLoop();
+    }
     stopCamera();
     setChartHistory([]);
     setCapturedSnapshot(null);
@@ -674,6 +789,9 @@ export function UnifiedLiveMonitor({
       activeSessionCodeRef.current = null;
       const payload = buildSessionEndPayload(code, streamDurationSec);
       resetSessionStats();
+      if (runtimeMode === "browser") {
+        queueBrowserSessionEnd(streamDurationSec);
+      }
       try {
         const res = await fetch("/api/sessions/end", {
           method: "POST",
@@ -689,7 +807,7 @@ export function UnifiedLiveMonitor({
     } else {
       resetSessionStats();
     }
-  }, [audioEngine, stopStreamingLoop, stopCamera, buildSessionEndPayload, streamDurationSec, resetSessionStats]);
+  }, [audioEngine, runtimeMode, stopBrowserMonitoring, stopStreamingLoop, stopCamera, buildSessionEndPayload, streamDurationSec, resetSessionStats, queueBrowserSessionEnd]);
 
   // Switch between Cloud and Localhost engines: cleanly ends any active session, stops camera, and resets cockpit
   const handleSwitchBackend = useCallback(
@@ -752,6 +870,74 @@ export function UnifiedLiveMonitor({
 
   // Helper for distinct video overlay badge per authoritative safety state (never green before telemetry)
   const renderOverlayStateBadge = () => {
+    if (runtimeMode === "browser") {
+      if (browserEngineStatus === "idle" || browserEngineStatus === "stopped") {
+        return (
+          <Badge
+            variant="outline"
+            className="bg-black/75 backdrop-blur-md border-amber-400/50 text-amber-300 text-[10px] font-mono px-2.5 py-1"
+          >
+            STANDBY (BROWSER AI)
+          </Badge>
+        );
+      }
+      if (browserEngineStatus === "initializing") {
+        return (
+          <Badge
+            variant="outline"
+            className="bg-black/75 backdrop-blur-md border-primary/50 text-primary text-[10px] font-mono px-2.5 py-1"
+          >
+            <span className="size-1.5 rounded-full bg-primary animate-ping mr-1.5" />
+            LOADING MEDIAPIPE MODEL…
+          </Badge>
+        );
+      }
+      if (effectiveTelemetry) {
+        const state = (effectiveTelemetry.alert_state || effectiveTelemetry.state) as string;
+        if (state === "CRITICAL") {
+          return (
+            <Badge className="text-xs uppercase font-extrabold shadow-lg px-2.5 py-1 bg-rose-600 text-white border border-rose-300 animate-pulse gap-1.5">
+              <Flame className="size-3.5" />
+              <span>CRITICAL FATIGUE</span>
+            </Badge>
+          );
+        }
+        if (state === "WARNING") {
+          return (
+            <Badge className="text-xs uppercase font-extrabold shadow-lg px-2.5 py-1 bg-amber-500 text-slate-950 gap-1.5">
+              <AlertTriangle className="size-3.5" />
+              <span>WARNING</span>
+            </Badge>
+          );
+        }
+        if (state === "ATTENTION") {
+          return (
+            <Badge className="text-xs uppercase font-extrabold shadow-lg px-2.5 py-1 bg-amber-500/80 text-slate-950 gap-1.5">
+              <AlertTriangle className="size-3.5" />
+              <span>ATTENTION</span>
+            </Badge>
+          );
+        }
+        if (state === "MONITORING_UNAVAILABLE") {
+          return (
+            <Badge
+              variant="outline"
+              className="text-xs uppercase font-bold shadow-lg px-2.5 py-1 bg-slate-900/90 text-amber-300 border-amber-400/80 border-dashed gap-1.5"
+            >
+              <EyeOff className="size-3.5 text-amber-400" />
+              <span>MONITORING UNAVAILABLE</span>
+            </Badge>
+          );
+        }
+        return (
+          <Badge className="text-xs uppercase font-extrabold shadow-lg px-2.5 py-1 bg-emerald-600 text-white gap-1.5">
+            <ShieldCheck className="size-3.5" />
+            <span>NORMAL</span>
+          </Badge>
+        );
+      }
+    }
+
     const effectiveState = resolveEffectiveDisplayState(telemetry, {
       isConnected: isWsConnected,
       isStale,
@@ -839,7 +1025,7 @@ export function UnifiedLiveMonitor({
       {!isFullscreen && (
         <div className="space-y-3">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 sm:p-3.5 rounded-2xl bg-card border border-border/80 shadow-xs">
-            <div className="space-y-0.5 min-w-0">
+            <div className="space-y-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <div className="size-8 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0">
                   <Radio className="size-4 animate-pulse" />
@@ -847,42 +1033,112 @@ export function UnifiedLiveMonitor({
                 <h1 className="text-base sm:text-lg font-bold text-foreground tracking-tight">
                   Real-Time Driver Monitoring Workspace
                 </h1>
-                <Badge
-                  variant="outline"
-                  className={`text-[10px] font-mono flex items-center gap-1.5 px-2.5 py-0.5 rounded-full ${
-                    isWsConnected && !isStale
-                      ? "border-emerald-500/40 text-emerald-500 bg-emerald-500/10"
-                      : isStale
-                        ? "border-purple-500/40 text-purple-400 bg-purple-500/10"
-                        : wsStatus === "connecting" || wsStatus === "reconnecting"
-                          ? "border-amber-500/40 text-amber-500 bg-amber-500/10 animate-pulse"
-                          : "border-border text-muted-foreground bg-muted/40"
-                  }`}
-                >
-                  <span
-                    className={`size-1.5 rounded-full ${
+
+                {/* Runtime Mode Selector */}
+                <div className="flex items-center p-0.5 rounded-xl bg-muted/60 border border-border/80">
+                  <Button
+                    size="sm"
+                    variant={runtimeMode === "browser" ? "default" : "ghost"}
+                    onClick={() => handleSwitchRuntimeMode("browser")}
+                    className="text-xs h-6 px-2.5 rounded-lg gap-1 cursor-pointer font-semibold"
+                    title="Browser AI: MediaPipe Edge execution in TypeScript. Zero video sent to servers."
+                  >
+                    <Sparkles className="size-3 text-primary" />
+                    <span>Browser AI (Edge)</span>
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={runtimeMode === "remote" ? "default" : "ghost"}
+                    onClick={() => handleSwitchRuntimeMode("remote")}
+                    className="text-xs h-6 px-2.5 rounded-lg gap-1 cursor-pointer"
+                    title="Remote AI: LiveKit WebRTC + Python FastAPI (Research / Academic mode)"
+                  >
+                    <Radio className="size-3" />
+                    <span>Remote AI (FastAPI)</span>
+                  </Button>
+                </div>
+
+                {/* Status Badges */}
+                {runtimeMode === "browser" ? (
+                  <>
+                    <Badge
+                      variant="outline"
+                      className={`text-[10px] font-mono flex items-center gap-1.5 px-2.5 py-0.5 rounded-full ${
+                        browserEngineStatus === "running"
+                          ? "border-emerald-500/40 text-emerald-500 bg-emerald-500/10"
+                          : browserEngineStatus === "initializing"
+                            ? "border-amber-500/40 text-amber-500 bg-amber-500/10 animate-pulse"
+                            : "border-border text-muted-foreground bg-muted/40"
+                      }`}
+                    >
+                      <span
+                        className={`size-1.5 rounded-full ${
+                          browserEngineStatus === "running"
+                            ? "bg-emerald-500"
+                            : browserEngineStatus === "initializing"
+                              ? "bg-amber-500 animate-ping"
+                              : "bg-muted-foreground/60"
+                        }`}
+                      />
+                      <span>
+                        {browserEngineStatus === "running"
+                          ? "BROWSER AI ACTIVE (EDGE)"
+                          : browserEngineStatus === "initializing"
+                            ? "LOADING MEDIAPIPE…"
+                            : "STANDBY (BROWSER AI)"}
+                      </span>
+                    </Badge>
+                    <Badge
+                      variant="outline"
+                      className={`text-[10px] font-mono px-2 py-0.5 rounded-full ${
+                        browserSyncStatus === "synced"
+                          ? "border-emerald-500/30 text-emerald-600 bg-emerald-500/5"
+                          : "border-amber-500/40 text-amber-500 bg-amber-500/10"
+                      }`}
+                    >
+                      {browserSyncStatus === "synced" ? "SYNCED TO NEON" : "OFFLINE BUFFER"}
+                    </Badge>
+                  </>
+                ) : (
+                  <Badge
+                    variant="outline"
+                    className={`text-[10px] font-mono flex items-center gap-1.5 px-2.5 py-0.5 rounded-full ${
                       isWsConnected && !isStale
-                        ? "bg-emerald-500"
+                        ? "border-emerald-500/40 text-emerald-500 bg-emerald-500/10"
                         : isStale
-                          ? "bg-purple-400"
+                          ? "border-purple-500/40 text-purple-400 bg-purple-500/10"
                           : wsStatus === "connecting" || wsStatus === "reconnecting"
-                            ? "bg-amber-500 animate-ping"
-                            : "bg-muted-foreground/60"
+                            ? "border-amber-500/40 text-amber-500 bg-amber-500/10 animate-pulse"
+                            : "border-border text-muted-foreground bg-muted/40"
                     }`}
-                  />
-                  <span>
-                    {isWsConnected && !isStale
-                      ? "LIVEKIT WEBRTC ACTIVE"
-                      : isStale
-                        ? "TELEMETRY STALE"
-                        : wsStatus === "connecting" || wsStatus === "reconnecting"
-                          ? "CONNECTING TO SFU…"
-                          : "PIPELINE STANDBY"}
-                  </span>
-                </Badge>
+                  >
+                    <span
+                      className={`size-1.5 rounded-full ${
+                        isWsConnected && !isStale
+                          ? "bg-emerald-500"
+                          : isStale
+                            ? "bg-purple-400"
+                            : wsStatus === "connecting" || wsStatus === "reconnecting"
+                              ? "bg-amber-500 animate-ping"
+                              : "bg-muted-foreground/60"
+                      }`}
+                    />
+                    <span>
+                      {isWsConnected && !isStale
+                        ? "LIVEKIT WEBRTC ACTIVE"
+                        : isStale
+                          ? "TELEMETRY STALE"
+                          : wsStatus === "connecting" || wsStatus === "reconnecting"
+                            ? "CONNECTING TO SFU…"
+                            : "PIPELINE STANDBY"}
+                    </span>
+                  </Badge>
+                )}
               </div>
               <p className="text-xs text-muted-foreground pl-10 hidden sm:block">
-                Authoritative Python DrowsinessEngine over LiveKit WebRTC: 478-landmark 3D head pose, 4-zone PDBP baselines, blink kinematics, PERCLOS, and MAR yawning.
+                {runtimeMode === "browser"
+                  ? "Browser Edge MediaPipe & TypeScript: 478-landmark 3D head pose, 4-zone PDBP baselines, blink kinematics, PERCLOS, and MAR yawning. Completely private, offline-capable, zero video sent to servers."
+                  : "Authoritative Python DrowsinessEngine over LiveKit WebRTC: 478-landmark 3D head pose, 4-zone PDBP baselines, blink kinematics, PERCLOS, and MAR yawning."}
               </p>
             </div>
 
@@ -961,13 +1217,13 @@ export function UnifiedLiveMonitor({
             cameraResolutionLabel={
               resolution ? `${resolution.width}×${resolution.height}` : "640×480"
             }
-            faceDetected={Boolean(telemetry?.face_detected)}
+            faceDetected={Boolean(effectiveTelemetry?.face_detected)}
             isCalibrated={isCalibrated}
             centerEarBaseline={centerEarBaseline}
-            livekitStatus={wsStatus}
-            backendProcessingStatus={backendProcessingStatus}
-            isStale={isStale}
-            rttMs={roundtripLatencyMs}
+            livekitStatus={runtimeMode === "browser" ? "connected" : wsStatus}
+            backendProcessingStatus={effectiveProcessingStatus}
+            isStale={runtimeMode === "browser" ? false : isStale}
+            rttMs={runtimeMode === "browser" ? 0 : roundtripLatencyMs}
             audioStatus={audioStatus}
             audioMuted={audioMuted}
             onUnlockAudio={unlockAudio}
@@ -981,7 +1237,7 @@ export function UnifiedLiveMonitor({
                 <Compass className="size-4 text-amber-500 shrink-0" />
                 <span className="text-foreground">
                   <strong>Calibration required for ocular monitoring:</strong> Run 4-Zone calibration
-                  so the backend activates personalised eye-closure and PERCLOS thresholds.
+                  so the engine activates personalised eye-closure and PERCLOS thresholds.
                 </span>
               </div>
               <Button
@@ -997,8 +1253,8 @@ export function UnifiedLiveMonitor({
         </div>
       )}
 
-      {/* Connection Recovery Assistant (Shown when Cloud Worker is cold-starting or connection errors) */}
-      {!isFullscreen && (wsStatus === "error" || isStale || workerError) && (
+      {/* Connection Recovery Assistant (Shown when Cloud Worker is cold-starting or connection errors in Remote AI mode) */}
+      {!isFullscreen && runtimeMode === "remote" && (wsStatus === "error" || isStale || workerError) && (
         <div
           role="region"
           aria-label="Connection Recovery Assistant"
@@ -1163,8 +1419,8 @@ export function UnifiedLiveMonitor({
           <CameraView
             videoRef={videoRef}
             cameraState={cameraState}
-            alertState={telemetry?.state ?? "MONITORING_UNAVAILABLE"}
-            isStale={isStale}
+            alertState={effectiveTelemetry?.state ?? "MONITORING_UNAVAILABLE"}
+            isStale={runtimeMode === "browser" ? false : isStale}
             isMirrored={isMirrored}
             framingMode={framingMode}
             viewOrientation={viewOrientation}
@@ -1179,19 +1435,19 @@ export function UnifiedLiveMonitor({
                   <div className="flex items-center gap-1.5 flex-wrap">
                     {renderOverlayStateBadge()}
 
-                    {telemetry && (
+                    {effectiveTelemetry && (
                       <Badge
                         variant="outline"
                         className="bg-black/75 backdrop-blur-md border-white/20 text-white text-[10px] font-mono px-2 py-0.5"
                       >
-                        Zone: {telemetry.pose_zone}
+                        Zone: {effectiveTelemetry.pose_zone}
                       </Badge>
                     )}
                   </div>
 
                   {/* Latency & Resolution */}
                   <div className="flex items-center gap-1.5">
-                    {roundtripLatencyMs > 0 && (
+                    {roundtripLatencyMs > 0 && runtimeMode === "remote" && (
                       <Badge
                         variant="outline"
                         className="bg-black/75 backdrop-blur-md border-white/20 text-white text-[10px] font-mono tabular-nums px-2 py-0.5"
@@ -1312,9 +1568,9 @@ export function UnifiedLiveMonitor({
           >
             {consoleMode === "cockpit" ? (
               <DriverCockpitHUD
-                telemetry={telemetry}
+                telemetry={effectiveTelemetry}
                 cameraState={cameraState}
-                isStale={isStale}
+                isStale={runtimeMode === "browser" ? false : isStale}
                 isAudioUnlocked={isAudioUnlocked}
                 isMuted={audioMuted}
                 volume={audioVolume}
@@ -1328,11 +1584,11 @@ export function UnifiedLiveMonitor({
               <>
                 {/* Live AI Telemetry HUD Gauges */}
                 <LiveTelemetryHUD
-                  telemetry={telemetry}
+                  telemetry={effectiveTelemetry}
                   cameraState={cameraState}
                   backendType={backendType}
                   latencyDiagnostics={latencyDiagnostics}
-                  isStale={isStale}
+                  isStale={runtimeMode === "browser" ? false : isStale}
                   isAudioUnlocked={isAudioUnlocked}
                   isMuted={audioMuted}
                   volume={audioVolume}
@@ -1346,9 +1602,9 @@ export function UnifiedLiveMonitor({
 
                 {/* Structured Explainable Risk & Stage Latency Breakdown Panel */}
                 <ExplainableRiskPanel
-                  telemetry={telemetry}
+                  telemetry={effectiveTelemetry}
                   latencyDiagnostics={latencyDiagnostics}
-                  isStale={isStale}
+                  isStale={runtimeMode === "browser" ? false : isStale}
                 />
 
                 {/* Hardware & Cascade Configuration Card */}
