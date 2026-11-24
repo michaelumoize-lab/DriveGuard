@@ -79,8 +79,8 @@ export default function HelpPage() {
     {
       id: "calibration-guide",
       category: "calibration",
-      title: "Guided 4-Zone Calibration",
-      summary: "How to establish your personal behavioral baselines across all 4 spatial zones.",
+      title: "Streamlined 15-Second 4-Zone Calibration",
+      summary: "How to establish your personal behavioral baselines across all 4 spatial zones with zero blinking delay.",
       badge: "Calibration",
       content: (
         <div className="space-y-3 text-sm text-muted-foreground leading-relaxed">
@@ -88,19 +88,97 @@ export default function HelpPage() {
             Head pose changes facial perspective. When glancing at a side mirror or dashboard, the Eye Aspect Ratio (EAR)
             naturally narrows even when the driver is fully awake. Conventional systems produce false alarms during these glances.
           </p>
+          <div className="p-3 rounded-xl bg-emerald-500/5 border border-emerald-500/20 text-xs">
+            <strong className="text-foreground block mb-1">Streamlined Calibration Optimization:</strong>
+            The redundant 2-minute blinking test has been removed. Research confirms that staring at a camera for 2 minutes causes conscious observer bias (unnatural blinking). Natural blink duration (235 ms) and reopening velocity ratio (RCR = 0.95) are seeded from established clinical norms and continuously adapted online via our dual-anchor drift filter.
+          </div>
           <p>
-            DriveGuard&apos;s guided calibration captures your unique baseline across 4 zones:
+            DriveGuard&apos;s guided calibration captures your unique baseline across 4 zones in just ~15 seconds:
           </p>
           <ol className="list-decimal pl-5 space-y-1 text-xs">
-            <li><strong>CENTER:</strong> Looking straight ahead at the roadway. Establishes your primary anchor baseline ($B_0$).</li>
-            <li><strong>LEFT MIRROR:</strong> Looking toward your driver-side mirror.</li>
-            <li><strong>RIGHT MIRROR:</strong> Looking toward your passenger-side mirror.</li>
-            <li><strong>DASHBOARD:</strong> Looking slightly down toward the instrument cluster.</li>
+            <li><strong>CENTER (4.0 s):</strong> Looking straight ahead at the roadway. Establishes your primary anchor baseline ($B_0$) and normal median EAR.</li>
+            <li><strong>LEFT MIRROR (3.0 s):</strong> Glancing toward your driver-side mirror (Yaw $\approx +24^\circ$).</li>
+            <li><strong>RIGHT MIRROR (3.0 s):</strong> Glancing toward your passenger-side mirror (Yaw $\approx -24^\circ$).</li>
+            <li><strong>DASHBOARD (3.0 s):</strong> Glancing down toward the instrument cluster (Pitch $\approx -14^\circ$).</li>
           </ol>
           <p className="text-xs">
             The calibration wizard uses real-time <strong>target-acquisition spatial gating</strong>: samples are only gathered
             when your head orientation is properly aligned with the active target zone!
           </p>
+        </div>
+      ),
+    },
+    {
+      id: "camera-and-positioning",
+      category: "getting-started",
+      title: "Camera Mounting & Optical Diagnostics",
+      summary: "Guidelines for in-cabin phone mounting, reticle alignment, and optical environment badges.",
+      badge: "Camera & Optics",
+      content: (
+        <div className="space-y-3 text-sm text-muted-foreground leading-relaxed">
+          <p>
+            DriveGuard is designed for real automotive cockpits with obliquely mounted smartphone cameras (e.g., windshield suction mount, air vent clip, or dashboard mount).
+          </p>
+          <div className="space-y-2 text-xs">
+            <div>
+              <strong className="text-foreground">Mounting &amp; Framing Rule:</strong> Look naturally forward down the road, NOT directly at the phone lens. The camera should capture your head with a face-height ratio between 18% and 50% of the frame.
+            </div>
+            <div>
+              <strong className="text-foreground">Optical Quality Monitoring:</strong> The camera feed continuously samples mean luminance ($40 - 210$) to flag dark cabins or glare, and computes the Laplacian edge variance ($\ge 75$) to detect lens defocus or motion blur.
+            </div>
+            <div>
+              <strong className="text-foreground">Screen Wake Lock:</strong> While monitoring is active, the browser automatically acquires a Screen Wake Lock to prevent your phone screen from dimming or locking while driving.
+            </div>
+          </div>
+        </div>
+      ),
+    },
+    {
+      id: "preflight-interlock-gate",
+      category: "monitoring",
+      title: "Automotive Pre-Flight Readiness Interlock Gate",
+      summary: "Why monitoring sessions require a 5-point subsystem readiness handshake before recording begins.",
+      badge: "Safety Architecture",
+      content: (
+        <div className="space-y-3 text-sm text-muted-foreground leading-relaxed">
+          <p>
+            In accordance with ISO 26262 functional safety, DriveGuard will not begin recording a driving session until all 5 critical subsystems pass their readiness handshake:
+          </p>
+          <ol className="list-decimal pl-5 space-y-1 text-xs">
+            <li><strong>Camera Feed:</strong> Optical video stream is active, negotiated, and not severely degraded.</li>
+            <li><strong>MediaPipe WASM:</strong> 478-landmark 3D face mesh perception engine is loaded in memory and primed.</li>
+            <li><strong>MobileNetV3 ONNX Cascade:</strong> Neural cascade verifier is verified in runtime memory.</li>
+            <li><strong>Backend API &amp; Neon DB:</strong> Fast HTTP health ping confirms database connectivity for persistent telemetry logs.</li>
+            <li><strong>Audio Synthesizer:</strong> Web Audio context is initialized for acoustic warning sweeps.</li>
+          </ol>
+          <p className="text-xs">
+            This prevents orphaned sessions from polluting the database before computer vision and backend telemetry links are fully operational.
+          </p>
+        </div>
+      ),
+    },
+    {
+      id: "academic-suite-guide",
+      category: "ai-cascade",
+      title: "Academic Research Suite & Viva Voce Guide",
+      summary: "How to use the Ablation Lab, Hardware Co-Processor console, and Defense Companion.",
+      badge: "Academic Suite",
+      content: (
+        <div className="space-y-3 text-sm text-muted-foreground leading-relaxed">
+          <p>
+            DriveGuard includes three dedicated academic portals built specifically for external examiner evaluations and capstone defenses:
+          </p>
+          <ul className="list-disc pl-5 space-y-1.5 text-xs">
+            <li>
+              <strong>Ablation Benchmarks (`/dashboard/benchmarks`):</strong> Displays quantitative evaluation tables for RQ1/RQ2/RQ3, false alarm reductions, and an interactive sensitivity slider with one-click LaTeX table exports for your thesis.
+            </li>
+            <li>
+              <strong>Hardware Co-Processor (`/dashboard/hardware`):</strong> Shows live 8-byte packed binary UART frames, DRV2605L haptic actuator tests, SSD1306 OLED HUD emulator, and INA219 real-time power dissipation (V_bus, mA, mW).
+            </li>
+            <li>
+              <strong>Defense Companion (`/dashboard/defense-guide`):</strong> Provides detailed academic answers to the 5 classic examiner questions (why not 3D CNNs, handling narrow eye shapes, dataset leakage prevention).
+            </li>
+          </ul>
         </div>
       ),
     },

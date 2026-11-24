@@ -1,9 +1,9 @@
 "use client";
 
 import React from "react";
-import { CameraState } from "@/types/camera";
+import { CameraState, OpticalFrameQuality, PositioningGuidance } from "@/types/camera";
 import { AlertState } from "@/types/telemetry";
-import { Camera, Eye, Pause, ShieldCheck } from "lucide-react";
+import { Camera, Eye, Pause, ShieldCheck, Sun, AlertTriangle, Crosshair } from "lucide-react";
 
 interface CameraViewProps {
   videoRef: React.RefObject<HTMLVideoElement | null>;
@@ -14,6 +14,8 @@ interface CameraViewProps {
   framingMode: "cover" | "fit";
   viewOrientation: "portrait" | "landscape";
   isFullscreen?: boolean;
+  opticalQuality?: OpticalFrameQuality | null;
+  positioningGuidance?: PositioningGuidance | null;
   onStartClick?: () => void;
   children?: React.ReactNode;
 }
@@ -27,6 +29,8 @@ export function CameraView({
   framingMode,
   viewOrientation,
   isFullscreen = false,
+  opticalQuality,
+  positioningGuidance,
   onStartClick,
   children,
 }: CameraViewProps) {
@@ -96,6 +100,38 @@ export function CameraView({
             <div className={`w-12 h-0.5 ${crosshairBgColor}`} />
             <div className={`h-12 w-0.5 ${crosshairBgColor}`} />
           </div>
+
+          {/* Positioning Guidance Pill if not optimal */}
+          {positioningGuidance && positioningGuidance.hasFace && !positioningGuidance.isOptimal && (
+            <div className="self-center pointer-events-auto bg-black/85 backdrop-blur-md px-3 py-1.5 rounded-full border border-amber-500/50 text-amber-300 text-[11px] font-mono flex items-center gap-1.5 shadow-lg animate-pulse">
+              <Crosshair className="size-3.5 shrink-0" />
+              <span>
+                {positioningGuidance.distanceStatus !== "PERFECT"
+                  ? positioningGuidance.distanceFeedback
+                  : positioningGuidance.centeringStatus !== "CENTERED"
+                  ? positioningGuidance.centeringFeedback
+                  : positioningGuidance.angleFeedback}
+              </span>
+            </div>
+          )}
+
+          {/* Optical Environment Telemetry Tag */}
+          {opticalQuality && (
+            <div className="absolute top-4 left-14 pointer-events-auto flex items-center gap-1.5 bg-black/70 backdrop-blur-xs px-2.5 py-1 rounded-md border border-white/10 text-[10px] font-mono text-zinc-300">
+              <span
+                className={`size-1.5 rounded-full ${
+                  opticalQuality.overallQuality === "EXCELLENT" || opticalQuality.overallQuality === "ACCEPTABLE"
+                    ? "bg-emerald-400"
+                    : "bg-amber-400"
+                }`}
+              />
+              <span>LUM: {Math.round(opticalQuality.meanLuminance)}</span>
+              <span className="text-zinc-500">•</span>
+              <span className={opticalQuality.blurCondition === "BLURRY" ? "text-rose-400" : "text-zinc-300"}>
+                {opticalQuality.blurCondition} ({Math.round(opticalQuality.blurVarianceScore)})
+              </span>
+            </div>
+          )}
 
           <div className="flex justify-between items-end">
             <div className={`w-6 h-6 border-b-2 border-l-2 ${reticleBorderColor} rounded-bl-sm`} />

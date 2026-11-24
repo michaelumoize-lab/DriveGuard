@@ -14,6 +14,8 @@ import {
   Lock,
   AlertTriangle,
   CircleHelp,
+  BarChart3,
+  Brain,
 } from "lucide-react";
 import { getServerSession } from "@/lib/get-session";
 import { LandingHeaderAuth } from "@/components/landing-header-auth";
@@ -327,6 +329,79 @@ export default async function Home() {
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Academic Research Portals */}
+        <section className="py-16 border-t border-border/60 bg-muted/5">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
+            <div className="text-center max-w-2xl mx-auto space-y-2">
+              <Badge variant="outline" className="font-mono text-xs uppercase text-primary border-primary/30">
+                Capstone Engineering Deliverables
+              </Badge>
+              <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-foreground">
+                Academic Evaluation &amp; Cyber-Physical Portals
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                Dedicated research interfaces providing quantitative empirical validation for examiners and faculty panels.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+              <Link
+                href="/dashboard/benchmarks"
+                className="group p-5 rounded-2xl border border-border bg-card hover:border-primary/50 transition-all space-y-3 shadow-xs"
+              >
+                <div className="size-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary group-hover:scale-105 transition-transform">
+                  <BarChart3 className="size-5" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="font-bold text-base text-foreground group-hover:text-primary transition-colors flex items-center justify-between">
+                    <span>Ablation Benchmarks</span>
+                    <ArrowRight className="size-4 text-muted-foreground group-hover:translate-x-1 transition-transform" />
+                  </h3>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Quantitative ablation matrices for RQ1, RQ2, and RQ3 with interactive sensitivity sliders and one-click LaTeX table exports.
+                  </p>
+                </div>
+              </Link>
+
+              <Link
+                href="/dashboard/hardware"
+                className="group p-5 rounded-2xl border border-border bg-card hover:border-primary/50 transition-all space-y-3 shadow-xs"
+              >
+                <div className="size-10 rounded-xl bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400 group-hover:scale-105 transition-transform">
+                  <Cpu className="size-5" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="font-bold text-base text-foreground group-hover:text-primary transition-colors flex items-center justify-between">
+                    <span>Hardware Co-Processor</span>
+                    <ArrowRight className="size-4 text-muted-foreground group-hover:translate-x-1 transition-transform" />
+                  </h3>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    UART 115200 binary telemetry frame inspector, TI DRV2605L haptics emulator, SSD1306 OLED HUD, and INA219 power profile.
+                  </p>
+                </div>
+              </Link>
+
+              <Link
+                href="/dashboard/defense-guide"
+                className="group p-5 rounded-2xl border border-border bg-card hover:border-primary/50 transition-all space-y-3 shadow-xs"
+              >
+                <div className="size-10 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 group-hover:scale-105 transition-transform">
+                  <Brain className="size-5" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="font-bold text-base text-foreground group-hover:text-primary transition-colors flex items-center justify-between">
+                    <span>Viva Voce Defense Guide</span>
+                    <ArrowRight className="size-4 text-muted-foreground group-hover:translate-x-1 transition-transform" />
+                  </h3>
+                  <p className="text-xs text-muted-foreground leading-relaxed">
+                    Scripted defenses answering the 5 classic examiner questions, mathematical formulas, and ISO 26262 functional safety criteria.
+                  </p>
+                </div>
+              </Link>
             </div>
           </div>
         </section>

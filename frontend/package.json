@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx __tests__/audio-engine.test.ts && tsx __tests__/camera-webcam.test.ts && tsx __tests__/security-and-telemetry.test.ts && tsx __tests__/livekit-and-contract-sync.test.ts && tsx __tests__/browser-ai-parity.test.ts && tsx scripts/run-all-tests.ts",
+    "test": "tsx __tests__/audio-engine.test.ts && tsx __tests__/camera-webcam.test.ts && tsx __tests__/security-and-telemetry.test.ts && tsx __tests__/livekit-and-contract-sync.test.ts && tsx __tests__/browser-ai-parity.test.ts && tsx scripts/verify-parity-harness.ts && tsx scripts/run-all-tests.ts",
     "test:audio": "tsx __tests__/audio-engine.test.ts",
     "test:browser-ai": "tsx __tests__/browser-ai-parity.test.ts",
     "postinstall": "prisma generate",

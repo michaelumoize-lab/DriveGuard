@@ -51,7 +51,7 @@ export interface GuidedCalibrationWizardProps {
   onCalibrationSaved?: (profile: InitialDriverProfileData) => void;
 }
 
-const BLINK_STREAM_TARGET_SEC = 120;
+const BLINK_STREAM_TARGET_SEC = 0; // 2-minute blinking exercise removed in favor of streamlined 15s 4-zone alignment
 
 export function GuidedCalibrationWizard({
   driverId = "driver_default",
@@ -65,9 +65,7 @@ export function GuidedCalibrationWizard({
   const [viewOrientation] = useState<"portrait" | "landscape">("landscape");
   const [framingMode] = useState<"cover" | "fit">("cover");
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [calibrationWorkflow, setCalibrationWorkflow] = useState<
-    "FULL_4ZONE_AND_BLINK" | "QUICK_4ZONE_ONLY" | "BLINK_2MIN_ONLY"
-  >("FULL_4ZONE_AND_BLINK");
+  const [calibrationWorkflow] = useState<"FOUR_ZONE_CALIBRATION">("FOUR_ZONE_CALIBRATION");
   const [isSuccess, setIsSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
@@ -322,15 +320,8 @@ export function GuidedCalibrationWizard({
     }
   };
 
-  // User Actions — strictly delegated to backend GuidedCalibrationSession
-  const handleStartCalibration = async (
-    overrideMode?: "FULL_4ZONE_AND_BLINK" | "QUICK_4ZONE_ONLY" | "BLINK_2MIN_ONLY"
-  ) => {
-    const modeToRun = overrideMode || calibrationWorkflow;
-    if (overrideMode) {
-      setCalibrationWorkflow(overrideMode);
-    }
-
+  // User Actions — strictly delegated to backend GuidedCalibrationSession (Streamlined 4-Zone)
+  const handleStartCalibration = async () => {
     hasHandledCompletionRef.current = false;
     setIsSuccess(false);
     setSaveError(null);
@@ -340,19 +331,9 @@ export function GuidedCalibrationWizard({
       await startCamera();
     }
 
-    if (modeToRun === "BLINK_2MIN_ONLY") {
-      triggerLivekitRecalibrate("BLINK_CADENCE", 5.0, BLINK_STREAM_TARGET_SEC);
-      toast.info("Starting Backend 2-Minute Natural Blink Rate Calibration...");
-      return;
-    }
-
-    const includeBlink = modeToRun === "FULL_4ZONE_AND_BLINK";
-    triggerLivekitCalibration(true, 5.0, includeBlink, BLINK_STREAM_TARGET_SEC);
-    toast.info(
-      includeBlink
-        ? "Starting Backend 4-Zone Spatial + 2-Minute Blink Calibration..."
-        : "Starting Backend 4-Zone Spatial Calibration..."
-    );
+    // Runs pure 4-zone spatial calibration with 4-second hold per zone, zero blink delay
+    triggerLivekitCalibration(true, 4.0, false, 0);
+    toast.info("Starting Precision 4-Zone Gaze Alignment (~15s)...");
   };
 
   const handleStopCalibration = () => {
@@ -376,15 +357,11 @@ export function GuidedCalibrationWizard({
     if (cameraState !== "active") {
       await startCamera();
     }
-    if (zone === "BLINK_CADENCE") {
-      setCalibrationWorkflow("BLINK_2MIN_ONLY");
-    }
-    triggerLivekitRecalibrate(zone, 5.0, BLINK_STREAM_TARGET_SEC);
+    triggerLivekitRecalibrate(zone, 4.0, 0);
     toast.info(`Recalibrating ${zone.replace("_", " ")} on backend...`);
   };
 
-  const isInBlinkPhase =
-    calState?.current_zone === "BLINK_CADENCE" || calState?.phase_type === "BLINK_CADENCE";
+  const isInBlinkPhase = false;
 
   // Read live blink cadence metrics strictly from backend CalibrationPhaseDTO
   const liveBlinkStats = useMemo(() => {
@@ -682,59 +659,22 @@ export function GuidedCalibrationWizard({
                     4-Zone Spatial + 2-Minute Personal Blink Rate Calibration
                   </div>
                   <p className="text-xs text-muted-foreground max-w-md">
-                    All spatial thresholds and blink kinematics are computed by the authoritative
-                    Python backend over LiveKit WebRTC. Align your gaze across 4 cabin zones (~20s),
-                    followed by a 2-minute natural blink baseline stream.
+                    Align your head across the 4 primary cabin zones (Center, Left Mirror, Right Mirror, Dashboard).
+                    High-precision mathematical baselines are established in ~15 seconds with zero unnatural blinking delays.
                   </p>
 
-                  {/* Workflow Selector */}
-                  <div className="flex flex-wrap items-center justify-center gap-1.5 p-1 bg-muted/60 rounded-xl border border-border text-xs">
-                    <button
-                      type="button"
-                      onClick={() => setCalibrationWorkflow("FULL_4ZONE_AND_BLINK")}
-                      className={`px-3 py-1.5 rounded-lg transition-all font-medium ${
-                        calibrationWorkflow === "FULL_4ZONE_AND_BLINK"
-                          ? "bg-primary text-primary-foreground shadow-xs"
-                          : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      4-Zone + 2-Min Blink Stream (Recommended)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setCalibrationWorkflow("BLINK_2MIN_ONLY")}
-                      className={`px-3 py-1.5 rounded-lg transition-all font-medium ${
-                        calibrationWorkflow === "BLINK_2MIN_ONLY"
-                          ? "bg-primary text-primary-foreground shadow-xs"
-                          : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      2-Min Blink Rate Only
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setCalibrationWorkflow("QUICK_4ZONE_ONLY")}
-                      className={`px-3 py-1.5 rounded-lg transition-all font-medium ${
-                        calibrationWorkflow === "QUICK_4ZONE_ONLY"
-                          ? "bg-primary text-primary-foreground shadow-xs"
-                          : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      Quick 4-Zone Spatial Only
-                    </button>
+                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-xs font-mono">
+                    <Sparkles className="size-3.5" />
+                    <span>Streamlined 4-Zone Gaze Alignment (~15 Seconds)</span>
                   </div>
 
                   <Button
                     size="sm"
                     onClick={() => handleStartCalibration()}
-                    className="bg-primary text-primary-foreground"
+                    className="bg-primary text-primary-foreground font-semibold px-6 min-h-[44px]"
                   >
                     <Play className="size-4 mr-1.5" />
-                    {calibrationWorkflow === "FULL_4ZONE_AND_BLINK"
-                      ? "Start 4-Zone + 2-Min Blink Calibration"
-                      : calibrationWorkflow === "BLINK_2MIN_ONLY"
-                        ? "Start 2-Minute Blink Rate Stream"
-                        : "Start Quick 4-Zone Calibration"}
+                    Start 4-Zone Calibration
                   </Button>
                 </div>
               )}
@@ -844,20 +784,11 @@ export function GuidedCalibrationWizard({
                   <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
                     <Button
                       size="sm"
-                      onClick={() => handleStartCalibration("FULL_4ZONE_AND_BLINK")}
+                      onClick={() => handleStartCalibration()}
                       variant="outline"
                     >
                       <RotateCcw className="size-4 mr-1.5" />
-                      Run Full Recalibration
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={() => handleStartCalibration("BLINK_2MIN_ONLY")}
-                      variant="secondary"
-                      className="text-xs"
-                    >
-                      <Timer className="size-3.5 mr-1.5" />
-                      Repeat 2-Min Blink Stream
+                      Run 4-Zone Recalibration
                     </Button>
                   </div>
                 </div>
@@ -997,96 +928,58 @@ export function GuidedCalibrationWizard({
                 </div>
               )}
 
-              {isInBlinkPhase ? (
-                <>
-                  {/* 2-Minute Countdown Progress */}
-                  <div className="space-y-1.5 pt-1">
-                    <div className="flex justify-between font-mono">
-                      <span className="text-muted-foreground">2-Min Stream Progress:</span>
-                      <span className="font-semibold text-emerald-500">
-                        {liveBlinkStats.progressPct}% ({liveBlinkStats.remainingFormatted} left)
-                      </span>
-                    </div>
-                    <Progress value={liveBlinkStats.progressPct} className="h-2" />
+              {/* Spatial Alignment Status & Mathematical Telemetry */}
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <div className="flex justify-between items-center">
+                    <span className="text-muted-foreground text-xs">Spatial Alignment:</span>
+                    <Badge
+                      variant={calState?.is_head_in_target_zone ? "outline" : "destructive"}
+                      className={`text-[10px] ${
+                        calState?.is_head_in_target_zone
+                          ? "border-emerald-500/40 text-emerald-500 bg-emerald-500/10"
+                          : ""
+                      }`}
+                    >
+                      {calState?.is_head_in_target_zone
+                        ? "HEAD ALIGNED [OK]"
+                        : calState?.stability_feedback || "WAITING FOR HEAD ALIGNMENT"}
+                    </Badge>
                   </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    {calState?.instruction ||
+                      "Click Start 4-Zone Calibration to align your cabin gaze baselines."}
+                  </p>
+                </div>
 
-                  {/* Live Backend Blink Cadence Readouts */}
-                  <div className="grid grid-cols-2 gap-2.5 pt-2 border-t border-border font-mono">
-                    <div className="p-2.5 rounded-lg border border-border bg-muted/20">
-                      <span className="text-[10px] text-muted-foreground block">
-                        BLINKS SAMPLED
-                      </span>
-                      <span className="text-base font-bold text-foreground">
-                        {liveBlinkStats.count}
-                      </span>
-                    </div>
-                    <div className="p-2.5 rounded-lg border border-border bg-muted/20">
-                      <span className="text-[10px] text-muted-foreground block">
-                        PERSONAL BLINK RATE
-                      </span>
-                      <span className="text-base font-bold text-sky-500">
-                        {liveBlinkStats.ratePerMin.toFixed(1)} /min
+                {/* Mathematical Baseline Card */}
+                <div className="p-3 rounded-xl bg-card/60 border border-border/80 font-mono text-xs space-y-2">
+                  <div className="flex justify-between items-center text-muted-foreground text-[10px] uppercase tracking-wider">
+                    <span>Mathematical Formulations</span>
+                    <span className="text-primary font-bold">PDBP Statistics</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                    <div className="p-2 rounded-lg bg-muted/20 border border-border/60">
+                      <span className="text-[10px] text-muted-foreground block">ROBUST MAD</span>
+                      <span className="font-bold text-foreground">
+                        {latestTelemetry?.comparison?.personalised_threshold
+                          ? `Tz = ${latestTelemetry.comparison.personalised_threshold.toFixed(3)}`
+                          : "MAD: 1.4826·|x - x̃|"}
                       </span>
                     </div>
-                    <div className="p-2.5 rounded-lg border border-border bg-muted/20">
-                      <span className="text-[10px] text-muted-foreground block">
-                        MEDIAN DURATION
-                      </span>
-                      <span className="text-base font-bold text-amber-500">
-                        {liveBlinkStats.medianDurationMs !== null
-                          ? `${liveBlinkStats.medianDurationMs} ms`
-                          : "Sampling..."}
-                      </span>
-                    </div>
-                    <div className="p-2.5 rounded-lg border border-border bg-muted/20">
-                      <span className="text-[10px] text-muted-foreground block">
-                        MEDIAN RCR / PERCLOS
-                      </span>
-                      <span className="text-sm font-bold text-emerald-500">
-                        {liveBlinkStats.medianRcr ?? "—"} ·{" "}
-                        {livePerclosPct !== null ? `${livePerclosPct.toFixed(1)}%` : "—"}
+                    <div className="p-2 rounded-lg bg-muted/20 border border-border/60">
+                      <span className="text-[10px] text-muted-foreground block">DYNAMIC CUTOFF</span>
+                      <span className="font-bold text-emerald-500">
+                        {savedProfile?.centerEarMedian
+                          ? `Center: ${savedProfile.centerEarMedian.toFixed(3)}`
+                          : "Tz = x̃ - 2.5·σ"}
                       </span>
                     </div>
                   </div>
+                </div>
 
-                  <div className="p-2.5 rounded-lg bg-emerald-500/5 border border-emerald-500/20 text-[11px] text-muted-foreground space-y-1">
-                    <span className="font-semibold text-foreground flex items-center gap-1.5">
-                      <Sparkles className="size-3.5 text-emerald-500" />
-                      Backend Kinematics Profiling
-                    </span>
-                    <span>
-                      The authoritative backend records natural blink rate, blink duration, and
-                      reopening speed so monitoring thresholds adapt to your physiology.
-                    </span>
-                  </div>
-                </>
-              ) : (
-                <>
-                  {/* Spatial Alignment Status Indicator */}
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between items-center">
-                      <span className="text-muted-foreground">Spatial Alignment:</span>
-                      <Badge
-                        variant={calState?.is_head_in_target_zone ? "outline" : "destructive"}
-                        className={`text-[10px] ${
-                          calState?.is_head_in_target_zone
-                            ? "border-emerald-500/40 text-emerald-500 bg-emerald-500/10"
-                            : ""
-                        }`}
-                      >
-                        {calState?.is_head_in_target_zone
-                          ? "HEAD ALIGNED [OK]"
-                          : calState?.stability_feedback || "WAITING FOR BACKEND"}
-                      </Badge>
-                    </div>
-                    <p className="text-[11px] text-muted-foreground">
-                      {calState?.instruction ||
-                        "Click Start Calibration to align your 4 cabin gaze zones and 2-minute blink baseline."}
-                    </p>
-                  </div>
-
-                  {/* Active Zone Progress */}
-                  <div className="space-y-1.5 pt-2 border-t border-border">
+                {/* Active Zone Progress */}
+                <div className="space-y-1.5 pt-2 border-t border-border">
                     <div className="flex justify-between font-mono">
                       <span className="text-muted-foreground">Zone Sample Acquisition:</span>
                       <span className="font-semibold text-foreground">
@@ -1117,8 +1010,7 @@ export function GuidedCalibrationWizard({
                     </div>
                     <Progress value={calState?.total_progress_pct || 0} className="h-1.5" />
                   </div>
-                </>
-              )}
+                </div>
             </CardContent>
           </Card>
         )}

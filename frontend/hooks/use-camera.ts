@@ -5,10 +5,12 @@ import {
   CameraDevice,
   CameraError,
   CameraFacingMode,
+  CameraHardwareDiagnostics,
   CameraResolution,
   CameraState,
   CapturedFrame,
   FrameCaptureOptions,
+  OpticalFrameQuality,
   UseCameraOptions,
 } from "@/types/camera";
 import {
@@ -21,6 +23,7 @@ import {
   parseCameraDevices,
 } from "@/lib/camera/camera-utils";
 import { captureVideoFrame } from "@/lib/camera/capture-frame";
+import { OpticalQualityAnalyzer } from "@/lib/camera/optical-quality";
 
 export function useCamera(options: UseCameraOptions = {}) {
   const {
@@ -49,6 +52,99 @@ export function useCamera(options: UseCameraOptions = {}) {
   const [resolution, setResolution] = useState<CameraResolution | null>(null);
   const [isMirrored, setIsMirrored] = useState<boolean>(mirrored);
   const [streamDurationSec, setStreamDurationSec] = useState<number>(0);
+  const [opticalQuality, setOpticalQuality] = useState<OpticalFrameQuality | null>(null);
+  const [hardwareDiagnostics, setHardwareDiagnostics] = useState<CameraHardwareDiagnostics>({
+    measuredFps: 0,
+    negotiatedWidth: 0,
+    negotiatedHeight: 0,
+    negotiatedFps: idealFps,
+    frameDropCount: 0,
+    jitterMs: 0,
+    deviceLabel: "Default Camera",
+    facingMode: defaultFacingMode,
+  });
+
+  const opticalAnalyzerRef = useRef<OpticalQualityAnalyzer | null>(null);
+  useEffect(() => {
+    opticalAnalyzerRef.current = new OpticalQualityAnalyzer();
+    return () => {
+      opticalAnalyzerRef.current?.dispose();
+      opticalAnalyzerRef.current = null;
+    };
+  }, []);
+
+  // Periodic optical quality & hardware ingestion analysis loop
+  useEffect(() => {
+    if (cameraState !== "active") {
+      setOpticalQuality(null);
+      return;
+    }
+
+    let isMounted = true;
+    let frameTimes: number[] = [];
+    let intervalId: NodeJS.Timeout | null = null;
+    let animId: number | null = null;
+
+    // Optical analysis interval (every 800ms to keep CPU minimal)
+    intervalId = setInterval(() => {
+      const video = videoRef.current;
+      if (video && opticalAnalyzerRef.current && video.readyState >= 2) {
+        const quality = opticalAnalyzerRef.current.analyze(video);
+        if (quality && isMounted) {
+          setOpticalQuality(quality);
+        }
+      }
+    }, 800);
+
+    // Frame ingestion FPS calculation
+    const trackFps = (timestamp: number) => {
+      frameTimes.push(timestamp);
+      // Keep only frames in the last 1000ms
+      while (frameTimes.length > 0 && frameTimes[0] < timestamp - 1000) {
+        frameTimes.shift();
+      }
+
+      if (frameTimes.length > 1) {
+        const measuredFps = frameTimes.length;
+        // Compute inter-frame jitter
+        let sumDelta = 0;
+        for (let i = 1; i < frameTimes.length; i++) {
+          sumDelta += Math.abs(frameTimes[i] - frameTimes[i - 1] - 1000 / Math.max(1, measuredFps));
+        }
+        const jitterMs = Number((sumDelta / (frameTimes.length - 1)).toFixed(1));
+
+        const videoTrack = streamRef.current?.getVideoTracks()[0];
+        const label = videoTrack?.label || "Integrated Camera";
+        const settings = videoTrack?.getSettings?.() || {};
+
+        if (isMounted) {
+          setHardwareDiagnostics((prev) => ({
+            ...prev,
+            measuredFps,
+            negotiatedWidth: settings.width || resolution?.width || idealWidth,
+            negotiatedHeight: settings.height || resolution?.height || idealHeight,
+            negotiatedFps: settings.frameRate || idealFps,
+            jitterMs,
+            deviceLabel: label,
+            facingMode,
+            opticalQuality: opticalQuality || undefined,
+          }));
+        }
+      }
+
+      if (isMounted && cameraState === "active") {
+        animId = requestAnimationFrame(trackFps);
+      }
+    };
+
+    animId = requestAnimationFrame(trackFps);
+
+    return () => {
+      isMounted = false;
+      if (intervalId) clearInterval(intervalId);
+      if (animId) cancelAnimationFrame(animId);
+    };
+  }, [cameraState, idealFps, idealHeight, idealWidth, facingMode, resolution, opticalQuality]);
 
   // Synchronized callback refs
   const onStateChangeRef = useRef(onStateChange);
@@ -426,6 +522,8 @@ export function useCamera(options: UseCameraOptions = {}) {
     isMirrored,
     setIsMirrored,
     streamDurationSec,
+    opticalQuality,
+    hardwareDiagnostics,
     isActive: cameraState === "active",
     isPaused: cameraState === "paused",
     isStopped: cameraState === "stopped" || cameraState === "not-initialized",
