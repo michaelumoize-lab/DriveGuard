@@ -64,8 +64,8 @@ export function LandingHeaderAuth({
             href="/auth/sign-in"
             className={
               isLanding
-                ? "px-3.5 py-2 text-xs font-semibold text-[#F5F3EC] hover:bg-[#191D1A] border border-[#F5F3EC]/15 rounded-xl transition-colors flex items-center gap-1.5 outline-none focus-visible:ring-2 focus-visible:ring-[#E58B43]"
-                : "px-3.5 py-2 text-xs font-semibold text-foreground hover:bg-muted border border-border rounded-xl transition-colors flex items-center gap-1.5 outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                ? "px-3.5 py-2 text-xs font-semibold text-[#F5F3EC] hover:bg-[#191D1A] border border-[#F5F3EC]/15 rounded-xl transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-[#E58B43]"
+                : "px-3.5 py-2 text-xs font-semibold text-foreground hover:bg-muted border border-border rounded-xl transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-primary"
             }
           >
             <LogIn className="w-3.5 h-3.5" />

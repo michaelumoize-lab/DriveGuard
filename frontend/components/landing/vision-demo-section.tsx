@@ -118,7 +118,6 @@ function AnimatedNumber({
 
   useEffect(() => {
     if (prefersReducedMotion) {
-      setDisplay(value);
       prevRef.current = value;
       return;
     }
@@ -135,9 +134,11 @@ function AnimatedNumber({
     return () => controls.stop();
   }, [value, prefersReducedMotion]);
 
+  const shownValue = prefersReducedMotion ? value : display;
+
   return (
     <span className="tabular-nums">
-      {display.toFixed(decimals)}
+      {shownValue.toFixed(decimals)}
       {suffix}
     </span>
   );

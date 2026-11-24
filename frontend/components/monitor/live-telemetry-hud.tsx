@@ -4,7 +4,6 @@ import React from "react";
 import {
   FrameTelemetry,
   LatencyDiagnostics,
-  explainReasonCode,
   resolveEffectiveDisplayState,
 } from "@/types/telemetry";
 import { CameraState } from "@/types/camera";
@@ -12,34 +11,24 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Activity,
-  AlertOctagon,
   AlertTriangle,
-  ArrowDownRight,
-  ArrowUpRight,
   Camera,
   Car,
-  CheckCircle2,
-  Clock,
   Compass,
   Cpu,
   Crosshair,
   Eye,
   EyeOff,
-  Flame,
   Gauge,
-  HelpCircle,
   Radio,
-  RotateCcw,
   ShieldAlert,
   ShieldCheck,
-  Sparkles,
   Timer,
   Volume1,
   Volume2,
   VolumeX,
   Wifi,
   WifiOff,
-  Zap,
 } from "lucide-react";
 
 interface LiveTelemetryHUDProps {

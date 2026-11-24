@@ -33,15 +33,16 @@ export const LiveTelemetryChart = React.memo(function LiveTelemetryChart({
   return (
     <Card className="border-border/80 bg-card/60">
       <CardHeader className="py-3 px-4 flex flex-row items-center justify-between gap-2 space-y-0 border-b border-border/60">
-        <CardTitle className="text-xs font-mono uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-          <Activity className="size-3.5 text-primary" />
-          Rolling 60s Telemetry Waveform
+        <CardTitle className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+          <Activity className="size-3.5 text-primary" aria-hidden="true" />
+          <span>Rolling 60s Waveform</span>
         </CardTitle>
-        <div className="inline-flex items-center rounded-lg border border-border bg-muted/40 p-0.5 text-[11px] font-mono">
+        <div className="inline-flex items-center rounded-lg border border-border bg-muted/40 p-0.5 text-[11px] font-medium">
           <button
             type="button"
             onClick={() => setMode("ear")}
-            className={`px-2 py-0.5 rounded-md transition-colors cursor-pointer ${
+            aria-pressed={mode === "ear"}
+            className={`px-2 py-0.5 rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
               mode === "ear"
                 ? "bg-primary text-primary-foreground font-semibold"
                 : "text-muted-foreground hover:text-foreground"
@@ -52,13 +53,14 @@ export const LiveTelemetryChart = React.memo(function LiveTelemetryChart({
           <button
             type="button"
             onClick={() => setMode("fatigue")}
-            className={`px-2 py-0.5 rounded-md transition-colors cursor-pointer ${
+            aria-pressed={mode === "fatigue"}
+            className={`px-2 py-0.5 rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
               mode === "fatigue"
                 ? "bg-primary text-primary-foreground font-semibold"
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
-            PERCLOS & Risk %
+            PERCLOS &amp; Risk %
           </button>
         </div>
       </CardHeader>

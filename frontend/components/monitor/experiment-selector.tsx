@@ -2,7 +2,7 @@
 
 import React from "react";
 import { ExperimentMode } from "@/types/telemetry";
-import { Sparkles, Cpu, Eye, CheckCircle2 } from "lucide-react";
+import { Sparkles, Cpu, Eye } from "lucide-react";
 
 interface ExperimentSelectorProps {
   currentMode: ExperimentMode;
@@ -65,7 +65,7 @@ export function ExperimentSelector({
             aria-checked={isSelected}
             disabled={disabled}
             onClick={() => onSelectMode(exp.id)}
-            className={`w-full text-left p-2.5 rounded-xl border transition-all flex items-start justify-between gap-3 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+            className={`w-full text-left p-2.5 rounded-xl border transition-colors flex items-start justify-between gap-3 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-primary ${
               isSelected
                 ? "bg-primary/10 border-primary/40 shadow-xs"
                 : "bg-card/50 hover:bg-card border-border/80 text-muted-foreground hover:text-foreground"
@@ -95,7 +95,7 @@ export function ExperimentSelector({
 
             <div className="shrink-0 mt-0.5">
               <div
-                className={`size-4 rounded-full border flex items-center justify-center transition-all ${
+                className={`size-4 rounded-full border flex items-center justify-center transition-colors ${
                   isSelected
                     ? "border-primary bg-primary text-primary-foreground"
                     : "border-border"

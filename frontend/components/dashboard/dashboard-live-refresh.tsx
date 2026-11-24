@@ -4,7 +4,6 @@ import React, { useEffect, useState, useTransition, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { RotateCw, Activity, Pause, Play, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
 interface DashboardLiveRefreshProps {
   initialTimestamp?: string;
@@ -124,27 +123,23 @@ export function DashboardLiveRefresh({ initialTimestamp }: DashboardLiveRefreshP
       </div>
 
       {/* Manual Refresh Button */}
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              triggerRefresh();
-              if (selectedInterval > 0) {
-                remainingRef.current = selectedInterval;
-                setSecondsRemaining(selectedInterval);
-              }
-            }}
-            disabled={isPending}
-            className="h-8 px-2.5 text-xs gap-1.5 border-border bg-background hover:bg-muted"
-          >
-            <RotateCw className={`h-3.5 w-3.5 text-muted-foreground ${isPending ? "animate-spin text-primary" : ""}`} />
-            <span className="hidden sm:inline">Refresh</span>
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">Trigger manual telemetry refresh</TooltipContent>
-      </Tooltip>
+      <Button
+        variant="outline"
+        size="sm"
+        aria-label="Trigger manual telemetry refresh"
+        onClick={() => {
+          triggerRefresh();
+          if (selectedInterval > 0) {
+            remainingRef.current = selectedInterval;
+            setSecondsRemaining(selectedInterval);
+          }
+        }}
+        disabled={isPending}
+        className="h-8 px-2.5 text-xs gap-1.5 border-border bg-background hover:bg-muted"
+      >
+        <RotateCw className={`h-3.5 w-3.5 text-muted-foreground ${isPending ? "animate-spin text-primary" : ""}`} />
+        <span className="hidden sm:inline">Refresh</span>
+      </Button>
 
       {/* Last Updated Timestamp */}
       <div className="hidden lg:flex items-center text-[11px] text-muted-foreground font-mono pl-1">

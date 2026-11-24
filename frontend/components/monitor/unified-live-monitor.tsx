@@ -1,16 +1,21 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo, useId } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { useCamera } from "@/hooks/use-camera";
 import { useLivekitTelemetryStream } from "@/hooks/use-livekit-telemetry-stream";
 import { useBrowserDetection } from "@/hooks/use-browser-detection";
-import { convertBrowserTelemetryToFrameTelemetry, DrowsinessState } from "@/lib/ai";
+import {
+  convertBrowserTelemetryToFrameTelemetry,
+  DecisionResult,
+  DetectionTelemetry,
+  DriverBehaviourProfileData,
+  DrowsinessState,
+} from "@/lib/ai";
 import { CapturedFrame } from "@/types/camera";
 import {
   AlertState,
-  ExperimentMode,
   SafetyEvent,
   SessionEndPayload,
   resolveEffectiveDisplayState,
@@ -20,47 +25,26 @@ import { syncDriverProfileToFastApi } from "@/lib/api/driveguard-api";
 import { LOCAL_FASTAPI_URL } from "@/lib/fastapi-url";
 import { CameraView } from "@/components/camera/camera-view";
 import { CameraControls } from "@/components/camera/camera-controls";
-import { CameraSelector } from "@/components/camera/camera-selector";
 import { CameraStatus } from "@/components/camera/camera-status";
 import { CameraErrorDisplay } from "@/components/camera/camera-error";
 import { CameraSnapshotPreview } from "@/components/camera/camera-snapshot-preview";
 import { DriverCockpitHUD } from "./driver-cockpit-hud";
-import { LiveTelemetryHUD } from "./live-telemetry-hud";
-import { ExperimentSelector } from "./experiment-selector";
-import { ReadinessChecklist } from "./readiness-checklist";
-import { LiveTelemetryChart, TelemetryHistoryPoint } from "./live-telemetry-chart";
-import { ExplainableRiskPanel } from "./explainable-risk-panel";
+import { MonitorHeaderBar } from "./monitor-header-bar";
+import { InspectorWorkspace, InspectorTab } from "./inspector-workspace";
+import { TelemetryHistoryPoint } from "./live-telemetry-chart";
 import { useDriveGuardAudio } from "@/hooks/use-driveguard-audio";
 import { runPreFlightHandshake } from "@/lib/monitor/preflight-handshake";
-import { FaultInjectionToolbar } from "@/components/engineering/fault-injection-toolbar";
-import { EulerHeadGyro } from "@/components/engineering/euler-head-gyro";
-import { KinematicsOscilloscope } from "@/components/engineering/kinematics-oscilloscope";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { useSidebar } from "@/components/ui/sidebar";
 import {
   AlertTriangle,
-  Camera,
-  Car,
   Compass,
-  Cpu,
   EyeOff,
   Flame,
   Minimize2,
-  Monitor,
-  Radio,
   RefreshCw,
-  SlidersHorizontal,
   ShieldCheck,
-  Smartphone,
-  Sparkles,
   Volume2,
   VolumeX,
 } from "lucide-react";
@@ -91,12 +75,20 @@ export interface UnifiedLiveMonitorProps {
   driverId?: string;
   initialDriverProfile?: InitialDriverProfileData | null;
   initialPreferences?: InitialUserPreferencesData;
+  initialConsoleMode?: "cockpit" | "diagnostics";
+  initialInspectorTab?: InspectorTab;
+  initialRuntimeMode?: "browser" | "remote";
+  initialOrientation?: "portrait" | "landscape";
 }
 
 export function UnifiedLiveMonitor({
   driverId = "driver_default",
   initialDriverProfile = null,
   initialPreferences,
+  initialConsoleMode,
+  initialInspectorTab,
+  initialRuntimeMode,
+  initialOrientation,
 }: UnifiedLiveMonitorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { setOpen: setSidebarOpen } = useSidebar();
@@ -107,10 +99,19 @@ export function UnifiedLiveMonitor({
     setSidebarOpen(false);
   }, [setSidebarOpen]);
 
-  // Layout & UI States
-  const [runtimeMode, setRuntimeMode] = useState<"browser" | "remote">("browser");
-  const [viewOrientation, setViewOrientation] = useState<"portrait" | "landscape">("landscape");
-  const [consoleMode, setConsoleMode] = useState<"cockpit" | "diagnostics">("diagnostics");
+  // Layout & UI States (Default to calm Driver Mode for first-time understandability)
+  const [runtimeMode, setRuntimeMode] = useState<"browser" | "remote">(
+    initialRuntimeMode ?? "browser"
+  );
+  const [viewOrientation, setViewOrientation] = useState<"portrait" | "landscape">(
+    initialOrientation ?? "landscape"
+  );
+  const [consoleMode, setConsoleMode] = useState<"cockpit" | "diagnostics">(
+    initialConsoleMode ?? "cockpit"
+  );
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>(
+    initialInspectorTab ?? "overview"
+  );
   const [framingMode, setFramingMode] = useState<"cover" | "fit">("cover");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isMobileDevice, setIsMobileDevice] = useState(false);
@@ -122,21 +123,47 @@ export function UnifiedLiveMonitor({
     initialDriverProfile?.centerEarMedian ?? 0.285
   );
 
-  // Restore saved view mode and runtime mode preferences
+  // Restore saved preferences asynchronously after hydration when URL params didn't specify them
   useEffect(() => {
-    try {
-      const savedMode = localStorage.getItem("driveguard_runtime_mode");
-      if (savedMode === "browser" || savedMode === "remote") {
-        setRuntimeMode(savedMode);
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (cancelled) return;
+      try {
+        if (!initialRuntimeMode) {
+          const savedMode = localStorage.getItem("driveguard_runtime_mode");
+          if (savedMode === "browser" || savedMode === "remote") {
+            setRuntimeMode(savedMode);
+          }
+        }
+        if (!initialConsoleMode) {
+          const saved = localStorage.getItem("driveguard_console_mode");
+          if (saved === "cockpit" || saved === "diagnostics") {
+            setConsoleMode(saved);
+          }
+        }
+      } catch {
+        // Safe fallback if localStorage is disabled
       }
-      const saved = localStorage.getItem("driveguard_console_mode");
-      if (saved === "cockpit" || saved === "diagnostics") {
-        setConsoleMode(saved);
-      }
-    } catch {
-      // Safe fallback if localStorage is disabled
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [initialRuntimeMode, initialConsoleMode]);
+
+  // Sync workspace state to URL search params so views are deep-linkable and survive refreshes
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("mode", consoleMode === "cockpit" ? "driver" : "inspector");
+    if (consoleMode === "diagnostics") {
+      url.searchParams.set("tab", inspectorTab);
+    } else {
+      url.searchParams.delete("tab");
     }
-  }, []);
+    url.searchParams.set("runtime", runtimeMode);
+    url.searchParams.set("view", viewOrientation);
+    window.history.replaceState(null, "", url.pathname + url.search);
+  }, [consoleMode, inspectorTab, runtimeMode, viewOrientation]);
 
   const handleConsoleModeChange = useCallback((mode: "cockpit" | "diagnostics") => {
     setConsoleMode(mode);
@@ -174,14 +201,16 @@ export function UnifiedLiveMonitor({
   const [isSnapshotOpen, setIsSnapshotOpen] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
 
-  // Stable session identifier (guaranteed not to mutate on re-renders)
+  // Stable session identifier (deterministic React ID across renders)
+  const reactId = useId();
   const stableSessionId = useMemo(
-    () => `live_${Math.random().toString(36).slice(2, 9)}`,
-    []
+    () => `live_${reactId.replace(/[^a-zA-Z0-9_-]/g, "")}`,
+    [reactId]
   );
 
   // Comprehensive Session & Database Persistence Refs
   const activeSessionCodeRef = useRef<string | null>(null);
+  const [hasActiveSession, setHasActiveSession] = useState(false);
   const sessionStartWallMsRef = useRef<number>(0);
   const lastAlertTimeRef = useRef<number>(0);
   const handledEventIdsRef = useRef<Set<string>>(new Set());
@@ -453,7 +482,7 @@ export function UnifiedLiveMonitor({
 
   // Handle safety alerts triggered by Browser Detection Engine
   const handleBrowserSafetyAlert = useCallback(
-    (decision: any, t: any) => {
+    (decision: DecisionResult, t: DetectionTelemetry) => {
       const isCritical = decision.state === DrowsinessState.CRITICAL_WARNING;
       const isWarning = decision.state === DrowsinessState.DROWSINESS_WARNING;
       if (!isCritical && !isWarning) return;
@@ -482,20 +511,15 @@ export function UnifiedLiveMonitor({
   const {
     engineStatus: browserEngineStatus,
     telemetry: browserTelemetry,
-    calibration: browserCalibration,
     sessionCode: browserSessionCode,
     setSessionCode: setBrowserSessionCode,
     syncStatus: browserSyncStatus,
     startMonitoring: startBrowserMonitoring,
-    pauseMonitoring: pauseBrowserMonitoring,
-    resumeMonitoring: resumeBrowserMonitoring,
     stopMonitoring: stopBrowserMonitoring,
-    startCalibration: startBrowserCalibration,
-    cancelCalibration: cancelBrowserCalibration,
     queueSessionEnd: queueBrowserSessionEnd,
   } = useBrowserDetection({
     driverId,
-    initialProfile: (initialDriverProfile as unknown) as any,
+    initialProfile: (initialDriverProfile as unknown) as DriverBehaviourProfileData | null,
     isMirrored,
     targetInferenceFps: 12,
     autoStartSession: false,
@@ -673,10 +697,10 @@ export function UnifiedLiveMonitor({
     };
   }, [buildSessionEndPayload]);
 
-  // Auto-detect mobile device & portrait orientation on mount
+  // Auto-detect mobile device on mount (respects explicit initialOrientation if provided)
   useEffect(() => {
     if (typeof window !== "undefined") {
-      const detectMobile = () => {
+      const detectMobile = (applyOrientation: boolean) => {
         const isSmallScreen = window.innerWidth <= 768;
         const isMobileUA =
           /Android|iPhone|iPad|iPod|webOS|BlackBerry|IEMobile|Opera Mini/i.test(
@@ -685,20 +709,18 @@ export function UnifiedLiveMonitor({
         const mobile = isSmallScreen || isMobileUA;
         setIsMobileDevice(mobile);
 
-        if (mobile) {
-          setViewOrientation("portrait");
-          setFramingMode("cover");
-        } else {
-          setViewOrientation("landscape");
+        if (applyOrientation && !initialOrientation) {
+          setViewOrientation(mobile ? "portrait" : "landscape");
           setFramingMode("cover");
         }
       };
 
-      detectMobile();
-      window.addEventListener("resize", detectMobile);
-      return () => window.removeEventListener("resize", detectMobile);
+      detectMobile(true);
+      const onResize = () => detectMobile(false);
+      window.addEventListener("resize", onResize);
+      return () => window.removeEventListener("resize", onResize);
     }
-  }, []);
+  }, [initialOrientation]);
 
   // Listen to browser fullscreen changes
   useEffect(() => {
@@ -723,6 +745,40 @@ export function UnifiedLiveMonitor({
       toast.info("Fullscreen mode is not supported by your browser window policy.");
     }
   }, []);
+
+  // Keyboard shortcuts for hands-free desktop navigation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const key = e.key.toLowerCase();
+      if (key === "d") {
+        handleConsoleModeChange(consoleMode === "cockpit" ? "diagnostics" : "cockpit");
+      } else if (key === "m") {
+        toggleMute();
+      } else if (key === "f") {
+        toggleFullscreen();
+      } else if (consoleMode === "diagnostics") {
+        if (key === "1") setInspectorTab("overview");
+        else if (key === "2") setInspectorTab("signals");
+        else if (key === "3") setInspectorTab("testbench");
+        else if (key === "4") setInspectorTab("setup");
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [consoleMode, handleConsoleModeChange, toggleFullscreen, toggleMute]);
 
   // Switch between Browser AI and Remote AI runtime modes
   const handleSwitchRuntimeMode = useCallback(
@@ -803,6 +859,7 @@ export function UnifiedLiveMonitor({
       const data = await startRes.json();
       if (data?.sessionCode) {
         activeSessionCodeRef.current = data.sessionCode;
+        setHasActiveSession(true);
         if (runtimeMode === "browser") {
           setBrowserSessionCode(data.sessionCode);
         }
@@ -848,6 +905,7 @@ export function UnifiedLiveMonitor({
     const code = activeSessionCodeRef.current;
     if (code) {
       activeSessionCodeRef.current = null;
+      setHasActiveSession(false);
       const payload = buildSessionEndPayload(code, streamDurationSec);
       resetSessionStats();
       if (runtimeMode === "browser") {
@@ -1082,236 +1140,30 @@ export function UnifiedLiveMonitor({
         {srAnnouncement}
       </div>
 
-      {/* 1. Top Header Card & 5-Pill Readiness Checklist (Hidden in Fullscreen) */}
+      {/* 1. Compact Command Bar & Expandable Readiness Checklist (Hidden in Fullscreen) */}
       {!isFullscreen && (
-        <div className="space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 sm:p-3.5 rounded-2xl bg-card border border-border/80 shadow-xs">
-            <div className="space-y-1 min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <div className="size-8 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary shrink-0">
-                  <Radio className="size-4 animate-pulse" />
-                </div>
-                <h1 className="text-base sm:text-lg font-bold text-foreground tracking-tight">
-                  Real-Time Driver Monitoring Workspace
-                </h1>
-
-                {/* Runtime Mode Selector */}
-                <div className="flex items-center p-0.5 rounded-xl bg-muted/60 border border-border/80">
-                  <Button
-                    size="sm"
-                    variant={runtimeMode === "browser" ? "default" : "ghost"}
-                    onClick={() => handleSwitchRuntimeMode("browser")}
-                    className="text-xs h-6 px-2.5 rounded-lg gap-1 cursor-pointer font-semibold"
-                    title="Browser AI: MediaPipe Edge execution in TypeScript. Zero video sent to servers."
-                  >
-                    <Sparkles className="size-3 text-primary" />
-                    <span>Browser AI (Edge)</span>
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant={runtimeMode === "remote" ? "default" : "ghost"}
-                    onClick={() => handleSwitchRuntimeMode("remote")}
-                    className="text-xs h-6 px-2.5 rounded-lg gap-1 cursor-pointer"
-                    title="Remote AI: LiveKit WebRTC + Python FastAPI (Research / Academic mode)"
-                  >
-                    <Radio className="size-3" />
-                    <span>Remote AI (FastAPI)</span>
-                  </Button>
-                </div>
-
-                {/* Status Badges */}
-                {runtimeMode === "browser" ? (
-                  <>
-                    <Badge
-                      variant="outline"
-                      className={`text-[10px] font-mono flex items-center gap-1.5 px-2.5 py-0.5 rounded-full ${
-                        browserEngineStatus === "running"
-                          ? "border-emerald-500/40 text-emerald-500 bg-emerald-500/10"
-                          : browserEngineStatus === "initializing"
-                            ? "border-amber-500/40 text-amber-500 bg-amber-500/10 animate-pulse"
-                            : "border-border text-muted-foreground bg-muted/40"
-                      }`}
-                    >
-                      <span
-                        className={`size-1.5 rounded-full ${
-                          browserEngineStatus === "running"
-                            ? "bg-emerald-500"
-                            : browserEngineStatus === "initializing"
-                              ? "bg-amber-500 animate-ping"
-                              : "bg-muted-foreground/60"
-                        }`}
-                      />
-                      <span>
-                        {browserEngineStatus === "running"
-                          ? "BROWSER AI ACTIVE (EDGE)"
-                          : browserEngineStatus === "initializing"
-                            ? "LOADING MEDIAPIPE…"
-                            : "STANDBY (BROWSER AI)"}
-                      </span>
-                    </Badge>
-                    <Badge
-                      variant="outline"
-                      className={`text-[10px] font-mono px-2 py-0.5 rounded-full ${
-                        browserSyncStatus === "synced"
-                          ? "border-emerald-500/30 text-emerald-600 bg-emerald-500/5"
-                          : "border-amber-500/40 text-amber-500 bg-amber-500/10"
-                      }`}
-                    >
-                      {browserSyncStatus === "synced" ? "SYNCED TO NEON" : "OFFLINE BUFFER"}
-                    </Badge>
-                  </>
-                ) : (
-                  <Badge
-                    variant="outline"
-                    className={`text-[10px] font-mono flex items-center gap-1.5 px-2.5 py-0.5 rounded-full ${
-                      isWsConnected && !isStale
-                        ? "border-emerald-500/40 text-emerald-500 bg-emerald-500/10"
-                        : isStale
-                          ? "border-purple-500/40 text-purple-400 bg-purple-500/10"
-                          : wsStatus === "connecting" || wsStatus === "reconnecting"
-                            ? "border-amber-500/40 text-amber-500 bg-amber-500/10 animate-pulse"
-                            : "border-border text-muted-foreground bg-muted/40"
-                    }`}
-                  >
-                    <span
-                      className={`size-1.5 rounded-full ${
-                        isWsConnected && !isStale
-                          ? "bg-emerald-500"
-                          : isStale
-                            ? "bg-purple-400"
-                            : wsStatus === "connecting" || wsStatus === "reconnecting"
-                              ? "bg-amber-500 animate-ping"
-                              : "bg-muted-foreground/60"
-                      }`}
-                    />
-                    <span>
-                      {isWsConnected && !isStale
-                        ? "LIVEKIT WEBRTC ACTIVE"
-                        : isStale
-                          ? "TELEMETRY STALE"
-                          : wsStatus === "connecting" || wsStatus === "reconnecting"
-                            ? "CONNECTING TO SFU…"
-                            : "PIPELINE STANDBY"}
-                    </span>
-                  </Badge>
-                )}
-              </div>
-              <p className="text-xs text-muted-foreground pl-10 hidden sm:block">
-                {runtimeMode === "browser"
-                  ? "Browser Edge MediaPipe & TypeScript: 478-landmark 3D head pose, 4-zone PDBP baselines, blink kinematics, PERCLOS, and MAR yawning. Completely private, offline-capable, zero video sent to servers."
-                  : "Authoritative Python DrowsinessEngine over LiveKit WebRTC: 478-landmark 3D head pose, 4-zone PDBP baselines, blink kinematics, PERCLOS, and MAR yawning."}
-              </p>
-            </div>
-
-            {/* Quick Actions: View Mode Switcher + Inline Calibration + Orientation */}
-            <div className="flex items-center gap-2 shrink-0 self-end sm:self-center flex-wrap">
-              {/* Console Mode Switcher (Driver vs Diagnostics) */}
-              <div
-                className="flex items-center p-1 rounded-xl bg-muted/50 border border-border/60"
-                role="group"
-                aria-label="Monitoring view mode"
-              >
-                <Button
-                  size="sm"
-                  variant={consoleMode === "cockpit" ? "default" : "ghost"}
-                  onClick={() => handleConsoleModeChange("cockpit")}
-                  className="text-xs h-7 px-2.5 rounded-lg gap-1.5 cursor-pointer"
-                  title="Driver Safety View (Clean road-safety interface)"
-                  aria-label="Switch to Driver Safety View"
-                >
-                  <Car className="size-3.5" />
-                  <span>Driver View</span>
-                </Button>
-
-                <Button
-                  size="sm"
-                  variant={consoleMode === "diagnostics" ? "default" : "ghost"}
-                  onClick={() => handleConsoleModeChange("diagnostics")}
-                  className="text-xs h-7 px-2.5 rounded-lg gap-1.5 cursor-pointer"
-                  title="Engineering Diagnostics View (Full telemetry and latencies)"
-                  aria-label="Switch to Engineering Diagnostics View"
-                >
-                  <SlidersHorizontal className="size-3.5" />
-                  <span>Diagnostics [Dev]</span>
-                </Button>
-              </div>
-
-              <Button
-                size="sm"
-                variant={showInlineCalibration ? "default" : "outline"}
-                onClick={() => setShowInlineCalibration((prev) => !prev)}
-                className="text-xs h-8 gap-1.5 rounded-xl"
-              >
-                <Compass className="size-3.5" />
-                <span>{showInlineCalibration ? "Hide Calibration" : "Quick Calibrate"}</span>
-              </Button>
-
-              <div className="flex items-center p-1 rounded-xl bg-muted/50 border border-border/60">
-                <Button
-                  size="sm"
-                  variant={isPortrait ? "default" : "ghost"}
-                  onClick={() => setViewOrientation("portrait")}
-                  className="text-xs h-7 px-2.5 rounded-lg gap-1.5"
-                  title="Portrait View (Mobile Driver View)"
-                >
-                  <Smartphone className="size-3.5" />
-                  <span>Portrait</span>
-                </Button>
-
-                <Button
-                  size="sm"
-                  variant={!isPortrait ? "default" : "ghost"}
-                  onClick={() => setViewOrientation("landscape")}
-                  className="text-xs h-7 px-2.5 rounded-lg gap-1.5"
-                  title="Landscape View (Desktop Cockpit View)"
-                >
-                  <Monitor className="size-3.5" />
-                  <span>Landscape</span>
-                </Button>
-              </div>
-            </div>
-          </div>
-
-          {/* 5-Pill Pre-Monitoring Readiness Bar */}
-          <ReadinessChecklist
-            cameraActive={cameraState === "active"}
-            cameraResolutionLabel={
-              resolution ? `${resolution.width}×${resolution.height}` : "640×480"
-            }
-            faceDetected={Boolean(effectiveTelemetry?.face_detected)}
-            isCalibrated={isCalibrated}
-            centerEarBaseline={centerEarBaseline}
-            livekitStatus={runtimeMode === "browser" ? "connected" : wsStatus}
-            backendProcessingStatus={effectiveProcessingStatus}
-            isStale={runtimeMode === "browser" ? false : isStale}
-            rttMs={runtimeMode === "browser" ? 0 : roundtripLatencyMs}
-            audioStatus={audioStatus}
-            audioMuted={audioMuted}
-            onUnlockAudio={unlockAudio}
-            onCalibrateClick={() => setShowInlineCalibration(true)}
-          />
-
-          {/* Honest Calibration Notice (HIGH-4: Authoritative backend pauses ocular closure until calibrated) */}
-          {!isCalibrated && (
-            <div className="px-3.5 py-2.5 rounded-2xl border border-amber-500/40 bg-amber-500/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-              <div className="flex items-center gap-2">
-                <Compass className="size-4 text-amber-500 shrink-0" />
-                <span className="text-foreground">
-                  <strong>Calibration required for ocular monitoring:</strong> Run 4-Zone calibration
-                  so the engine activates personalised eye-closure and PERCLOS thresholds.
-                </span>
-              </div>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setShowInlineCalibration(true)}
-                className="h-7 text-xs shrink-0 border-amber-500/40"
-              >
-                Calibrate Now
-              </Button>
-            </div>
-          )}
-        </div>
+        <MonitorHeaderBar
+          consoleMode={consoleMode}
+          onConsoleModeChange={handleConsoleModeChange}
+          runtimeMode={runtimeMode}
+          cameraActive={cameraState === "active"}
+          cameraResolutionLabel={
+            resolution ? `${resolution.width}×${resolution.height}` : "640×480"
+          }
+          faceDetected={Boolean(effectiveTelemetry?.face_detected)}
+          isCalibrated={isCalibrated}
+          centerEarBaseline={centerEarBaseline}
+          livekitStatus={runtimeMode === "browser" ? "connected" : wsStatus}
+          backendProcessingStatus={effectiveProcessingStatus}
+          isStale={runtimeMode === "browser" ? false : isStale}
+          rttMs={runtimeMode === "browser" ? 0 : roundtripLatencyMs}
+          audioStatus={audioStatus}
+          audioMuted={audioMuted}
+          browserSyncStatus={browserSyncStatus}
+          showInlineCalibration={showInlineCalibration}
+          onToggleCalibration={() => setShowInlineCalibration((prev) => !prev)}
+          onUnlockAudio={unlockAudio}
+        />
       )}
 
       {/* Connection Recovery Assistant (Shown when Cloud Worker is cold-starting or connection errors in Remote AI mode) */}
@@ -1389,23 +1241,24 @@ export function UnifiedLiveMonitor({
                 : "lg:col-span-7"
           }`}
         >
-          {/* Compact Inline 4-Zone Calibration Bar (Docked directly above video without pushing camera below fold) */}
+          {/* Compact Inline 4-Zone Calibration Bar */}
           {!isFullscreen && showInlineCalibration && (
-            <div className="p-3 rounded-2xl border border-primary/40 bg-primary/5 space-y-2.5">
+            <div className="p-3.5 rounded-2xl border border-primary/40 bg-primary/5 space-y-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <Compass className="size-4 text-primary" />
-                  <span className="text-xs font-bold text-foreground">
-                    Inline 4-Zone PDBP Calibration
+                  <Compass className="size-4 text-primary" aria-hidden="true" />
+                  <span className="text-xs font-semibold text-foreground">
+                    4-Zone Eye Calibration
                   </span>
                   {calibration && !calibration.is_completed && (
-                    <Badge className="text-[10px] font-mono bg-primary text-primary-foreground">
+                    <Badge className="text-[11px] font-mono tabular-nums bg-primary text-primary-foreground">
                       Zone {calibration.phase_index}/{calibration.total_phases}: {calibration.current_zone} ({Math.round(calibration.zone_progress_pct)}%)
                     </Badge>
                   )}
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Button
+                    type="button"
                     size="sm"
                     onClick={() => {
                       if (cameraState !== "active") {
@@ -1421,6 +1274,7 @@ export function UnifiedLiveMonitor({
                   {calibration && !calibration.is_completed && (
                     <>
                       <Button
+                        type="button"
                         size="sm"
                         variant="outline"
                         onClick={skipCalibrationStep}
@@ -1429,6 +1283,7 @@ export function UnifiedLiveMonitor({
                         Skip Zone
                       </Button>
                       <Button
+                        type="button"
                         size="sm"
                         variant="ghost"
                         onClick={cancelCalibration}
@@ -1445,17 +1300,20 @@ export function UnifiedLiveMonitor({
               </div>
 
               {calibration && !calibration.is_completed && (
-                <div className="text-xs text-foreground font-medium bg-background/70 px-3 py-1.5 rounded-lg border border-border/60 flex items-center justify-between gap-2">
+                <div
+                  aria-live="polite"
+                  className="text-xs text-foreground font-medium bg-background/80 px-3 py-1.5 rounded-lg border border-border/60 flex items-center justify-between gap-2"
+                >
                   <span>{calibration.instruction}</span>
-                  <span className="font-mono text-[11px] text-muted-foreground shrink-0">
+                  <span className="font-mono tabular-nums text-[11px] text-muted-foreground shrink-0">
                     Samples: {calibration.stable_samples_count}/{calibration.target_samples_count}
                   </span>
                 </div>
               )}
 
               {/* Single-Zone Recalibration Quick Buttons */}
-              <div className="flex items-center gap-1.5 flex-wrap text-[11px] font-mono">
-                <span className="text-muted-foreground mr-1">Recalibrate Single Zone:</span>
+              <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+                <span className="text-muted-foreground mr-1">Single zone:</span>
                 {(["CENTER", "LEFT_MIRROR", "RIGHT_MIRROR", "DASHBOARD"] as const).map((z) => (
                   <button
                     key={z}
@@ -1467,7 +1325,7 @@ export function UnifiedLiveMonitor({
                         recalibrateZone(z, 4.0);
                       }
                     }}
-                    className="px-2 py-0.5 rounded-md border border-border bg-card hover:bg-muted text-foreground transition-colors cursor-pointer"
+                    className="px-2 py-0.5 rounded-md border border-border bg-card hover:bg-muted text-foreground font-mono transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {z.replace("_", " ")}
                   </button>
@@ -1502,39 +1360,42 @@ export function UnifiedLiveMonitor({
                         variant="outline"
                         className="bg-black/75 backdrop-blur-md border-white/20 text-white text-[10px] font-mono px-2 py-0.5"
                       >
-                        Zone: {effectiveTelemetry.pose_zone}
+                        {effectiveTelemetry.pose_zone}
                       </Badge>
                     )}
                   </div>
 
-                  {/* Right side: Optical Quality & Latency */}
-                  <div className="flex items-center gap-1.5 pointer-events-auto flex-wrap justify-end">
-                    {opticalQuality && (
-                      <div className="flex items-center gap-1.5 bg-black/75 backdrop-blur-md px-2.5 py-1 rounded-md border border-white/15 text-[10px] font-mono text-zinc-300 shadow-md">
-                        <span
-                          className={`size-1.5 rounded-full ${
-                            opticalQuality.overallQuality === "EXCELLENT" || opticalQuality.overallQuality === "ACCEPTABLE"
-                              ? "bg-emerald-400"
-                              : "bg-amber-400"
-                          }`}
-                        />
-                        <span>LUM: {Math.round(opticalQuality.meanLuminance)}</span>
-                        <span className="text-zinc-500">•</span>
-                        <span className={opticalQuality.blurCondition === "BLURRY" ? "text-rose-400" : "text-zinc-300"}>
-                          {opticalQuality.blurCondition} ({Math.round(opticalQuality.blurVarianceScore)})
-                        </span>
-                      </div>
-                    )}
+                  {/* Right side: Optical Quality & Latency (Shown in Inspector mode only to keep Driver mode calm) */}
+                  {consoleMode === "diagnostics" && (
+                    <div className="flex items-center gap-1.5 pointer-events-auto flex-wrap justify-end">
+                      {opticalQuality && (
+                        <div className="flex items-center gap-1.5 bg-black/75 backdrop-blur-md px-2.5 py-1 rounded-md border border-white/15 text-[10px] font-mono tabular-nums text-zinc-300 shadow-md">
+                          <span
+                            aria-hidden="true"
+                            className={`size-1.5 rounded-full ${
+                              opticalQuality.overallQuality === "EXCELLENT" || opticalQuality.overallQuality === "ACCEPTABLE"
+                                ? "bg-emerald-400"
+                                : "bg-amber-400"
+                            }`}
+                          />
+                          <span>LUM: {Math.round(opticalQuality.meanLuminance)}</span>
+                          <span className="text-zinc-500" aria-hidden="true">·</span>
+                          <span className={opticalQuality.blurCondition === "BLURRY" ? "text-rose-400" : "text-zinc-300"}>
+                            {opticalQuality.blurCondition} ({Math.round(opticalQuality.blurVarianceScore)})
+                          </span>
+                        </div>
+                      )}
 
-                    {roundtripLatencyMs > 0 && runtimeMode === "remote" && (
-                      <Badge
-                        variant="outline"
-                        className="bg-black/75 backdrop-blur-md border-white/20 text-white text-[10px] font-mono tabular-nums px-2 py-0.5"
-                      >
-                        RTT {roundtripLatencyMs}ms
-                      </Badge>
-                    )}
-                  </div>
+                      {roundtripLatencyMs > 0 && runtimeMode === "remote" && (
+                        <Badge
+                          variant="outline"
+                          className="bg-black/75 backdrop-blur-md border-white/20 text-white text-[10px] font-mono tabular-nums px-2 py-0.5"
+                        >
+                          RTT {roundtripLatencyMs}&nbsp;ms
+                        </Badge>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Minimal Bottom Overlay in Fullscreen */}
@@ -1598,7 +1459,7 @@ export function UnifiedLiveMonitor({
             )}
           </CameraView>
 
-          {/* Controls Bar & Rolling 60s Waveform Chart (Visible in standard non-fullscreen view) */}
+          {/* Unified Controls Bar & Camera Status (Visible in standard non-fullscreen view) */}
           {!isFullscreen && (
             <>
               <CameraControls
@@ -1621,6 +1482,10 @@ export function UnifiedLiveMonitor({
                 onToggleFullscreen={toggleFullscreen}
                 onToggleMirror={() => setIsMirrored((prev) => !prev)}
                 isCapturing={isCapturing}
+                audioStatus={audioStatus}
+                isMuted={audioMuted}
+                onToggleMute={toggleMute}
+                onUnlockAudio={unlockAudio}
               />
 
               <CameraStatus
@@ -1628,17 +1493,15 @@ export function UnifiedLiveMonitor({
                 resolution={resolution}
                 facingMode={facingMode}
                 durationSec={streamDurationSec}
+                runtimeLabel={
+                  runtimeMode === "browser" ? "On-Device Privacy AI" : "Remote LiveKit AI"
+                }
               />
-
-              {/* Rolling 60-Second Live Telemetry Chart (Visible in Engineering Diagnostics mode) */}
-              {consoleMode === "diagnostics" && (
-                <LiveTelemetryChart data={chartHistory} />
-              )}
             </>
           )}
         </div>
 
-        {/* Companion Sidebar Panel: Real-Time Telemetry or Clean Driver Cockpit HUD */}
+        {/* Companion Panel: Calm Driver Cockpit or 4-Tab Engineering Inspector */}
         {!isFullscreen && (
           <div
             className={`space-y-4 ${
@@ -1650,6 +1513,32 @@ export function UnifiedLiveMonitor({
                 telemetry={effectiveTelemetry}
                 cameraState={cameraState}
                 isStale={runtimeMode === "browser" ? false : isStale}
+                isCalibrated={isCalibrated}
+                runtimeMode={runtimeMode}
+                sessionDurationSec={streamDurationSec}
+                isAudioUnlocked={isAudioUnlocked}
+                isMuted={audioMuted}
+                volume={audioVolume}
+                audioStatus={audioStatus}
+                onStartMonitoring={handleStartMonitoring}
+                onCalibrateClick={() => setShowInlineCalibration(true)}
+                onToggleMute={toggleMute}
+                onSetVolume={setAudioVolume}
+                onUnlockAudio={unlockAudio}
+                onSwitchToDiagnostics={() => handleConsoleModeChange("diagnostics")}
+              />
+            ) : (
+              <InspectorWorkspace
+                activeTab={inspectorTab}
+                onTabChange={setInspectorTab}
+                telemetry={effectiveTelemetry}
+                cameraState={cameraState}
+                runtimeMode={runtimeMode}
+                onSwitchRuntimeMode={handleSwitchRuntimeMode}
+                backendType={backendType}
+                onSwitchBackend={handleSwitchBackend}
+                latencyDiagnostics={latencyDiagnostics}
+                isStale={isStale}
                 isAudioUnlocked={isAudioUnlocked}
                 isMuted={audioMuted}
                 volume={audioVolume}
@@ -1657,154 +1546,25 @@ export function UnifiedLiveMonitor({
                 onToggleMute={toggleMute}
                 onSetVolume={setAudioVolume}
                 onUnlockAudio={unlockAudio}
-                onSwitchToDiagnostics={() => handleConsoleModeChange("diagnostics")}
+                onTestAudioTier={testAlert}
+                onSwitchToCockpit={() => handleConsoleModeChange("cockpit")}
+                chartHistory={chartHistory}
+                activeFault={activeFault}
+                onInjectMirrorGlance={() => setActiveFault("MIRROR_GLANCE")}
+                onInjectSluggishReopen={() => setActiveFault("SLUGGISH_REOPEN")}
+                onInjectGlare={() => setActiveFault("GLARE_DEFOCUS")}
+                onInjectWatchdogTimeout={() => setActiveFault("WATCHDOG_TIMEOUT")}
+                onResetFaults={() => setActiveFault(null)}
+                experimentMode={experimentMode}
+                onSelectExperimentMode={switchExperiment}
+                devices={devices}
+                selectedDeviceId={selectedDeviceId}
+                onSelectDevice={selectDevice}
+                onRefreshDevices={refreshDevices}
+                viewOrientation={viewOrientation}
+                onOrientationChange={setViewOrientation}
+                hasActiveSession={hasActiveSession}
               />
-            ) : (
-              <>
-                {/* Live AI Telemetry HUD Gauges */}
-                <LiveTelemetryHUD
-                  telemetry={effectiveTelemetry}
-                  cameraState={cameraState}
-                  backendType={backendType}
-                  latencyDiagnostics={latencyDiagnostics}
-                  isStale={runtimeMode === "browser" ? false : isStale}
-                  isAudioUnlocked={isAudioUnlocked}
-                  isMuted={audioMuted}
-                  volume={audioVolume}
-                  audioStatus={audioStatus}
-                  onToggleMute={toggleMute}
-                  onSetVolume={setAudioVolume}
-                  onUnlockAudio={unlockAudio}
-                  onTestAudioTier={testAlert}
-                  onSwitchToCockpit={() => handleConsoleModeChange("cockpit")}
-                />
-
-                {/* Structured Explainable Risk & Stage Latency Breakdown Panel */}
-                <ExplainableRiskPanel
-                  telemetry={effectiveTelemetry}
-                  latencyDiagnostics={latencyDiagnostics}
-                  isStale={runtimeMode === "browser" ? false : isStale}
-                />
-
-                {/* Sub-Frame Blink Kinematics Oscilloscope (Innovation 2) */}
-                <KinematicsOscilloscope
-                  currentEar={effectiveTelemetry?.eye_metrics?.ear_raw ?? 0.285}
-                  closureThreshold={effectiveTelemetry?.comparison?.personalised_threshold ?? 0.20}
-                  dEarDt={effectiveTelemetry?.eye_metrics?.blink_rcr ? -0.15 : 0}
-                  rcr={effectiveTelemetry?.eye_metrics?.blink_rcr ?? undefined}
-                />
-
-                {/* 3D Spatial Head Gyroscope & Zone Cones (Innovation 1) */}
-                <EulerHeadGyro
-                  pitchDeg={effectiveTelemetry?.head_pose?.pitch_deg ?? 0}
-                  yawDeg={effectiveTelemetry?.head_pose?.yaw_deg ?? 0}
-                  rollDeg={effectiveTelemetry?.head_pose?.roll_deg ?? 0}
-                  zone={effectiveTelemetry?.comparison?.personalised_zone ?? "CENTER"}
-                />
-
-                {/* Academic Viva & Fault Injection Testbench */}
-                <FaultInjectionToolbar
-                  activeFault={activeFault}
-                  onInjectMirrorGlance={() => setActiveFault("MIRROR_GLANCE")}
-                  onInjectSluggishReopen={() => setActiveFault("SLUGGISH_REOPEN")}
-                  onInjectGlare={() => setActiveFault("GLARE_DEFOCUS")}
-                  onInjectWatchdogTimeout={() => setActiveFault("WATCHDOG_TIMEOUT")}
-                  onResetFaults={() => setActiveFault(null)}
-                />
-
-                {/* Hardware & Cascade Configuration Card */}
-                <Card className="border-border/80 shadow-xs overflow-hidden">
-                  <CardHeader className="p-3.5 pb-2 border-b border-border/50 bg-muted/20">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <SlidersHorizontal className="size-4 text-primary" />
-                        <CardTitle className="text-xs font-bold uppercase tracking-wider text-foreground">
-                          Configuration &amp; Sensors
-                        </CardTitle>
-                      </div>
-                      <Badge variant="outline" className="text-[10px] font-mono text-muted-foreground border-border/60">
-                        {backendType === "cloud" ? "Cloud AI" : "Local:8000"}
-                      </Badge>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="p-3">
-                    <Tabs defaultValue="cascade" className="w-full space-y-3">
-                      <TabsList className="grid grid-cols-3 w-full h-9 bg-muted/50 p-1 rounded-xl">
-                        <TabsTrigger
-                          value="cascade"
-                          className="text-xs font-medium rounded-lg data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-2xs"
-                        >
-                          <Sparkles className="size-3 mr-1 text-primary shrink-0" />
-                          <span>Cascade</span>
-                        </TabsTrigger>
-                        <TabsTrigger
-                          value="camera"
-                          className="text-xs font-medium rounded-lg data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-2xs"
-                        >
-                          <Camera className="size-3 mr-1 text-primary shrink-0" />
-                          <span>Camera</span>
-                        </TabsTrigger>
-                        <TabsTrigger
-                          value="engine"
-                          className="text-xs font-medium rounded-lg data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-2xs"
-                        >
-                          <Cpu className="size-3 mr-1 text-primary shrink-0" />
-                          <span>Engine</span>
-                        </TabsTrigger>
-                      </TabsList>
-
-                      {/* Tab 1: Experiment Selector */}
-                      <TabsContent value="cascade" className="mt-0 focus-visible:outline-none">
-                        <ExperimentSelector
-                          currentMode={experimentMode}
-                          onSelectMode={switchExperiment}
-                        />
-                      </TabsContent>
-
-                      {/* Tab 2: Camera Selector */}
-                      <TabsContent value="camera" className="mt-0 focus-visible:outline-none space-y-2">
-                        <div className="text-[11px] text-muted-foreground">
-                          Select active hardware optical sensor for driver eye and face tracking:
-                        </div>
-                        <CameraSelector
-                          devices={devices}
-                          selectedDeviceId={selectedDeviceId}
-                          onSelectDevice={selectDevice}
-                          onRefreshDevices={refreshDevices}
-                        />
-                      </TabsContent>
-
-                      {/* Tab 3: AI Inference Target */}
-                      <TabsContent value="engine" className="mt-0 focus-visible:outline-none space-y-2.5">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="text-muted-foreground">Active Server Endpoint:</span>
-                          <span className="font-mono text-foreground font-semibold" suppressHydrationWarning>
-                            {backendType === "cloud" ? "LiveKit Cloud (Render)" : "127.0.0.1:8000"}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2" suppressHydrationWarning>
-                          <Button
-                            size="sm"
-                            variant={backendType === "cloud" ? "default" : "outline"}
-                            onClick={() => handleSwitchBackend("cloud")}
-                            className="text-xs h-9 flex-1 rounded-xl"
-                          >
-                            LiveKit Cloud
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant={backendType === "local" ? "default" : "outline"}
-                            onClick={() => handleSwitchBackend("local")}
-                            className="text-xs h-9 flex-1 rounded-xl"
-                          >
-                            Localhost (8000)
-                          </Button>
-                        </div>
-                      </TabsContent>
-                    </Tabs>
-                  </CardContent>
-                </Card>
-              </>
             )}
           </div>
         )}

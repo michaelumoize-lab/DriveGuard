@@ -51,10 +51,10 @@ export function LandingNavbar({ user }: LandingNavbarProps) {
         >
           <Logo variant="black" className="size-9 rounded-xl border border-[#F5F3EC]/10" />
           <div>
-            <span className="font-display font-bold tracking-tight text-base block text-[#F5F3EC]">
+            <span className="font-display font-bold tracking-tight text-base block text-[#F5F3EC] whitespace-nowrap">
               DriveGuard
             </span>
-            <span className="text-[10px] font-mono text-[#9EA39B] uppercase tracking-[0.14em] block">
+            <span className="text-[10px] font-mono text-[#9EA39B] uppercase tracking-[0.14em] hidden xs:block whitespace-nowrap">
               Driver Monitoring AI
             </span>
           </div>

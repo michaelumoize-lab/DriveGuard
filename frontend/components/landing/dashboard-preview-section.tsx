@@ -20,6 +20,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { useIsHydrated } from "@/components/auth/use-is-hydrated";
 import { LANDING_MEDIA, type LandingMediaSlotKey } from "@/lib/landing-media";
 import { LandingMediaSlot } from "@/components/landing/landing-media-slot";
 import { cn } from "@/lib/utils";
@@ -73,12 +74,8 @@ const CALIBRATION_ZONES = [
 export function DashboardPreviewSection() {
   const prefersReducedMotion = useReducedMotion();
   const [activeTab, setActiveTab] = useState<PreviewTab>("overview");
-  const [mounted, setMounted] = useState(false);
+  const mounted = useIsHydrated();
   const frameRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   const { scrollYProgress } = useScroll({
     target: frameRef,
