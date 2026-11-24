@@ -26,7 +26,7 @@ import { ZoneBaselineEntry } from "@/types/telemetry";
 
 export const dynamic = "force-dynamic";
 
-export default async function AdminDashboardPage() {
+export default async function DashboardPage() {
   const session = await getServerSession();
   const userId = session?.user?.id;
 
@@ -367,7 +367,12 @@ export default async function AdminDashboardPage() {
                     {sessionsList.map((s) => (
                       <tr key={s.id} className="hover:bg-muted/30">
                         <td className="py-2.5 px-3 font-mono text-foreground">
-                          {s.sessionCode}
+                          <Link
+                            href={`/dashboard/sessions/${s.id}`}
+                            className="hover:text-primary underline-offset-4 hover:underline"
+                          >
+                            {s.sessionCode}
+                          </Link>
                         </td>
                         <td className="py-2.5 px-3 font-mono tabular-nums text-muted-foreground">
                           {s.durationSeconds > 0

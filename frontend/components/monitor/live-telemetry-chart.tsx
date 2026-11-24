@@ -71,8 +71,14 @@ export const LiveTelemetryChart = React.memo(function LiveTelemetryChart({
             <span>Start live camera stream to plot real-time physiological waveforms.</span>
           </div>
         ) : (
-          <div className="h-[150px] w-full" aria-label="Real-time telemetry chart">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-[150px] w-full min-w-0" aria-label="Real-time telemetry chart">
+            <ResponsiveContainer
+              width="100%"
+              height="100%"
+              minWidth={0}
+              minHeight={150}
+              initialDimension={{ width: 320, height: 150 }}
+            >
               {mode === "ear" ? (
                 <AreaChart data={data} margin={{ top: 6, right: 8, left: -20, bottom: 0 }}>
                   <defs>

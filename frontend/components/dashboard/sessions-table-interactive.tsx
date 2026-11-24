@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
+import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,6 +20,7 @@ import {
   ShieldAlert,
   CheckCircle2,
   Gauge,
+  Play,
 } from "lucide-react";
 import { explainReasonCode } from "@/types/telemetry";
 import { FormattedTimestamp } from "@/components/ui/formatted-timestamp";
@@ -199,16 +201,24 @@ export function SessionsTableInteractive({ sessions }: SessionsTableInteractiveP
                     {s.averageFps && s.averageFps > 0 ? `${s.averageFps.toFixed(1)} fps` : "—"}
                   </td>
                   <td className="py-2.5 px-3 text-right">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setSelectedSession(s)}
-                      className="h-7 px-2 text-xs"
-                    >
-                      <Eye className="size-3.5 mr-1" />
-                      Inspect
-                    </Button>
+                    <div className="inline-flex items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setSelectedSession(s)}
+                        className="h-7 px-2 text-xs"
+                      >
+                        <Eye className="size-3.5 mr-1" />
+                        Inspect
+                      </Button>
+                      <Button asChild variant="outline" size="sm" className="h-7 px-2 text-xs">
+                        <Link href={`/dashboard/sessions/${s.id}`}>
+                          <Play className="size-3 mr-1" />
+                          Replay
+                        </Link>
+                      </Button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -378,6 +388,15 @@ export function SessionsTableInteractive({ sessions }: SessionsTableInteractiveP
                       ))}
                     </div>
                   )}
+                </div>
+
+                <div className="flex justify-end pt-2 border-t border-border/60">
+                  <Button asChild size="sm">
+                    <Link href={`/dashboard/sessions/${selectedSession.id}`}>
+                      <Play className="size-3.5 mr-1.5" />
+                      Open Full Replay &amp; Timeline
+                    </Link>
+                  </Button>
                 </div>
               </div>
             </>

@@ -27,6 +27,10 @@ import {
   Sparkles,
   CircleHelp,
   Check,
+  BarChart3,
+  Cpu,
+  Brain,
+  Video,
 } from "lucide-react";
 
 export function CommandPalette() {
@@ -121,6 +125,40 @@ export function CommandPalette() {
             >
               <Settings className="w-4 h-4 text-muted-foreground" />
               <span>Driver Preferences & Account Settings</span>
+            </CommandItem>
+          </CommandGroup>
+
+          <CommandSeparator />
+
+          {/* Research & System */}
+          <CommandGroup heading="Research & System">
+            <CommandItem
+              onSelect={() => runCommand(() => router.push("/dashboard/benchmarks"))}
+              className="gap-2.5 cursor-pointer"
+            >
+              <BarChart3 className="w-4 h-4 text-muted-foreground" />
+              <span>Ablation Benchmarks</span>
+            </CommandItem>
+            <CommandItem
+              onSelect={() => runCommand(() => router.push("/dashboard/hardware"))}
+              className="gap-2.5 cursor-pointer"
+            >
+              <Cpu className="w-4 h-4 text-muted-foreground" />
+              <span>Hardware Co-Processor (ESP32)</span>
+            </CommandItem>
+            <CommandItem
+              onSelect={() => runCommand(() => router.push("/dashboard/camera-simulation"))}
+              className="gap-2.5 cursor-pointer"
+            >
+              <Video className="w-4 h-4 text-muted-foreground" />
+              <span>Camera Simulation</span>
+            </CommandItem>
+            <CommandItem
+              onSelect={() => runCommand(() => router.push("/dashboard/defense-guide"))}
+              className="gap-2.5 cursor-pointer"
+            >
+              <Brain className="w-4 h-4 text-muted-foreground" />
+              <span>Defense Companion</span>
             </CommandItem>
           </CommandGroup>
 

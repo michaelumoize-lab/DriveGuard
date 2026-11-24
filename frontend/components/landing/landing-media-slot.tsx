@@ -24,8 +24,9 @@ interface LandingMediaSlotProps {
 
 /**
  * Drop-in photographic / screenshot frame for the DriveGuard landing page.
- * Renders a sleek dark automotive surface when `LANDING_MEDIA[slot].src` is `null`,
- * and seamlessly switches to an optimized Next.js `<Image>` once populated.
+ * Uses a dark optical camera canvas so computer-vision HUD overlays stay legible
+ * in both Light Mode and Dark Mode, and switches seamlessly to Next.js `<Image>`
+ * once `LANDING_MEDIA[slot].src` is populated.
  */
 export function LandingMediaSlot({
   slot,
@@ -43,14 +44,14 @@ export function LandingMediaSlot({
   return (
     <div
       className={cn(
-        "relative overflow-hidden bg-[#141715]",
+        "relative overflow-hidden bg-[#121513] text-[#F5F3EC]",
         className
       )}
     >
-      {/* Subtle automotive ambient depth surface (always present behind overlays or blank slots) */}
+      {/* Subtle optical camera sensor depth surface */}
       <div
         aria-hidden="true"
-        className="absolute inset-0 bg-[radial-gradient(ellipse_75%_65%_at_50%_40%,rgba(245,243,236,0.055),rgba(16,18,17,0.92)_75%)]"
+        className="absolute inset-0 bg-[radial-gradient(ellipse_75%_65%_at_50%_40%,rgba(245,243,236,0.06),rgba(16,18,17,0.92)_75%)]"
       />
       <div
         aria-hidden="true"
@@ -72,9 +73,9 @@ export function LandingMediaSlot({
         showSlotHint && (
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute bottom-3 right-3 z-10 inline-flex items-center gap-1.5 rounded-md border border-[#F5F3EC]/10 bg-[#101211]/75 px-2.5 py-1 text-[10px] font-mono tracking-wider text-[#9EA39B]/75 backdrop-blur-sm"
+            className="pointer-events-none absolute bottom-3 right-3 z-10 inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-[#101211]/80 px-2.5 py-1 text-[10px] font-mono tracking-wider text-[#9EA39B] backdrop-blur-sm"
           >
-            <span className="size-1.5 rounded-full bg-[#E58B43]/70" />
+            <span className="size-1.5 rounded-full bg-[#E58B43]/80" />
             <span>media/{asset.placeholderFilename}</span>
           </div>
         )

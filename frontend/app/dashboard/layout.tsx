@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { getServerSession } from "@/lib/get-session";
 import { getOrCreateUserProfile } from "@/lib/user-profile";
 import { prisma } from "@/lib/prisma";
-import { AdminSidebar } from "@/components/admin-sidebar";
+import { Sidebar } from "@/components/sidebar";
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { CommandPalette } from "@/components/command-palette";
 import { NavbarSystemHealthBadge } from "@/components/dashboard/navbar-health-badge";
 import { DashboardHeaderActions } from "@/components/dashboard/dashboard-header-actions";
+import { WorkspaceBreadcrumb } from "@/components/dashboard/workspace-breadcrumb";
 
 export default async function DashboardLayout({
   children,
@@ -51,7 +52,7 @@ export default async function DashboardLayout({
     <TooltipProvider>
       <SidebarProvider defaultOpen={true}>
         <div className="flex h-svh w-full bg-background text-foreground overflow-hidden">
-          <AdminSidebar user={user} />
+          <Sidebar user={user} />
 
           <SidebarInset className="flex flex-col flex-1 bg-background min-w-0 h-full overflow-hidden">
             {/* Top Navbar Header aligned seamlessly at h-14 with Sidebar Header */}
@@ -64,11 +65,7 @@ export default async function DashboardLayout({
                   </TooltipTrigger>
                   <TooltipContent side="bottom">Toggle Sidebar</TooltipContent>
                 </Tooltip>
-                <div className="hidden sm:flex items-center gap-2 text-xs font-mono text-muted-foreground truncate">
-                  <span className="text-muted-foreground/70">DriveGuard</span>
-                  <span className="text-border">/</span>
-                  <span className="text-foreground font-medium">Driver Safety Center</span>
-                </div>
+                <WorkspaceBreadcrumb />
               </div>
 
               {/* Center Section: Health Badge */}

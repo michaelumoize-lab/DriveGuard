@@ -11,6 +11,7 @@ import {
 } from "motion/react";
 import { ArrowRight, Eye, ShieldCheck, Sparkles } from "lucide-react";
 import { LandingMediaSlot } from "@/components/landing/landing-media-slot";
+import { scrollToSection } from "@/lib/smooth-scroll";
 
 interface HeroSectionProps {
   isAuthenticated: boolean;
@@ -60,14 +61,14 @@ export function HeroSection({ isAuthenticated }: HeroSectionProps) {
 
   return (
     <section className="relative pt-28 pb-20 md:pt-36 md:pb-28 overflow-hidden">
-      {/* Subtle automotive ambient radial glow — restrained, no neon wash */}
+      {/* Subtle ambient radial glow — restrained, theme-aware */}
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute -top-24 right-[-10%] h-[520px] w-[520px] rounded-full bg-[radial-gradient(circle,rgba(229,139,67,0.09),transparent_65%)] blur-2xl"
+        className="pointer-events-none absolute -top-24 right-[-10%] h-[520px] w-[520px] rounded-full bg-[radial-gradient(circle,color-mix(in_srgb,var(--primary)_12%,transparent),transparent_65%)] blur-2xl"
       />
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute bottom-0 left-[-8%] h-[420px] w-[420px] rounded-full bg-[radial-gradient(circle,rgba(121,185,154,0.06),transparent_70%)] blur-2xl"
+        className="pointer-events-none absolute bottom-0 left-[-8%] h-[420px] w-[420px] rounded-full bg-[radial-gradient(circle,color-mix(in_srgb,var(--safe)_9%,transparent),transparent_70%)] blur-2xl"
       />
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -79,19 +80,19 @@ export function HeroSection({ isAuthenticated }: HeroSectionProps) {
             transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
             className="lg:col-span-6 space-y-7"
           >
-            <div className="inline-flex items-center gap-2.5 px-3 py-1.5 rounded-full border border-[#F5F3EC]/12 bg-[#191D1A]/80">
-              <span className="size-1.5 rounded-full bg-[#E58B43]" />
-              <span className="text-[11px] font-mono uppercase tracking-[0.18em] text-[#F5F3EC]/85">
+            <div className="inline-flex items-center gap-2.5 px-3 py-1.5 rounded-full border border-border bg-card/85 shadow-2xs">
+              <span className="size-1.5 rounded-full bg-primary" />
+              <span className="text-[11px] font-mono uppercase tracking-[0.18em] text-foreground/85">
                 Intelligent Driver Monitoring
               </span>
             </div>
 
             <div className="space-y-4">
-              <h1 className="font-display text-4xl sm:text-5xl xl:text-[3.75rem] font-bold tracking-[-0.03em] text-[#F5F3EC] leading-[1.06] text-balance">
+              <h1 className="font-display text-4xl sm:text-5xl xl:text-[3.75rem] font-bold tracking-[-0.03em] text-foreground leading-[1.06] text-balance">
                 Stay Alert.{" "}
-                <span className="text-[#F5F3EC]/70">Arrive Safe.</span>
+                <span className="text-foreground/65">Arrive Safe.</span>
               </h1>
-              <p className="text-base sm:text-lg text-[#9EA39B] leading-relaxed max-w-xl text-pretty">
+              <p className="text-base sm:text-lg text-muted-foreground leading-relaxed max-w-xl text-pretty">
                 DriveGuard pairs 478-point facial kinematics with personalized 4-zone baseline calibration to detect early drowsiness, prolonged eye closure, and diverted attention—without false alarms during mirror checks.
               </p>
             </div>
@@ -99,7 +100,7 @@ export function HeroSection({ isAuthenticated }: HeroSectionProps) {
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3.5 pt-1">
               <Link
                 href={isAuthenticated ? "/dashboard/live-monitor" : "/auth/sign-in"}
-                className="inline-flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-xl bg-[#E58B43] hover:bg-[#E58B43]/90 text-[#101211] font-semibold text-sm transition-colors shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-[#E58B43] focus-visible:ring-offset-2 focus-visible:ring-offset-[#101211]"
+                className="inline-flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground font-semibold text-sm transition-colors shadow-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
               >
                 <ShieldCheck className="size-4" />
                 <span>{isAuthenticated ? "Launch Live Monitor" : "Explore DriveGuard"}</span>
@@ -108,23 +109,24 @@ export function HeroSection({ isAuthenticated }: HeroSectionProps) {
 
               <a
                 href="#vision"
-                className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl border border-[#F5F3EC]/16 bg-[#191D1A]/70 hover:bg-[#191D1A] text-[#F5F3EC] font-medium text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#F5F3EC]/50"
+                onClick={(e) => scrollToSection(e, "#vision")}
+                className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl border border-border bg-card/80 hover:bg-accent text-foreground font-medium text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                <Eye className="size-4 text-[#E58B43]" />
+                <Eye className="size-4 text-primary-accent" />
                 <span>See How It Works</span>
               </a>
             </div>
 
             {/* Trust Indicators */}
-            <div className="pt-3 border-t border-[#F5F3EC]/10 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-[#9EA39B]">
+            <div className="pt-3 border-t border-border flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
               {TRUST_INDICATORS.map((item, idx) => (
                 <React.Fragment key={item}>
                   <span className="inline-flex items-center gap-2">
-                    <span className="size-1 rounded-full bg-[#79B99A]" />
+                    <span className="size-1.5 rounded-full bg-safe" />
                     <span>{item}</span>
                   </span>
                   {idx < TRUST_INDICATORS.length - 1 && (
-                    <span aria-hidden="true" className="hidden sm:inline text-[#F5F3EC]/20">
+                    <span aria-hidden="true" className="hidden sm:inline text-border">
                       ·
                     </span>
                   )}
@@ -145,15 +147,15 @@ export function HeroSection({ isAuthenticated }: HeroSectionProps) {
               onPointerMove={handlePointerMove}
               onPointerLeave={handlePointerLeave}
               style={prefersReducedMotion ? undefined : { rotateX, rotateY }}
-              className="relative rounded-2xl border border-[#F5F3EC]/12 bg-[#191D1A] p-2.5 sm:p-3 shadow-[0_32px_90px_-24px_rgba(0,0,0,0.85)]"
+              className="relative rounded-2xl border border-border bg-card p-2.5 sm:p-3 shadow-2xl"
             >
               {/* Optical Monitor Header Bar */}
-              <div className="flex items-center justify-between px-3 py-2 border-b border-[#F5F3EC]/8 mb-2.5 text-[11px] font-mono text-[#9EA39B]">
+              <div className="flex items-center justify-between px-3 py-2 border-b border-border/80 mb-2.5 text-[11px] font-mono text-muted-foreground">
                 <div className="flex items-center gap-2">
-                  <span className="size-2 rounded-full bg-[#79B99A]" />
-                  <span className="text-[#F5F3EC]/90 tracking-wider">DG-OPTICAL // CABIN CAM 01</span>
+                  <span className="size-2 rounded-full bg-safe" />
+                  <span className="text-foreground/90 tracking-wider">DG-OPTICAL // CABIN CAM 01</span>
                 </div>
-                <span className="text-[#9EA39B]/80">60 FPS · 478 LANDMARKS</span>
+                <span className="text-muted-foreground/85">60 FPS · 478 LANDMARKS</span>
               </div>
 
               {/* Driver Visual Viewport (Blank Drop-In Slot + CV Overlay) */}
@@ -161,7 +163,7 @@ export function HeroSection({ isAuthenticated }: HeroSectionProps) {
                 slot="heroDriver"
                 isLcp
                 sizes="(max-width: 1024px) 100vw, 50vw"
-                className="aspect-[16/11] w-full rounded-xl border border-[#F5F3EC]/10"
+                className="aspect-[16/11] w-full rounded-xl border border-border/80"
                 overlayClassName="bg-gradient-to-t from-[#101211]/85 via-[#101211]/20 to-[#101211]/45"
               >
                 {/* Steering Wheel & Driver Silhouette Depth Hint when image slot is blank */}
@@ -170,7 +172,6 @@ export function HeroSection({ isAuthenticated }: HeroSectionProps) {
                   aria-hidden="true"
                   className="pointer-events-none absolute inset-0 h-full w-full"
                 >
-                  {/* Subtle steering wheel arc at bottom-center */}
                   <path
                     d="M 118 275 A 90 90 0 0 1 282 275"
                     fill="none"
@@ -185,7 +186,6 @@ export function HeroSection({ isAuthenticated }: HeroSectionProps) {
                     strokeWidth="1.5"
                   />
 
-                  {/* Head & shoulder minimal geometric reference */}
                   <ellipse
                     cx="200"
                     cy="132"
@@ -203,7 +203,7 @@ export function HeroSection({ isAuthenticated }: HeroSectionProps) {
                   />
 
                   {/* Corner Targeting Brackets */}
-                  <g stroke="#E58B43" strokeOpacity="0.65" strokeWidth="1.4" fill="none">
+                  <g stroke="#E58B43" strokeOpacity="0.7" strokeWidth="1.4" fill="none">
                     <path d="M 142 78 L 142 66 L 154 66" />
                     <path d="M 246 66 L 258 66 L 258 78" />
                     <path d="M 142 186 L 142 198 L 154 198" />
@@ -229,7 +229,6 @@ export function HeroSection({ isAuthenticated }: HeroSectionProps) {
                     <line x1="216" y1="176" x2="200" y2="196" />
                   </g>
 
-                  {/* Subtle Pulsing Landmark Nodes */}
                   {HERO_LANDMARKS.map((pt, i) => (
                     <motion.circle
                       key={`${pt.x}-${pt.y}`}
@@ -261,14 +260,14 @@ export function HeroSection({ isAuthenticated }: HeroSectionProps) {
                 {!prefersReducedMotion && (
                   <motion.div
                     aria-hidden="true"
-                    className="pointer-events-none absolute inset-x-[28%] top-[20%] h-px bg-gradient-to-r from-transparent via-[#E58B43]/70 to-transparent shadow-[0_0_12px_rgba(229,139,67,0.45)]"
+                    className="pointer-events-none absolute inset-x-[28%] top-[20%] h-px bg-gradient-to-r from-transparent via-[#E58B43]/75 to-transparent shadow-[0_0_12px_rgba(229,139,67,0.45)]"
                     animate={{ y: [0, 128, 0] }}
                     transition={{ duration: 4.5, repeat: Infinity, ease: "easeInOut" }}
                   />
                 )}
 
                 {/* Top-Right Floating Status Card */}
-                <div className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 rounded-xl border border-[#79B99A]/30 bg-[#101211]/88 px-3 py-2 backdrop-blur-md shadow-lg">
+                <div className="absolute top-3 right-3 sm:top-4 sm:right-4 z-10 rounded-xl border border-[#79B99A]/35 bg-[#101211]/88 px-3 py-2 backdrop-blur-md shadow-lg">
                   <div className="flex items-center gap-2">
                     <motion.span
                       className="size-2 rounded-full bg-[#79B99A]"
@@ -291,7 +290,7 @@ export function HeroSection({ isAuthenticated }: HeroSectionProps) {
                 </div>
 
                 {/* Bottom-Left Attention Score Visualization */}
-                <div className="absolute bottom-3 left-3 sm:bottom-4 sm:left-4 z-10 flex items-center gap-3 rounded-xl border border-[#F5F3EC]/12 bg-[#101211]/88 px-3.5 py-2.5 backdrop-blur-md shadow-lg">
+                <div className="absolute bottom-3 left-3 sm:bottom-4 sm:left-4 z-10 flex items-center gap-3 rounded-xl border border-white/12 bg-[#101211]/88 px-3.5 py-2.5 backdrop-blur-md shadow-lg">
                   <div className="relative size-11 shrink-0">
                     <svg viewBox="0 0 44 44" className="size-full -rotate-90">
                       <circle
@@ -332,12 +331,12 @@ export function HeroSection({ isAuthenticated }: HeroSectionProps) {
               </LandingMediaSlot>
 
               {/* Subtle Bottom Telemetry Strip */}
-              <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 px-2 py-1 text-[11px] font-mono text-[#9EA39B]">
+              <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 px-2 py-1 text-[11px] font-mono text-muted-foreground">
                 <span className="inline-flex items-center gap-1.5">
-                  <Sparkles className="size-3 text-[#E58B43]" />
+                  <Sparkles className="size-3 text-primary-accent" />
                   <span>4-Zone Personalized Baseline Active</span>
                 </span>
-                <span className="text-[#F5F3EC]/60">Illustrative HUD concept</span>
+                <span className="text-muted-foreground/75">Illustrative HUD concept</span>
               </div>
             </motion.div>
           </motion.div>

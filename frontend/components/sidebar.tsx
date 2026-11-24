@@ -4,15 +4,9 @@ import * as React from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
-  Home,
   LayoutDashboard,
-  Users,
-  UserPlus,
-  UserCog,
   ClipboardList,
-  ShieldCheck,
   ShieldAlert,
-  Camera,
   Activity,
   Eye,
   Settings,
@@ -26,6 +20,8 @@ import {
   Sparkles,
   BarChart3,
   Brain,
+  Camera,
+  FlaskConical,
   Sun,
   Moon,
   Monitor,
@@ -37,7 +33,7 @@ import { signOut } from "@/lib/auth-client";
 import { UserAvatar } from "@/components/user-avatar";
 import { Logo } from "@/components/logo";
 import {
-  Sidebar,
+  Sidebar as SidebarPrimitive,
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
@@ -70,7 +66,7 @@ import {
 
 type UserRole = "USER" | "ADMIN" | "DRIVER" | string;
 
-interface AdminSidebarProps extends React.ComponentProps<typeof Sidebar> {
+interface SidebarProps extends React.ComponentProps<typeof SidebarPrimitive> {
   user: {
     id: string;
     email: string;
@@ -90,11 +86,6 @@ interface NavItem {
 
 const mainNavItems: NavItem[] = [
   {
-    title: "Home",
-    href: "/",
-    icon: Home,
-  },
-  {
     title: "Safety Dashboard",
     href: "/dashboard",
     icon: LayoutDashboard,
@@ -105,7 +96,7 @@ const mainNavItems: NavItem[] = [
     icon: Activity,
   },
   {
-    title: "Calibration",
+    title: "Driver Calibration",
     href: "/dashboard/calibration",
     icon: Eye,
   },
@@ -119,25 +110,40 @@ const mainNavItems: NavItem[] = [
     href: "/dashboard/alerts",
     icon: ShieldAlert,
   },
+];
+
+const engineeringNavItems: NavItem[] = [
   {
-    title: "System Specs",
-    href: "/dashboard/project-overview",
-    icon: Sparkles,
-  },
-  {
-    title: "Ablation Benchmarks",
-    href: "/dashboard/benchmarks",
-    icon: BarChart3,
-  },
-  {
-    title: "Hardware Co-Processor",
-    href: "/dashboard/hardware",
-    icon: Cpu,
-  },
-  {
-    title: "Defense Companion",
-    href: "/dashboard/defense-guide",
-    icon: Brain,
+    title: "Engineering & Viva",
+    icon: FlaskConical,
+    isSubmenu: true,
+    subItems: [
+      {
+        title: "Project Overview",
+        href: "/dashboard/project-overview",
+        icon: Sparkles,
+      },
+      {
+        title: "Ablation Benchmarks",
+        href: "/dashboard/benchmarks",
+        icon: BarChart3,
+      },
+      {
+        title: "Hardware Co-Processor",
+        href: "/dashboard/hardware",
+        icon: Cpu,
+      },
+      {
+        title: "Camera Simulation",
+        href: "/dashboard/camera-simulation",
+        icon: Camera,
+      },
+      {
+        title: "Defense Companion",
+        href: "/dashboard/defense-guide",
+        icon: Brain,
+      },
+    ],
   },
 ];
 
@@ -146,7 +152,7 @@ const supportNavItems: NavItem[] = [
   { title: "Help", href: "/dashboard/help", icon: CircleHelp },
 ];
 
-export function AdminSidebar({ user, className, ...props }: AdminSidebarProps) {
+export function Sidebar({ user, className, ...props }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const { isMobile, setOpenMobile } = useSidebar();
@@ -185,13 +191,13 @@ export function AdminSidebar({ user, className, ...props }: AdminSidebarProps) {
   };
 
   return (
-    <Sidebar collapsible="icon" className={className} {...props}>
-      {/* Fixed Sticky Header with h-14 height for seamless navbar alignment */}
+    <SidebarPrimitive collapsible="icon" className={className} {...props}>
+      {/* Fixed Sticky Header with h-14 height; Logo navigates to the landing page */}
       <SidebarHeader className="h-14 shrink-0 border-b border-sidebar-border justify-center px-3">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" asChild>
-              <Link href="/dashboard" onClick={handleNavClick}>
+            <SidebarMenuButton size="lg" tooltip="Back to Landing Page" asChild>
+              <Link href="/" onClick={handleNavClick} aria-label="DriveGuard Home">
                 <Logo className="size-8" />
                 <div className="grid flex-1 text-left text-sm leading-tight">
                   <span className="truncate font-semibold">DriveGuard</span>
@@ -208,78 +214,18 @@ export function AdminSidebar({ user, className, ...props }: AdminSidebarProps) {
       {/* Independently Scrollable Navigation Content */}
       <SidebarContent className="flex-1 overflow-y-auto">
         <SidebarGroup>
-          <SidebarGroupLabel>Platform</SidebarGroupLabel>
+          <SidebarGroupLabel>Workspace</SidebarGroupLabel>
           <SidebarMenu>
             {mainNavItems.map((item) => {
               const Icon = item.icon;
-              const isActive = item.href ? (pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(item.href + "/"))) : false;
-
-              if (item.isSubmenu && item.subItems) {
-                const isSubmenuActive = item.subItems.some(
-                  (subItem) => subItem.href && (pathname === subItem.href || (subItem.href !== "/dashboard" && pathname.startsWith(subItem.href + "/")))
-                );
-                const isOpen = openSubmenus[item.title] ?? isSubmenuActive;
-
-                return (
-                  <Collapsible
-                    key={item.title}
-                    open={isOpen}
-                    onOpenChange={() => toggleSubmenu(item.title)}
-                    className="w-full"
-                  >
-                    <SidebarMenuItem>
-                      <CollapsibleTrigger asChild>
-                        <SidebarMenuButton
-                          className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground w-full justify-between"
-                          isActive={isSubmenuActive}
-                        >
-                          <div className="flex items-center gap-2">
-                            <Icon className="size-4" />
-                            <span>{item.title}</span>
-                          </div>
-                          {isOpen ? (
-                            <ChevronDown className="h-4 w-4" />
-                          ) : (
-                            <ChevronRight className="h-4 w-4" />
-                          )}
-                        </SidebarMenuButton>
-                      </CollapsibleTrigger>
-                      <CollapsibleContent>
-                        <SidebarMenuSub>
-                          {item.subItems.map((subItem) => {
-                            const SubIcon = subItem.icon;
-                            const isSubActive = pathname === subItem.href;
-                            return (
-                              <SidebarMenuSubItem key={subItem.href}>
-                                <SidebarMenuSubButton
-                                  asChild
-                                  isActive={isSubActive}
-                                >
-                                  <Link
-                                    href={subItem.href!}
-                                    onClick={handleNavClick}
-                                  >
-                                    <SubIcon className="size-4" />
-                                    <span>{subItem.title}</span>
-                                  </Link>
-                                </SidebarMenuSubButton>
-                              </SidebarMenuSubItem>
-                            );
-                          })}
-                        </SidebarMenuSub>
-                      </CollapsibleContent>
-                    </SidebarMenuItem>
-                  </Collapsible>
-                );
-              }
+              const isActive = item.href
+                ? pathname === item.href ||
+                  (item.href !== "/dashboard" && pathname.startsWith(item.href + "/"))
+                : false;
 
               return (
                 <SidebarMenuItem key={item.href}>
-                  <SidebarMenuButton
-                    asChild
-                    isActive={isActive}
-                    tooltip={item.title}
-                  >
+                  <SidebarMenuButton asChild isActive={isActive} tooltip={item.title}>
                     <Link href={item.href!} onClick={handleNavClick}>
                       <Icon className="size-4" />
                       <span>{item.title}</span>
@@ -291,20 +237,84 @@ export function AdminSidebar({ user, className, ...props }: AdminSidebarProps) {
           </SidebarMenu>
         </SidebarGroup>
 
+        <SidebarGroup>
+          <SidebarGroupLabel>Research &amp; System</SidebarGroupLabel>
+          <SidebarMenu>
+            {engineeringNavItems.map((item) => {
+              const Icon = item.icon;
+              const isSubmenuActive = Boolean(
+                item.subItems?.some(
+                  (subItem) =>
+                    subItem.href &&
+                    (pathname === subItem.href || pathname.startsWith(subItem.href + "/"))
+                )
+              );
+              const isOpen = openSubmenus[item.title] ?? isSubmenuActive;
+
+              return (
+                <Collapsible
+                  key={item.title}
+                  open={isOpen}
+                  onOpenChange={() => toggleSubmenu(item.title)}
+                  className="w-full"
+                >
+                  <SidebarMenuItem>
+                    <CollapsibleTrigger asChild>
+                      <SidebarMenuButton
+                        className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground w-full justify-between"
+                        isActive={isSubmenuActive}
+                        tooltip={item.title}
+                      >
+                        <div className="flex items-center gap-2">
+                          <Icon className="size-4" />
+                          <span>{item.title}</span>
+                        </div>
+                        {isOpen ? (
+                          <ChevronDown className="h-4 w-4" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4" />
+                        )}
+                      </SidebarMenuButton>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      <SidebarMenuSub>
+                        {item.subItems?.map((subItem) => {
+                          const SubIcon = subItem.icon;
+                          const isSubActive =
+                            pathname === subItem.href ||
+                            pathname.startsWith(subItem.href + "/");
+                          return (
+                            <SidebarMenuSubItem key={subItem.href}>
+                              <SidebarMenuSubButton asChild isActive={isSubActive}>
+                                <Link href={subItem.href!} onClick={handleNavClick}>
+                                  <SubIcon className="size-4" />
+                                  <span>{subItem.title}</span>
+                                </Link>
+                              </SidebarMenuSubButton>
+                            </SidebarMenuSubItem>
+                          );
+                        })}
+                      </SidebarMenuSub>
+                    </CollapsibleContent>
+                  </SidebarMenuItem>
+                </Collapsible>
+              );
+            })}
+          </SidebarMenu>
+        </SidebarGroup>
+
         <SidebarGroup className="mt-auto">
           <SidebarGroupLabel>Support</SidebarGroupLabel>
           <SidebarMenu>
             {supportNavItems.map((item) => {
               const Icon = item.icon;
-              const isActive = pathname === item.href || (item.title === "Settings" && pathname.startsWith("/settings"));
+              const isActive =
+                pathname === item.href ||
+                (item.title === "Settings" && pathname.startsWith("/settings"));
 
               return (
                 <SidebarMenuItem key={item.href}>
-                  <SidebarMenuButton
-                    asChild
-                    isActive={isActive}
-                    tooltip={item.title}
-                  >
+                  <SidebarMenuButton asChild isActive={isActive} tooltip={item.title}>
                     <Link href={item.href!} onClick={handleNavClick}>
                       <Icon className="size-4" />
                       <span>{item.title}</span>
@@ -339,7 +349,7 @@ export function AdminSidebar({ user, className, ...props }: AdminSidebarProps) {
                     <span className="mt-0.5 truncate text-[10px] font-medium text-muted-foreground/70">
                       {user.role
                         ? user.role.charAt(0) + user.role.slice(1).toLowerCase()
-                        : "Admin"}
+                        : "Driver"}
                     </span>
                   </div>
                   <ChevronDown className="ml-auto size-4 text-muted-foreground group-data-[collapsible=icon]:hidden shrink-0" />
@@ -361,10 +371,10 @@ export function AdminSidebar({ user, className, ...props }: AdminSidebarProps) {
                       <span className="truncate text-[10px] text-muted-foreground">
                         {user.email}
                       </span>
-                      <span className="mt-0.5 text-[10px] font-medium text-primary">
+                      <span className="mt-0.5 text-[10px] font-medium text-primary-accent">
                         {user.role
                           ? user.role.charAt(0) + user.role.slice(1).toLowerCase()
-                          : "Admin"}
+                          : "Driver"}
                       </span>
                     </div>
                   </div>
@@ -380,38 +390,38 @@ export function AdminSidebar({ user, className, ...props }: AdminSidebarProps) {
                     <DropdownMenuItem
                       onClick={() => setTheme("light")}
                       className={`cursor-pointer flex items-center justify-between text-xs rounded-lg px-2.5 py-1.5 ${
-                        theme === "light" ? "font-semibold text-primary bg-primary/10" : ""
+                        theme === "light" ? "font-semibold text-primary-accent bg-primary/10" : ""
                       }`}
                     >
                       <div className="flex items-center gap-2">
                         <Sun className="size-3.5 text-amber-500" />
                         <span>Light</span>
                       </div>
-                      {theme === "light" && <Check className="size-3.5 text-primary" />}
+                      {theme === "light" && <Check className="size-3.5 text-primary-accent" />}
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       onClick={() => setTheme("dark")}
                       className={`cursor-pointer flex items-center justify-between text-xs rounded-lg px-2.5 py-1.5 ${
-                        theme === "dark" ? "font-semibold text-primary bg-primary/10" : ""
+                        theme === "dark" ? "font-semibold text-primary-accent bg-primary/10" : ""
                       }`}
                     >
                       <div className="flex items-center gap-2">
                         <Moon className="size-3.5 text-blue-400" />
                         <span>Dark</span>
                       </div>
-                      {theme === "dark" && <Check className="size-3.5 text-primary" />}
+                      {theme === "dark" && <Check className="size-3.5 text-primary-accent" />}
                     </DropdownMenuItem>
                     <DropdownMenuItem
                       onClick={() => setTheme("system")}
                       className={`cursor-pointer flex items-center justify-between text-xs rounded-lg px-2.5 py-1.5 ${
-                        theme === "system" ? "font-semibold text-primary bg-primary/10" : ""
+                        theme === "system" ? "font-semibold text-primary-accent bg-primary/10" : ""
                       }`}
                     >
                       <div className="flex items-center gap-2">
                         <Monitor className="size-3.5 text-muted-foreground" />
                         <span>System</span>
                       </div>
-                      {theme === "system" && <Check className="size-3.5 text-primary" />}
+                      {theme === "system" && <Check className="size-3.5 text-primary-accent" />}
                     </DropdownMenuItem>
                   </DropdownMenuSubContent>
                 </DropdownMenuSub>
@@ -440,6 +450,6 @@ export function AdminSidebar({ user, className, ...props }: AdminSidebarProps) {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
-    </Sidebar>
+    </SidebarPrimitive>
   );
 }

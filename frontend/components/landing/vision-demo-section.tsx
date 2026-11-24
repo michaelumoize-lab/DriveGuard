@@ -11,7 +11,10 @@ type VisionStateKey = "alert" | "distracted" | "drowsy";
 interface VisionStateProfile {
   key: VisionStateKey;
   label: string;
-  color: string;
+  /** Theme-aware token for UI panels */
+  themeColor: string;
+  /** Optical camera HUD color (always over dark sensor feed) */
+  hudColor: string;
   badgeBg: string;
   badgeBorder: string;
   eyeState: string;
@@ -22,11 +25,10 @@ interface VisionStateProfile {
   perclos: number;
   blinkMs: number;
   mar: number;
-  // SVG geometry parameters
-  eyeOpenFactor: number; // 1 = wide open, 0.25 = nearly closed
+  eyeOpenFactor: number;
   headOffsetX: number;
   headOffsetY: number;
-  mouthOpen: number; // 0 = closed, 1 = yawning
+  mouthOpen: number;
   yawDeg: number;
   pitchDeg: number;
   summary: string;
@@ -36,9 +38,10 @@ const VISION_STATES: Record<VisionStateKey, VisionStateProfile> = {
   alert: {
     key: "alert",
     label: "Alert",
-    color: "#79B99A",
-    badgeBg: "rgba(121, 185, 154, 0.12)",
-    badgeBorder: "rgba(121, 185, 154, 0.35)",
+    themeColor: "var(--safe)",
+    hudColor: "#79B99A",
+    badgeBg: "rgba(121, 185, 154, 0.14)",
+    badgeBorder: "rgba(121, 185, 154, 0.38)",
     eyeState: "Open",
     headPose: "Center",
     blinkAnalysis: "Normal",
@@ -53,14 +56,16 @@ const VISION_STATES: Record<VisionStateKey, VisionStateProfile> = {
     mouthOpen: 0.08,
     yawDeg: 1,
     pitchDeg: 0,
-    summary: "Nominal ocular kinematics. Eyelid reopening velocity and forward road gaze remain within personal baseline.",
+    summary:
+      "Nominal ocular kinematics. Eyelid reopening velocity and forward road gaze remain within personal baseline.",
   },
   distracted: {
     key: "distracted",
     label: "Distracted",
-    color: "#E8A04B",
-    badgeBg: "rgba(232, 160, 75, 0.12)",
-    badgeBorder: "rgba(232, 160, 75, 0.38)",
+    themeColor: "var(--warning)",
+    hudColor: "#E8A04B",
+    badgeBg: "rgba(232, 160, 75, 0.14)",
+    badgeBorder: "rgba(232, 160, 75, 0.4)",
     eyeState: "Shifted Gaze",
     headPose: "Off-Axis (-24°)",
     blinkAnalysis: "Elevated",
@@ -75,14 +80,16 @@ const VISION_STATES: Record<VisionStateKey, VisionStateProfile> = {
     mouthOpen: 0.12,
     yawDeg: -24,
     pitchDeg: -5,
-    summary: "Sustained off-axis head yaw exceeding the 3.0s mirror-glance window triggers an early attention advisory.",
+    summary:
+      "Sustained off-axis head yaw exceeding the 3.0s mirror-glance window triggers an early attention advisory.",
   },
   drowsy: {
     key: "drowsy",
     label: "Drowsy",
-    color: "#E45E52",
-    badgeBg: "rgba(228, 94, 82, 0.14)",
-    badgeBorder: "rgba(228, 94, 82, 0.42)",
+    themeColor: "var(--critical)",
+    hudColor: "#E45E52",
+    badgeBg: "rgba(228, 94, 82, 0.15)",
+    badgeBorder: "rgba(228, 94, 82, 0.44)",
     eyeState: "Prolonged Closure",
     headPose: "Forward Nod (-16°)",
     blinkAnalysis: "Sluggish RCR",
@@ -97,7 +104,8 @@ const VISION_STATES: Record<VisionStateKey, VisionStateProfile> = {
     mouthOpen: 0.92,
     yawDeg: 3,
     pitchDeg: -16,
-    summary: "EAR drops below the personalized closure floor alongside yawns and slow eyelid recovery—escalating warning state.",
+    summary:
+      "EAR drops below the personalized closure floor alongside yawns and slow eyelid recovery—escalating warning state.",
   },
 };
 
@@ -170,7 +178,6 @@ export function VisionDemoSection() {
     tabRefs.current[nextIdx]?.focus();
   };
 
-  // Compute dynamic SVG facial coordinates from active state
   const cx = 160 + active.headOffsetX;
   const cy = 152 + active.headOffsetY;
   const eyeRy = 8.5 * active.eyeOpenFactor;
@@ -179,20 +186,20 @@ export function VisionDemoSection() {
   return (
     <section
       id="vision"
-      className="py-20 md:py-28 border-t border-[#F5F3EC]/8 scroll-mt-20"
+      className="py-20 md:py-28 border-t border-border scroll-mt-24"
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-12">
         {/* Section Header + Interactive State Switcher */}
         <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6">
           <div className="max-w-2xl space-y-3">
-            <span className="inline-flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-[#E58B43]">
+            <span className="inline-flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-primary-accent">
               <ScanFace className="size-3.5" />
               <span>Computer Vision Architecture</span>
             </span>
-            <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-[-0.025em] text-[#F5F3EC] leading-[1.12] text-balance">
+            <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-[-0.025em] text-foreground leading-[1.12] text-balance">
               How DriveGuard sees what others miss
             </h2>
-            <p className="text-sm sm:text-base text-[#9EA39B] leading-relaxed">
+            <p className="text-sm sm:text-base text-muted-foreground leading-relaxed">
               Switch between driver states below to inspect how DriveGuard extracts Eye Aspect Ratio (EAR), blink duration, 6DoF head pose, and yawning kinematics in real time.
             </p>
           </div>
@@ -201,7 +208,7 @@ export function VisionDemoSection() {
           <div
             role="tablist"
             aria-label="Simulated driver monitoring states"
-            className="inline-flex flex-nowrap items-center gap-1 rounded-2xl border border-[#F5F3EC]/12 bg-[#191D1A] p-1.5 self-start lg:self-auto"
+            className="inline-flex flex-nowrap items-center gap-1 rounded-2xl border border-border bg-card p-1.5 self-start lg:self-auto shadow-xs"
           >
             {STATE_ORDER.map((key, idx) => {
               const stateItem = VISION_STATES[key];
@@ -220,32 +227,31 @@ export function VisionDemoSection() {
                   onClick={() => setActiveKey(key)}
                   onKeyDown={(e) => handleKeyDown(e, idx)}
                   className={cn(
-                    "relative shrink-0 px-4 py-2 rounded-xl text-xs font-semibold transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#E58B43]",
+                    "relative shrink-0 px-4 py-2 rounded-xl text-xs font-semibold transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     selected
-                      ? "text-[#F5F3EC]"
-                      : "text-[#9EA39B] hover:text-[#F5F3EC]"
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
                   )}
                 >
                   {selected && (
                     <motion.span
                       layoutId="vision-state-pill"
                       transition={{ type: "spring", stiffness: 360, damping: 32 }}
-                      className="absolute inset-0 rounded-xl bg-[#101211] border border-[#F5F3EC]/14"
+                      className="absolute inset-0 rounded-xl bg-background border border-border shadow-2xs"
                     />
                   )}
                   <span className="relative z-10 inline-flex items-center gap-2">
                     <span
                       className="size-2 rounded-full"
-                      style={{ backgroundColor: stateItem.color }}
+                      style={{ backgroundColor: stateItem.themeColor }}
                     />
                     <span>{stateItem.label}</span>
                   </span>
-                  {/* Shape underline indicator (WCAG 1.4.1 non-color indicator) */}
                   {selected && (
                     <span
                       aria-hidden="true"
                       className="absolute inset-x-3 bottom-0.5 h-[2px] rounded-full z-10"
-                      style={{ backgroundColor: stateItem.color }}
+                      style={{ backgroundColor: stateItem.themeColor }}
                     />
                   )}
                 </button>
@@ -259,27 +265,25 @@ export function VisionDemoSection() {
           role="tabpanel"
           aria-labelledby={`${tablistId}-tab-${activeKey}`}
           tabIndex={0}
-          className="grid grid-cols-1 lg:grid-cols-12 gap-6 rounded-3xl border border-[#F5F3EC]/12 bg-[#191D1A] p-4 sm:p-6 lg:p-8 shadow-2xl outline-none focus-visible:ring-2 focus-visible:ring-[#E58B43]"
+          className="grid grid-cols-1 lg:grid-cols-12 gap-6 rounded-3xl border border-border bg-card p-4 sm:p-6 lg:p-8 shadow-xl outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          {/* Left: Facial Landmark & Eye Contour Rig */}
+          {/* Left: Optical Facial Landmark & Eye Contour Rig */}
           <div className="lg:col-span-7">
             <LandingMediaSlot
               slot="visionFace"
               sizes="(max-width: 1024px) 100vw, 55vw"
-              className="aspect-[5/4] sm:aspect-[16/12] w-full rounded-2xl border border-[#F5F3EC]/10"
+              className="aspect-[5/4] sm:aspect-[16/12] w-full rounded-2xl border border-border/80"
               overlayClassName="bg-gradient-to-b from-[#101211]/35 via-transparent to-[#101211]/80"
             >
-              {/* Top-left Camera Overlay Metadata */}
-              <div className="absolute top-3.5 left-3.5 z-10 flex items-center gap-2 rounded-lg border border-[#F5F3EC]/12 bg-[#101211]/85 px-2.5 py-1.5 text-[10px] font-mono text-[#9EA39B] backdrop-blur-sm">
+              <div className="absolute top-3.5 left-3.5 z-10 flex items-center gap-2 rounded-lg border border-white/12 bg-[#101211]/85 px-2.5 py-1.5 text-[10px] font-mono text-[#9EA39B] backdrop-blur-sm">
                 <Eye className="size-3 text-[#E58B43]" />
                 <span>MESH: 478-PT 3D</span>
               </div>
 
-              {/* Top-right Active State Pill */}
               <div
                 className="absolute top-3.5 right-3.5 z-10 rounded-lg px-2.5 py-1 text-[10px] font-mono font-semibold uppercase tracking-wider backdrop-blur-sm border transition-colors duration-300"
                 style={{
-                  color: active.color,
+                  color: active.hudColor,
                   backgroundColor: active.badgeBg,
                   borderColor: active.badgeBorder,
                 }}
@@ -287,13 +291,11 @@ export function VisionDemoSection() {
                 STATE: {active.label}
               </div>
 
-              {/* Interactive SVG Computer-Vision Overlay */}
               <svg
                 viewBox="0 0 320 280"
                 aria-hidden="true"
                 className="pointer-events-none relative z-[5] h-full w-full"
               >
-                {/* Bounding Box / Detection Zone */}
                 <motion.rect
                   animate={{
                     x: cx - 72,
@@ -304,13 +306,12 @@ export function VisionDemoSection() {
                   height="184"
                   rx="14"
                   fill="none"
-                  stroke={active.color}
-                  strokeOpacity="0.4"
+                  stroke={active.hudColor}
+                  strokeOpacity="0.45"
                   strokeWidth="1"
                   strokeDasharray="4 4"
                 />
 
-                {/* Head Silhouette & Jawline Contour */}
                 <motion.g
                   animate={{ x: active.headOffsetX, y: active.headOffsetY }}
                   transition={{ type: "spring", stiffness: 180, damping: 24 }}
@@ -322,7 +323,6 @@ export function VisionDemoSection() {
                     strokeWidth="1.2"
                   />
 
-                  {/* Facial Wireframe Triangulation */}
                   <g stroke="rgba(245,243,236,0.14)" strokeWidth="0.75">
                     <line x1="116" y1="114" x2="140" y2="128" />
                     <line x1="204" y1="114" x2="180" y2="128" />
@@ -336,7 +336,6 @@ export function VisionDemoSection() {
                     <line x1="202" y1="192" x2="160" y2="224" />
                   </g>
 
-                  {/* Brow Contours */}
                   <path
                     d="M 118 113 Q 134 106 149 113"
                     fill="none"
@@ -352,7 +351,6 @@ export function VisionDemoSection() {
                     strokeLinecap="round"
                   />
 
-                  {/* Left Eye Contour + EAR Vertical Caliper */}
                   <motion.ellipse
                     cx="134"
                     cy="128"
@@ -360,19 +358,17 @@ export function VisionDemoSection() {
                     animate={{ ry: Math.max(1.8, eyeRy) }}
                     transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
                     fill={active.badgeBg}
-                    stroke={active.color}
+                    stroke={active.hudColor}
                     strokeWidth="1.6"
                   />
                   <motion.circle
                     cx={activeKey === "distracted" ? 128 : 134}
                     cy="128"
                     animate={{ r: active.eyeOpenFactor > 0.35 ? 3 : 1.2, opacity: active.eyeOpenFactor }}
-                    fill={active.color}
+                    fill={active.hudColor}
                   />
-                  {/* EAR Caliper ticks */}
-                  <line x1="134" y1="117" x2="134" y2="139" stroke={active.color} strokeOpacity="0.45" strokeWidth="0.9" strokeDasharray="2 2" />
+                  <line x1="134" y1="117" x2="134" y2="139" stroke={active.hudColor} strokeOpacity="0.45" strokeWidth="0.9" strokeDasharray="2 2" />
 
-                  {/* Right Eye Contour + EAR Vertical Caliper */}
                   <motion.ellipse
                     cx="186"
                     cy="128"
@@ -380,18 +376,17 @@ export function VisionDemoSection() {
                     animate={{ ry: Math.max(1.8, eyeRy) }}
                     transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
                     fill={active.badgeBg}
-                    stroke={active.color}
+                    stroke={active.hudColor}
                     strokeWidth="1.6"
                   />
                   <motion.circle
                     cx={activeKey === "distracted" ? 180 : 186}
                     cy="128"
                     animate={{ r: active.eyeOpenFactor > 0.35 ? 3 : 1.2, opacity: active.eyeOpenFactor }}
-                    fill={active.color}
+                    fill={active.hudColor}
                   />
-                  <line x1="186" y1="117" x2="186" y2="139" stroke={active.color} strokeOpacity="0.45" strokeWidth="0.9" strokeDasharray="2 2" />
+                  <line x1="186" y1="117" x2="186" y2="139" stroke={active.hudColor} strokeOpacity="0.45" strokeWidth="0.9" strokeDasharray="2 2" />
 
-                  {/* 6DoF Head Pose Axes at Nose Bridge */}
                   <g transform="translate(160, 158)">
                     <motion.line
                       x1="0"
@@ -412,7 +407,6 @@ export function VisionDemoSection() {
                     <circle cx="0" cy="0" r="2.6" fill="#F5F3EC" />
                   </g>
 
-                  {/* Mouth Aperture / Yawning Detection */}
                   <motion.ellipse
                     cx="160"
                     cy="192"
@@ -424,7 +418,6 @@ export function VisionDemoSection() {
                     strokeWidth="1.35"
                   />
 
-                  {/* Key Landmark Nodes */}
                   {[
                     [118, 113],
                     [149, 113],
@@ -443,14 +436,13 @@ export function VisionDemoSection() {
                       cx={lx}
                       cy={ly}
                       r="1.8"
-                      fill={active.color}
+                      fill={active.hudColor}
                       fillOpacity="0.85"
                     />
                   ))}
                 </motion.g>
               </svg>
 
-              {/* Subtle Vertical Scan Pass */}
               {!prefersReducedMotion && (
                 <motion.div
                   aria-hidden="true"
@@ -460,8 +452,7 @@ export function VisionDemoSection() {
                 />
               )}
 
-              {/* Bottom-left EAR & Head Pose Strip */}
-              <div className="absolute bottom-3.5 inset-x-3.5 z-10 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#F5F3EC]/10 bg-[#101211]/85 px-3.5 py-2 text-[11px] font-mono backdrop-blur-md">
+              <div className="absolute bottom-3.5 inset-x-3.5 z-10 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-[#101211]/85 px-3.5 py-2 text-[11px] font-mono backdrop-blur-md">
                 <span className="text-[#9EA39B]">
                   EAR:{" "}
                   <strong className="text-[#F5F3EC]">
@@ -490,25 +481,23 @@ export function VisionDemoSection() {
             </LandingMediaSlot>
           </div>
 
-          {/* Right: DriveGuard Vision Live-Looking Metrics Panel */}
-          <div className="lg:col-span-5 flex flex-col justify-between gap-5 rounded-2xl border border-[#F5F3EC]/10 bg-[#101211] p-5 sm:p-6">
+          {/* Right: DriveGuard Vision Theme-Aware Metrics Panel */}
+          <div className="lg:col-span-5 flex flex-col justify-between gap-5 rounded-2xl border border-border bg-background p-5 sm:p-6">
             <div className="space-y-5">
-              {/* Panel Header */}
-              <div className="flex items-center justify-between border-b border-[#F5F3EC]/10 pb-4">
+              <div className="flex items-center justify-between border-b border-border pb-4">
                 <div>
-                  <span className="text-xs font-semibold text-[#F5F3EC] block">
+                  <span className="text-xs font-semibold text-foreground block">
                     DriveGuard Vision
                   </span>
-                  <span className="text-[10px] font-mono uppercase tracking-[0.16em] text-[#9EA39B]">
+                  <span className="text-[10px] font-mono uppercase tracking-[0.16em] text-muted-foreground">
                     Facial Analysis
                   </span>
                 </div>
-                <span className="inline-flex items-center gap-1.5 rounded-md border border-[#E58B43]/35 bg-[#E58B43]/10 px-2.5 py-1 text-[10px] font-mono uppercase tracking-wider text-[#E58B43]">
+                <span className="inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-primary/15 px-2.5 py-1 text-[10px] font-mono uppercase tracking-wider text-primary-accent">
                   Demo Mode
                 </span>
               </div>
 
-              {/* Four Core Analysis Rows */}
               <div className="grid grid-cols-2 gap-3">
                 {[
                   { label: "Eye state", value: active.eyeState },
@@ -518,14 +507,14 @@ export function VisionDemoSection() {
                 ].map((metric) => (
                   <div
                     key={metric.label}
-                    className="rounded-xl border border-[#F5F3EC]/10 bg-[#191D1A]/80 p-3.5 space-y-1"
+                    className="rounded-xl border border-border bg-card p-3.5 space-y-1"
                   >
-                    <span className="block text-[11px] text-[#9EA39B]">
+                    <span className="block text-[11px] text-muted-foreground">
                       {metric.label}
                     </span>
                     <span
                       className="block text-sm font-semibold transition-colors duration-300"
-                      style={{ color: active.color }}
+                      style={{ color: active.themeColor }}
                     >
                       {metric.value}
                     </span>
@@ -533,40 +522,38 @@ export function VisionDemoSection() {
                 ))}
               </div>
 
-              {/* Numeric Physiological Telemetry */}
-              <div className="rounded-xl border border-[#F5F3EC]/10 bg-[#141715] p-4 space-y-3">
+              <div className="rounded-xl border border-border bg-surface-panel p-4 space-y-3">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-[#9EA39B]">60s Rolling PERCLOS</span>
-                  <span className="font-mono font-semibold text-[#F5F3EC]">
+                  <span className="text-muted-foreground">60s Rolling PERCLOS</span>
+                  <span className="font-mono font-semibold text-foreground">
                     <AnimatedNumber value={active.perclos} decimals={1} suffix="%" />
                   </span>
                 </div>
-                <div className="h-1.5 w-full rounded-full bg-[#F5F3EC]/10 overflow-hidden">
+                <div className="h-1.5 w-full rounded-full bg-border overflow-hidden">
                   <motion.div
                     className="h-full rounded-full"
                     animate={{
                       width: `${Math.min(100, (active.perclos / 35) * 100)}%`,
-                      backgroundColor: active.color,
+                      backgroundColor: active.themeColor,
                     }}
                     transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
                   />
                 </div>
 
                 <div className="flex items-center justify-between text-xs pt-1">
-                  <span className="text-[#9EA39B]">Blink Duration</span>
-                  <span className="font-mono font-semibold text-[#F5F3EC]">
+                  <span className="text-muted-foreground">Blink Duration</span>
+                  <span className="font-mono font-semibold text-foreground">
                     <AnimatedNumber value={active.blinkMs} decimals={0} suffix=" ms" />
                   </span>
                 </div>
               </div>
 
-              {/* State Interpretation */}
-              <p className="text-xs text-[#9EA39B] leading-relaxed">
+              <p className="text-xs text-muted-foreground leading-relaxed">
                 {active.summary}
               </p>
             </div>
 
-            <div className="pt-3 border-t border-[#F5F3EC]/8 flex items-center justify-between text-[11px] text-[#6E746C]">
+            <div className="pt-3 border-t border-border flex items-center justify-between text-[11px] text-muted-foreground">
               <span>Illustrative interface concept, not actual live model output.</span>
             </div>
           </div>
