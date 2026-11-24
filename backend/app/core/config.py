@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     WEIGHTS_DIR: Path = BASE_DIR / "weights"
     DATASETS_DIR: Path = BASE_DIR / "datasets"
     PROFILES_DIR: Path = BASE_DIR / "data" / "profiles"
+    LOCAL_DB_PATH: Path = BASE_DIR / "data" / "driveguard_local.db"
+
+    # Standalone Local Python Camera API (Loopback-only, hard opt-in; defaults False for cloud safety)
+    LOCAL_CAMERA_API_ENABLED: bool = False
 
     # AI Defaults
     DEFAULT_EXPERIMENT_MODE: str = "EXPERIMENT_C_CONFIDENCE_GATED_CASCADE"

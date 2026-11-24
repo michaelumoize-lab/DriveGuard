@@ -16,6 +16,7 @@ echo   Docs: http://127.0.0.1:8000/docs
 echo ============================================================
 echo.
 
+set LOCAL_CAMERA_API_ENABLED=true
 call .\.venv311\Scripts\activate.bat
 python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload
 

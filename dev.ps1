@@ -8,7 +8,7 @@ $root = $PSScriptRoot
 
 if ($Target -eq "backend" -or $Target -eq "all") {
     Write-Host "[DriveGuard] Launching FastAPI Backend on http://127.0.0.1:8000 ..." -ForegroundColor Cyan
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$root'; .\.venv311\Scripts\activate.ps1; python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload"
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$root'; `$env:LOCAL_CAMERA_API_ENABLED='true'; .\.venv311\Scripts\activate.ps1; python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 --reload"
 }
 
 if ($Target -eq "frontend" -or $Target -eq "all") {
