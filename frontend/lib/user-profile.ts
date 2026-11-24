@@ -45,6 +45,7 @@ export interface OnboardingUpdatePayload {
   step: number;
   completedStepKey?: string;
   isFinalStep?: boolean;
+  fullName?: string;
   phoneNumber?: string;
   licenseNumber?: string;
   vehicleMake?: string;
@@ -65,6 +66,15 @@ export async function saveOnboardingStep(
 ): Promise<UserProfile> {
   const currentProfile = await getOrCreateUserProfile(userId);
   const normalizedSensitivity = normalizeSensitivityLevel(payload.sensitivityLevel);
+
+  const trimmedFullName =
+    typeof payload.fullName === "string" ? payload.fullName.trim() : "";
+  if (trimmedFullName.length > 0) {
+    await prisma.user.update({
+      where: { id: userId },
+      data: { name: trimmedFullName },
+    });
+  }
 
   const updatedCompletedSteps = new Set(currentProfile.completedSteps || []);
   if (payload.completedStepKey) {

@@ -6,6 +6,8 @@ export * from "./blink-detector";
 export * from "./head-pose";
 export * from "./pdbp-calibration";
 export * from "./profile-normalizer";
+export * from "./confidence";
+export * from "./browser-profile-store";
 export * from "./temporal-analyzer";
 export * from "./decision-engine";
 export * from "./alert-state-manager";

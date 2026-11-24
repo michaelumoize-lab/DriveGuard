@@ -1,24 +1,37 @@
 /**
- * DriveGuard — Browser AI Detection Engine Orchestrator.
+ * DriveGuard — Browser AI Detection Engine Orchestrator (Phase 3 Self-Sufficient).
  *
- * Implements the core Target Architecture:
+ * Implements complete Browser AI operational independence:
  * - Decouples smooth full-rate camera preview from controlled AI inference scheduling (~10-15 FPS)
- * - Executes MediaPipe FaceLandmarker locally in browser
- * - Runs TypeScript detection algorithms: EAR, MAR, Head Pose, Blink Kinematics, PERCLOS, Temporal Analysis, Decision Engine
- * - Enforces OperationalState calibration gate (CALIBRATION_REQUIRED when uncalibrated)
- * - Routes safety transitions through AlertStateManager (no per-frame alert storms)
- * - Buffers deduplicated safety events (with eventId) and session summaries (with finalizeToken) through OfflineEventQueue
+ * - Executes MediaPipe FaceLandmarker locally in browser (WASM + local model)
+ * - Runs TypeScript detection pipeline:
+ *     DriverFeatureExtractor -> SignalConfidenceEvaluator -> TemporalAnalyzer -> DecisionEngine -> AlertStateManager
+ * - Enforces OperationalState calibration gate (CALIBRATION_REQUIRED / CALIBRATING / DEGRADED / MONITORING_ACTIVE)
+ * - Persists completed 4-zone Browser calibrations immediately to IndexedDB (BrowserProfileStore)
+ *   with non-blocking PostgreSQL reconciliation (zero network dependency)
+ * - Buffers SESSION_START -> ALERTS -> SESSION_END in strict causal order via OfflineEventQueue
  */
 
+import type { OpticalFrameQuality } from "@/types/camera";
 import {
   AlertStateManager,
   AlertTransition,
   ManagedAlertState,
 } from "./alert-state-manager";
+import {
+  browserProfileStore,
+  BrowserProfileStore,
+  ProfileSyncOutcome,
+} from "./browser-profile-store";
+import { SignalConfidenceEvaluator } from "./confidence";
 import { DecisionEngine } from "./decision-engine";
 import { DriverFeatureExtractor } from "./feature-extractor";
 import { MediaPipeService } from "./mediapipe-service";
-import { OfflineEventQueue, PersistenceSyncStatus } from "./offline-event-queue";
+import {
+  createProvisionalOfflineSession,
+  OfflineEventQueue,
+  PersistenceSyncStatus,
+} from "./offline-event-queue";
 import { GuidedCalibrationEngine } from "./pdbp-calibration";
 import { TemporalAnalyzer } from "./temporal-analyzer";
 import {
@@ -38,7 +51,9 @@ export interface DetectionEngineConfig {
   targetInferenceFps?: number;
   driverId?: string;
   sessionCode?: string;
+  clientSessionId?: string;
   profile?: DriverBehaviourProfileData | unknown | null;
+  profileStore?: BrowserProfileStore;
   /**
    * Whether the raw video pixel buffer itself is horizontally mirrored.
    * Defaults to false (raw browser webcam frames are unmirrored; CSS preview mirroring does not flip pixels).
@@ -56,6 +71,10 @@ export interface DetectionEngineConfig {
     telemetry: DetectionTelemetry
   ) => void;
   onCalibrationProgress?: (progress: CalibrationProgress) => void;
+  onCalibrationCompleted?: (
+    profile: DriverBehaviourProfileData,
+    syncOutcome?: ProfileSyncOutcome
+  ) => void;
   onError?: (err: Error) => void;
 }
 
@@ -67,11 +86,14 @@ export class BrowserDetectionEngine {
   private _videoElement: HTMLVideoElement | null = null;
   private _mediaPipeService: MediaPipeService;
   private _featureExtractor: DriverFeatureExtractor;
+  private _confidenceEvaluator: SignalConfidenceEvaluator;
   private _temporalAnalyzer: TemporalAnalyzer;
   private _decisionEngine: DecisionEngine;
   private _alertStateManager: AlertStateManager;
   private _calibrationEngine: GuidedCalibrationEngine | null = null;
   private _offlineQueue: OfflineEventQueue;
+  private _profileStore: BrowserProfileStore;
+  private _latestOpticalQuality: OpticalFrameQuality | null = null;
 
   private _animationFrameId: number | null = null;
   private _intervalTimerId: ReturnType<typeof setInterval> | null = null;
@@ -96,6 +118,7 @@ export class BrowserDetectionEngine {
 
   // Active session tracking
   private _sessionCode: string | null = null;
+  private _clientSessionId: string | null = null;
   private _finalizedSessionCodes: Set<string> = new Set();
   private _sessionStartWallMs: number | null = null;
   private _sessionStats = {
@@ -128,10 +151,12 @@ export class BrowserDetectionEngine {
       profile: this._config.profile ?? null,
       isMirrored: this._config.isMirrored ?? false,
     });
+    this._confidenceEvaluator = new SignalConfidenceEvaluator();
     this._temporalAnalyzer = new TemporalAnalyzer();
     this._decisionEngine = new DecisionEngine();
     this._alertStateManager = new AlertStateManager();
     this._offlineQueue = new OfflineEventQueue();
+    this._profileStore = config.profileStore ?? browserProfileStore;
 
     this._syncUnsubscribe = this._offlineQueue.subscribe((status) => {
       this._syncStatus = status;
@@ -143,6 +168,9 @@ export class BrowserDetectionEngine {
     if (config.sessionCode) {
       this._sessionCode = config.sessionCode;
     }
+    if (config.clientSessionId) {
+      this._clientSessionId = config.clientSessionId;
+    }
   }
 
   public get status(): EngineStatus {
@@ -153,6 +181,10 @@ export class BrowserDetectionEngine {
     return this._sessionCode;
   }
 
+  public get clientSessionId(): string | null {
+    return this._clientSessionId;
+  }
+
   public get isCalibrated(): boolean {
     return (
       this._featureExtractor.isProfileCalibrated &&
@@ -160,15 +192,54 @@ export class BrowserDetectionEngine {
     );
   }
 
+  public get isCalibrating(): boolean {
+    return this._calibrationEngine !== null && !this._calibrationEngine.isCompleted;
+  }
+
+  public get activeProfile(): DriverBehaviourProfileData | null {
+    return this._featureExtractor.normalizedProfile;
+  }
+
   public get alertStateManager(): AlertStateManager {
     return this._alertStateManager;
   }
 
-  public setSessionCode(code: string | null): void {
+  public get offlineQueue(): OfflineEventQueue {
+    return this._offlineQueue;
+  }
+
+  public setSessionCode(code: string | null, clientSessionId?: string | null): void {
     this._sessionCode = code;
+    if (clientSessionId !== undefined) {
+      this._clientSessionId = clientSessionId;
+    }
     if (code) {
       this._finalizedSessionCodes.delete(code);
     }
+  }
+
+  /**
+   * Create a local provisional session code and enqueue SESSION_START in OfflineEventQueue
+   * so Browser AI can start, record alerts, and end sessions 100% offline, flushing in strict
+   * causal order (SESSION_START -> ALERTS -> SESSION_END) upon reconnect.
+   */
+  public startOfflineSession(): { clientSessionId: string; sessionCode: string; startedAt: string } {
+    const provisional = createProvisionalOfflineSession();
+    this._sessionCode = provisional.sessionCode;
+    this._clientSessionId = provisional.clientSessionId;
+    this._sessionStartWallMs = Date.now();
+    this._finalizedSessionCodes.delete(provisional.sessionCode);
+    this._offlineQueue.enqueueSessionStart({
+      clientSessionId: provisional.clientSessionId,
+      sessionCode: provisional.sessionCode,
+      engineType: "BROWSER",
+      startedAt: provisional.startedAt,
+    });
+    return provisional;
+  }
+
+  public setOpticalQuality(quality: OpticalFrameQuality | null): void {
+    this._latestOpticalQuality = quality;
   }
 
   public setProfile(profile: DriverBehaviourProfileData | unknown | null): void {
@@ -202,7 +273,9 @@ export class BrowserDetectionEngine {
     this._status = "running";
     this._lastInferenceWallMs = 0;
     this._lastFpsCalcWallMs = performance.now();
-    this._sessionStartWallMs = Date.now();
+    if (this._sessionStartWallMs === null) {
+      this._sessionStartWallMs = Date.now();
+    }
     this._fpsCounter = 0;
     this._resetSessionStats();
     this._scheduleNextLoop();
@@ -223,7 +296,7 @@ export class BrowserDetectionEngine {
   /**
    * Stop active inference loop and reset volatile analyzers.
    * Decoupled from session finalization so callers explicitly invoke queueSessionEnd()
-   * exactly once when ending a monitoring session (eliminating duplicate /api/sessions/end POSTs).
+   * exactly once when ending a monitoring session.
    */
   public stop(): void {
     this._stopScheduling();
@@ -233,6 +306,7 @@ export class BrowserDetectionEngine {
     this._latestTelemetry = null;
     this._calibrationEngine = null;
     this._featureExtractor.reset();
+    this._confidenceEvaluator.reset();
     this._temporalAnalyzer.reset();
     this._decisionEngine.reset();
     this._alertStateManager.reset();
@@ -247,15 +321,64 @@ export class BrowserDetectionEngine {
     this._totalFrames = 0;
   }
 
-  public startCalibration(): void {
-    this._calibrationEngine = new GuidedCalibrationEngine(
-      this._config.driverId || "driver_default",
-      this._config.isMirrored ?? false
-    );
+  public startCalibration(options?: { targetZone?: PoseZone | null; minSamplesPerZone?: number }): void {
+    this._calibrationEngine = new GuidedCalibrationEngine({
+      driverId: this._config.driverId || "driver_default",
+      isMirrored: this._config.isMirrored ?? false,
+      targetZone: options?.targetZone ?? null,
+      existingProfile: this._featureExtractor.normalizedProfile,
+      minSamplesPerZone: options?.minSamplesPerZone,
+    });
+  }
+
+  public recalibrateZone(zone: PoseZone): void {
+    this.startCalibration({ targetZone: zone });
+  }
+
+  public skipCalibrationStep(): CalibrationProgress | null {
+    if (!this._calibrationEngine) return null;
+    const progress = this._calibrationEngine.skipStep();
+    if (this._config.onCalibrationProgress) {
+      this._config.onCalibrationProgress(progress);
+    }
+    if (progress.isCompleted) {
+      if (progress.profile) {
+        this._handleCalibrationCompleted(progress.profile);
+      }
+      this._calibrationEngine = null;
+    }
+    return progress;
   }
 
   public cancelCalibration(): void {
     this._calibrationEngine = null;
+  }
+
+  private _handleCalibrationCompleted(profile: DriverBehaviourProfileData): void {
+    this.setProfile(profile);
+    const driverId = this._config.driverId || profile.driverId || "driver_default";
+
+    // Persist immediately to IndexedDB and trigger non-blocking PostgreSQL sync
+    void this._profileStore
+      .saveLocalProfile(driverId, profile, {
+        profileUuid: profile.profileUuid,
+        profileVersion: profile.profileVersion,
+        syncState: "PENDING_UPLOAD",
+      })
+      .then(() => this._profileStore.syncToServer(driverId))
+      .then((syncOutcome) => {
+        if (this._config.onCalibrationCompleted) {
+          this._config.onCalibrationCompleted(profile, syncOutcome);
+        }
+      })
+      .catch(() => {
+        if (this._config.onCalibrationCompleted) {
+          this._config.onCalibrationCompleted(profile, {
+            status: "OFFLINE_DEFERRED",
+            record: null,
+          });
+        }
+      });
   }
 
   private _resetSessionStats(): void {
@@ -303,7 +426,8 @@ export class BrowserDetectionEngine {
 
   /**
    * Core deterministic frame pipeline decoupled from DOM/MediaPipe so unit tests can
-   * exercise the full FeatureExtractor -> TemporalAnalyzer -> DecisionEngine -> AlertStateManager flow.
+   * exercise the full FeatureExtractor -> ConfidenceEvaluator -> TemporalAnalyzer ->
+   * DecisionEngine -> AlertStateManager flow.
    */
   public evaluateFrameLandmarks(
     landmarks: ArrayLike<NormalizedLandmark> | null,
@@ -311,7 +435,8 @@ export class BrowserDetectionEngine {
     frameWidth: number = 640,
     frameHeight: number = 480,
     facialMatrix?: ArrayLike<number> | number[][] | null,
-    inferenceLatencyMs: number = 0
+    inferenceLatencyMs: number = 0,
+    opticalQuality?: OpticalFrameQuality | null
   ): {
     features: DriverFeatures;
     decision: DecisionResult;
@@ -332,7 +457,7 @@ export class BrowserDetectionEngine {
       facialMatrix
     );
 
-    // Calibration update if active
+    // Calibration update if active (passes raw uncompensated weightedEar!)
     if (this._calibrationEngine) {
       const calProgress = this._calibrationEngine.update(
         timestampMs,
@@ -346,31 +471,30 @@ export class BrowserDetectionEngine {
       if (this._config.onCalibrationProgress) {
         this._config.onCalibrationProgress(calProgress);
       }
-      if (calProgress.isCompleted && calProgress.profile) {
-        this.setProfile(calProgress.profile);
+      if (calProgress.isCompleted) {
+        if (calProgress.profile) {
+          this._handleCalibrationCompleted(calProgress.profile);
+        }
         this._calibrationEngine = null;
       }
     }
 
-    // 2. Temporal Analysis Pass
-    const temporal = this._temporalAnalyzer.update(features);
-
-    // 3. Decision Engine Pass with strict OperationalState calibration gate
+    // 2. Confidence & Optical Quality Evaluation
     const isCalibrating = Boolean(this._calibrationEngine);
     const isCalibrated =
       this._featureExtractor.isProfileCalibrated &&
       this._featureExtractor.isProfileFeasible;
-
-    const decision = this._decisionEngine.evaluate(temporal, {
-      overallConfidence: hasFace ? 0.90 : 0.0,
-      ocularViable: hasFace && features.ear.isValid && isCalibrated,
-      headPoseViable: hasFace && features.headPose.isValid,
-      yawnViable: hasFace && features.mar.isValid,
-      isReliable: hasFace && features.ear.isValid && isCalibrated,
-      isOcularAvailable: hasFace && features.ear.isValid && isCalibrated,
+    const effectiveQuality = opticalQuality !== undefined ? opticalQuality : this._latestOpticalQuality;
+    const confidence = this._confidenceEvaluator.evaluate(features, effectiveQuality, {
       isCalibrated,
       isCalibrating,
     });
+
+    // 3. Temporal Analysis Pass
+    const temporal = this._temporalAnalyzer.update(features);
+
+    // 4. Decision Engine Pass with strict OperationalState calibration & confidence gate
+    const decision = this._decisionEngine.evaluate(temporal, confidence);
 
     const operationalState =
       decision.operationalState ??
@@ -378,11 +502,13 @@ export class BrowserDetectionEngine {
         ? OperationalState.CALIBRATING
         : !isCalibrated
           ? OperationalState.CALIBRATION_REQUIRED
-          : hasFace
-            ? OperationalState.MONITORING_ACTIVE
-            : OperationalState.DEGRADED);
+          : !confidence.isReliable && !confidence.headPoseViable && !confidence.ocularViable
+            ? OperationalState.DEGRADED
+            : hasFace
+              ? OperationalState.MONITORING_ACTIVE
+              : OperationalState.DEGRADED);
 
-    // 4. Alert State Manager Pass (eliminates per-frame alert storms)
+    // 5. Alert State Manager Pass (eliminates per-frame alert storms)
     const transition = this._alertStateManager.update(decision, temporal);
 
     const telemetry: DetectionTelemetry = {
@@ -478,6 +604,7 @@ export class BrowserDetectionEngine {
           this._offlineQueue.enqueueAlert({
             eventId: transition.eventId,
             sessionCode: this._sessionCode,
+            ...(this._clientSessionId ? { clientSessionId: this._clientSessionId } : {}),
             severity: transition.newState === ManagedAlertState.CRITICAL ? "CRITICAL" : "WARNING",
             riskScore: transition.newState === ManagedAlertState.CRITICAL ? 0.95 : 0.65,
             earValue: telemetry.ear,
@@ -513,7 +640,6 @@ export class BrowserDetectionEngine {
     const tStart = performance.now();
 
     try {
-      // 1. MediaPipe Inference
       const result = this._mediaPipeService.detectForVideo(video, timestampMs);
 
       const hasFace = Boolean(
@@ -525,7 +651,6 @@ export class BrowserDetectionEngine {
 
       const landmarks: NormalizedLandmark[] | null = hasFace ? result!.faceLandmarks[0] : null;
 
-      // Preserve Float32Array directly so head-pose.ts consumes MediaPipe's 4x4 matrix natively
       let facialMatrix: ArrayLike<number> | null = null;
       if (
         result &&
@@ -555,10 +680,10 @@ export class BrowserDetectionEngine {
         video.videoWidth,
         video.videoHeight,
         facialMatrix,
-        this._lastLatencyMs
+        this._lastLatencyMs,
+        this._latestOpticalQuality
       );
 
-      // Guard against emitting telemetry if stop() was called mid-frame
       if (this._status !== "running") {
         return;
       }
@@ -603,6 +728,10 @@ export class BrowserDetectionEngine {
     return { ...this._sessionStats };
   }
 
+  public async flushOfflineQueue(): Promise<void> {
+    await this._offlineQueue.flush();
+  }
+
   public dispose(): void {
     this.stop();
     if (this._syncUnsubscribe) {
@@ -611,6 +740,7 @@ export class BrowserDetectionEngine {
     }
     this._offlineQueue.dispose();
     this._featureExtractor.reset();
+    this._confidenceEvaluator.reset();
     this._temporalAnalyzer.reset();
     this._decisionEngine.reset();
     this._alertStateManager.reset();
@@ -643,6 +773,7 @@ export class BrowserDetectionEngine {
 
     this._offlineQueue.enqueueSessionEnd({
       sessionCode: code,
+      ...(this._clientSessionId ? { clientSessionId: this._clientSessionId } : {}),
       finalizeToken,
       durationSeconds: resolvedDuration,
       averageFps: Number((stats.fpsSum / frames).toFixed(1)),
@@ -658,6 +789,7 @@ export class BrowserDetectionEngine {
     });
 
     this._sessionCode = null;
+    this._clientSessionId = null;
     this._sessionStartWallMs = null;
     return true;
   }

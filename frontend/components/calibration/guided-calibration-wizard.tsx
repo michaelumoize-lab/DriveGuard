@@ -4,7 +4,15 @@ import React, { useState, useRef, useEffect, useCallback, useMemo, useId } from 
 import { toast } from "sonner";
 import { useCamera } from "@/hooks/use-camera";
 import { useLivekitTelemetryStream } from "@/hooks/use-livekit-telemetry-stream";
+import { useBrowserDetection } from "@/hooks/use-browser-detection";
 import {
+  CalibrationProgress,
+  computeZoneThresholds,
+  DriverBehaviourProfileData,
+  PoseZone,
+} from "@/lib/ai";
+import {
+  BackendProcessingStatus,
   CalibratedProfilePayload,
   CalibrationPhase,
   FrameTelemetry,
@@ -25,33 +33,116 @@ import {
 export interface GuidedCalibrationWizardProps {
   driverId?: string;
   initialDriverProfile?: InitialDriverProfileData | null;
+  initialPythonProfile?: InitialDriverProfileData | null;
+  defaultEngine?: "browser" | "python";
   embeddedInOnboarding?: boolean;
   onCalibrationSaved?: (profile: InitialDriverProfileData) => void;
+}
+
+function browserProfileToInitialData(
+  profile: DriverBehaviourProfileData
+): InitialDriverProfileData {
+  const mappedZones: Record<string, unknown> = {};
+  for (const [zoneKey, zb] of Object.entries(profile.zoneBaselines || {})) {
+    if (!zb || typeof zb !== "object") continue;
+    const th = computeZoneThresholds(zb.earMedian, zb.earMadScaled);
+    mappedZones[zoneKey] = {
+      zone: zb.zone,
+      ear_median: zb.earMedian,
+      ear_mad_scaled: zb.earMadScaled,
+      dynamic_closure_threshold: th.closureThreshold,
+      dynamic_warning_threshold: th.reopenThreshold,
+      sample_count: zb.sampleCount,
+      pose_yaw_median: zb.yawMedianDeg,
+      pose_pitch_median: zb.pitchMedianDeg,
+    };
+  }
+
+  return {
+    engineType: "BROWSER",
+    isCalibrated: true,
+    calibrationMode: profile.calibrationMode || "FOUR_ZONE",
+    centerEarMedian: profile.centerEarMedian,
+    centerEarMadScaled: profile.centerEarMadScaled,
+    blinkDurationMedianMs: profile.blinkDurationMedianMs,
+    blinkDurationMadMs: profile.blinkDurationMadMs,
+    blinkRcrMedian: profile.blinkRcrMedian,
+    blinkRcrMad: profile.blinkRcrMad,
+    neutralPitchDeg: profile.neutralPitchDeg,
+    neutralYawDeg: profile.neutralYawDeg,
+    neutralRotMat: profile.neutralRotMat ?? null,
+    calibrationIsMirrored: profile.calibrationIsMirrored ?? false,
+    calibrationReliability: profile.calibrationReliability,
+    profileVersion: profile.profileVersion,
+    profileHash: profile.contentHash ?? null,
+    zoneBaselines: mappedZones,
+  };
+}
+
+function browserPhaseToUiCalibrationPhase(
+  phase: CalibrationProgress | null
+): CalibrationPhase | null {
+  if (!phase) return null;
+  return {
+    current_zone: phase.currentZone,
+    phase_index: phase.stepIndex,
+    total_phases: phase.totalSteps,
+    zone_progress_pct: phase.zoneProgressPct,
+    total_progress_pct: phase.overallProgressPct,
+    instruction: phase.guidanceText,
+    is_completed: phase.isCompleted,
+    rejection_reason: phase.rejectedReason ?? null,
+    stable_samples_count: Math.round(phase.zoneProgressPct),
+    target_samples_count: 100,
+    is_head_in_target_zone: phase.inZone,
+    stability_feedback: phase.guidanceText,
+    quality_warnings: [],
+  };
 }
 
 export function GuidedCalibrationWizard({
   driverId = "driver_default",
   initialDriverProfile = null,
+  initialPythonProfile = null,
+  defaultEngine = "browser",
   embeddedInOnboarding = false,
   onCalibrationSaved,
 }: GuidedCalibrationWizardProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Default to Browser AI (local MediaPipe WASM — zero LiveKit/FastAPI required)
+  const [calibrationEngine, setCalibrationEngine] = useState<"browser" | "python">(
+    defaultEngine
+  );
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
-  const [calState, setCalState] = useState<CalibrationPhase | null>(null);
-  const [savedProfile, setSavedProfile] = useState<InitialDriverProfileData | null>(
-    initialDriverProfile
-  );
-  const [latestTelemetry, setLatestTelemetry] = useState<FrameTelemetry | null>(null);
+  const [pythonCalState, setPythonCalState] = useState<CalibrationPhase | null>(null);
+
+  const [browserSavedProfile, setBrowserSavedProfile] =
+    useState<InitialDriverProfileData | null>(
+      initialDriverProfile && initialDriverProfile.engineType !== "PYTHON"
+        ? initialDriverProfile
+        : null
+    );
+  const [pythonSavedProfile, setPythonSavedProfile] =
+    useState<InitialDriverProfileData | null>(
+      initialPythonProfile ??
+        (initialDriverProfile?.engineType === "PYTHON" ? initialDriverProfile : null)
+    );
+
+  const [latestPythonTelemetry, setLatestPythonTelemetry] =
+    useState<FrameTelemetry | null>(null);
   const [hasPendingProfileRetry, setHasPendingProfileRetry] = useState(false);
   const [liveAnnouncement, setLiveAnnouncement] = useState("");
 
   const hasHandledCompletionRef = useRef<boolean>(false);
   const pendingBackendProfileRef = useRef<CalibratedProfilePayload | null>(null);
   const lastAnnouncedZoneRef = useRef<string | null>(null);
+  const pendingBrowserActionRef = useRef<
+    { type: "full" } | { type: "zone"; zone: PoseZone } | null
+  >(null);
 
   // Stable Session ID (deterministic across SSR/client hydration)
   const reactId = useId();
@@ -84,7 +175,66 @@ export function GuidedCalibrationWizard({
     mirrored: true,
   });
 
-  // Persist authoritative backend-produced profile only (never fabricate fallback baselines)
+  // 2A. On-Device Browser AI Detection & Calibration Hook (Default — zero server required)
+  const {
+    engineStatus: browserEngineStatus,
+    telemetry: browserTelemetry,
+    calibrationPhase: browserCalibrationPhase,
+    isCalibrated: browserIsCalibrated,
+    activeProfile: browserActiveProfile,
+    profileSyncStatus,
+    startMonitoring: startBrowserMonitoring,
+    stopMonitoring: stopBrowserMonitoring,
+    startCalibration: startBrowserCalibration,
+    skipCalibrationStep: skipBrowserCalibrationStep,
+    recalibrateZone: recalibrateBrowserZone,
+    cancelCalibration: cancelBrowserCalibration,
+    setOpticalQuality: setBrowserOpticalQuality,
+  } = useBrowserDetection({
+    driverId,
+    initialProfile: (browserSavedProfile as unknown) as DriverBehaviourProfileData | null,
+    isMirrored: false,
+    targetInferenceFps: 15,
+    autoStartSession: false,
+    onCalibrationCompleted: (profile) => {
+      const next = browserProfileToInitialData(profile);
+      setBrowserSavedProfile(next);
+      setIsSuccess(true);
+      setSaveError(null);
+      setLiveAnnouncement("Browser AI 4-zone calibration completed and saved locally.");
+      toast.success("Browser AI 4-zone calibration saved locally & syncing.", {
+        id: "browser-calibration-completed-toast",
+      });
+      if (onCalibrationSaved) {
+        onCalibrationSaved(next);
+      }
+    },
+    onCalibrationProgress: (progress) => {
+      if (progress.isCompleted && progress.rejectedReason) {
+        setIsSuccess(false);
+        setLiveAnnouncement(
+          "Calibration could not be completed. Check your lighting and retry."
+        );
+        toast.error(`Calibration rejected: ${progress.rejectedReason}`, {
+          id: "browser-calibration-rejected-toast",
+        });
+      }
+    },
+  });
+
+  // Hydrate browserSavedProfile if IndexedDB had a local profile when SSR did not
+  useEffect(() => {
+    if (browserIsCalibrated && browserActiveProfile && !browserSavedProfile?.isCalibrated) {
+      setBrowserSavedProfile(browserProfileToInitialData(browserActiveProfile));
+    }
+  }, [browserIsCalibrated, browserActiveProfile, browserSavedProfile]);
+
+  // Forward optical quality into BrowserDetectionEngine SignalConfidenceEvaluator
+  useEffect(() => {
+    setBrowserOpticalQuality(opticalQuality ?? null);
+  }, [opticalQuality, setBrowserOpticalQuality]);
+
+  // Persist authoritative Python backend-produced profile explicitly under engineType: "PYTHON"
   const persistBackendCalibratedProfile = useCallback(
     async (backendProfile: CalibratedProfilePayload) => {
       if (!validateBackendProfilePayload(backendProfile)) {
@@ -142,6 +292,7 @@ export function GuidedCalibrationWizard({
       };
 
       const nextProfile: InitialDriverProfileData = {
+        engineType: "PYTHON",
         isCalibrated: true,
         calibrationMode: modeLabel,
         centerEarMedian: backendProfile.center_ear_median,
@@ -152,6 +303,8 @@ export function GuidedCalibrationWizard({
         blinkRcrMad: rcrMad,
         neutralPitchDeg: backendProfile.neutral_pitch_deg,
         neutralYawDeg: backendProfile.neutral_yaw_deg,
+        neutralRotMat: backendProfile.neutral_rot_mat ?? null,
+        calibrationIsMirrored: backendProfile.calibration_is_mirrored ?? null,
         calibrationReliability: backendProfile.calibration_reliability,
         zoneBaselines: enrichedZones,
       };
@@ -161,6 +314,7 @@ export function GuidedCalibrationWizard({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            engineType: "PYTHON",
             calibrationMode: modeLabel,
             centerEarMedian: nextProfile.centerEarMedian,
             centerEarMadScaled: nextProfile.centerEarMadScaled,
@@ -193,10 +347,10 @@ export function GuidedCalibrationWizard({
 
         pendingBackendProfileRef.current = null;
         setHasPendingProfileRetry(false);
-        setSavedProfile(nextProfile);
+        setPythonSavedProfile(nextProfile);
         setIsSuccess(true);
-        setLiveAnnouncement("4-zone calibration completed and saved.");
-        toast.success("4-zone calibration profile saved.", {
+        setLiveAnnouncement("Python AI 4-zone calibration completed and saved.");
+        toast.success("Python AI 4-zone calibration profile saved.", {
           id: "calibration-completed-toast",
         });
         if (onCalibrationSaved) {
@@ -216,13 +370,13 @@ export function GuidedCalibrationWizard({
     [onCalibrationSaved]
   );
 
-  // 2. Real-Time LiveKit WebRTC Streaming & Authoritative Backend Calibration Hook
+  // 2B. Real-Time LiveKit WebRTC Streaming & Python Backend Calibration Hook (Active ONLY when Python engine selected)
   const {
     isConnected: isLivekitConnected,
-    connectionStatus,
-    backendProcessingStatus,
-    workerError,
-    isStale,
+    connectionStatus: livekitConnectionStatus,
+    backendProcessingStatus: livekitProcessingStatus,
+    workerError: livekitWorkerError,
+    isStale: livekitIsStale,
     startStreamingLoop,
     stopStreamingLoop,
     startCalibration: triggerLivekitCalibration,
@@ -235,10 +389,10 @@ export function GuidedCalibrationWizard({
     sessionId: stableSessionId,
     driverId,
     onTelemetry: (t) => {
-      setLatestTelemetry(t);
+      setLatestPythonTelemetry(t);
     },
     onCalibration: (cal) => {
-      setCalState(cal);
+      setPythonCalState(cal);
       if (!cal.is_completed) {
         hasHandledCompletionRef.current = false;
         return;
@@ -269,41 +423,122 @@ export function GuidedCalibrationWizard({
       void persistBackendCalibratedProfile(cal.profile);
     },
     onError: (err) => {
-      toast.error(`Calibration connection error: ${err.message}`, {
-        id: "calibration-connection-error",
-      });
+      if (calibrationEngine === "python") {
+        toast.error(`Calibration connection error: ${err.message}`, {
+          id: "calibration-connection-error",
+        });
+      }
     },
   });
 
-  // Reactive Video Streaming: Link camera activation with LiveKit WebRTC publisher
+  // Reactive Engine Activation: link camera activation strictly to the selected engine
   useEffect(() => {
     if (cameraState === "active" && videoRef.current) {
-      startStreamingLoop(videoRef.current, isMirrored);
+      if (calibrationEngine === "browser") {
+        stopStreamingLoop();
+        void startBrowserMonitoring(videoRef.current).then(() => {
+          const pending = pendingBrowserActionRef.current;
+          if (!pending) return;
+          pendingBrowserActionRef.current = null;
+          if (pending.type === "full") {
+            startBrowserCalibration();
+          } else {
+            recalibrateBrowserZone(pending.zone);
+          }
+        });
+      } else {
+        stopBrowserMonitoring();
+        startStreamingLoop(videoRef.current, isMirrored);
+      }
     } else if (cameraState === "stopped") {
+      stopBrowserMonitoring();
       stopStreamingLoop();
     }
-  }, [cameraState, isMirrored, startStreamingLoop, stopStreamingLoop, videoRef]);
+  }, [
+    cameraState,
+    calibrationEngine,
+    isMirrored,
+    startBrowserMonitoring,
+    stopBrowserMonitoring,
+    startBrowserCalibration,
+    recalibrateBrowserZone,
+    startStreamingLoop,
+    stopStreamingLoop,
+    videoRef,
+  ]);
+
+  const effectiveCalState: CalibrationPhase | null = useMemo(() => {
+    if (calibrationEngine === "browser") {
+      return browserPhaseToUiCalibrationPhase(browserCalibrationPhase);
+    }
+    return pythonCalState;
+  }, [calibrationEngine, browserCalibrationPhase, pythonCalState]);
+
+  const savedProfile =
+    calibrationEngine === "browser" ? browserSavedProfile : pythonSavedProfile;
 
   const isCalibrating =
     cameraState === "active" &&
-    isLivekitConnected &&
-    Boolean(calState && !calState.is_completed);
+    (calibrationEngine === "browser"
+      ? Boolean(browserCalibrationPhase && !browserCalibrationPhase.isCompleted)
+      : isLivekitConnected && Boolean(pythonCalState && !pythonCalState.is_completed));
+
+  const effectiveConnectionStatus =
+    calibrationEngine === "browser"
+      ? browserEngineStatus === "running"
+        ? "connected"
+        : browserEngineStatus === "initializing"
+          ? "connecting"
+          : browserEngineStatus === "error"
+            ? "error"
+            : "disconnected"
+      : livekitConnectionStatus;
+
+  const effectiveProcessingStatus: BackendProcessingStatus =
+    calibrationEngine === "browser"
+      ? browserEngineStatus === "running"
+        ? "processing"
+        : browserEngineStatus === "initializing"
+          ? "connecting"
+          : "idle"
+      : livekitProcessingStatus;
+
+  const effectiveWorkerError =
+    calibrationEngine === "browser"
+      ? browserEngineStatus === "error"
+        ? "MediaPipe WASM failed to initialize in this browser."
+        : null
+      : livekitWorkerError;
+
+  const isFaceVisible =
+    calibrationEngine === "browser"
+      ? browserTelemetry
+        ? browserTelemetry.hasFace
+        : null
+      : latestPythonTelemetry
+        ? latestPythonTelemetry.face_detected
+        : null;
 
   // Announce active zone transitions politely for screen readers
   useEffect(() => {
-    if (!isCalibrating || !calState?.current_zone) {
+    if (!isCalibrating || !effectiveCalState?.current_zone) {
       lastAnnouncedZoneRef.current = null;
       return;
     }
-    if (lastAnnouncedZoneRef.current !== calState.current_zone) {
-      lastAnnouncedZoneRef.current = calState.current_zone;
+    if (lastAnnouncedZoneRef.current !== effectiveCalState.current_zone) {
+      lastAnnouncedZoneRef.current = effectiveCalState.current_zone;
       setLiveAnnouncement(
-        `Zone ${calState.phase_index} of ${calState.total_phases}: ${formatZoneLabel(
-          calState.current_zone
+        `Zone ${effectiveCalState.phase_index} of ${effectiveCalState.total_phases}: ${formatZoneLabel(
+          effectiveCalState.current_zone
         )}`
       );
     }
-  }, [isCalibrating, calState?.current_zone, calState?.phase_index, calState?.total_phases]);
+  }, [
+    isCalibrating,
+    effectiveCalState?.current_zone,
+    effectiveCalState?.phase_index,
+    effectiveCalState?.total_phases,
+  ]);
 
   // Warn before accidentally leaving or closing tab mid-calibration
   useEffect(() => {
@@ -341,52 +576,79 @@ export function GuidedCalibrationWizard({
   const handleStartCameraCheck = async () => {
     hasHandledCompletionRef.current = false;
     pendingBackendProfileRef.current = null;
+    pendingBrowserActionRef.current = null;
     setHasPendingProfileRetry(false);
     setIsSuccess(false);
     setSaveError(null);
-    setCalState(null);
+    setPythonCalState(null);
     await startCamera();
   };
 
-  // Step 2: Start 4-Zone spatial calibration (existing backend workflow untouched)
+  // Step 2: Start 4-Zone spatial calibration on the selected engine
   const handleBeginCalibration = async () => {
     hasHandledCompletionRef.current = false;
     pendingBackendProfileRef.current = null;
     setHasPendingProfileRetry(false);
     setIsSuccess(false);
     setSaveError(null);
-    setCalState(null);
+    setPythonCalState(null);
+
+    if (calibrationEngine === "browser") {
+      if (cameraState !== "active") {
+        pendingBrowserActionRef.current = { type: "full" };
+        await startCamera();
+      } else {
+        startBrowserCalibration();
+      }
+      toast.info("Starting Browser AI 4-Zone Calibration (~15s)…");
+      return;
+    }
 
     if (cameraState !== "active") {
       await startCamera();
     }
 
     triggerLivekitCalibration(true, 4.0, false, 0);
-    toast.info("Starting 4-Zone Calibration (~15s)…");
+    toast.info("Starting Python AI 4-Zone Calibration (~15s)…");
   };
 
   // Cancel active calibration while keeping camera preview active for easy retry
   const handleCancelCalibration = () => {
-    triggerLivekitCancel();
-    setCalState(null);
+    pendingBrowserActionRef.current = null;
+    if (calibrationEngine === "browser") {
+      cancelBrowserCalibration();
+    } else {
+      triggerLivekitCancel();
+      setPythonCalState(null);
+    }
     setSaveError(null);
     setLiveAnnouncement("Calibration cancelled.");
   };
 
   // Explicit camera shutdown
   const handleTurnOffCamera = () => {
+    pendingBrowserActionRef.current = null;
     if (isCalibrating) {
-      triggerLivekitCancel();
+      if (calibrationEngine === "browser") {
+        cancelBrowserCalibration();
+      } else {
+        triggerLivekitCancel();
+      }
     }
     stopCamera();
+    stopBrowserMonitoring();
     stopStreamingLoop();
-    setCalState(null);
+    setPythonCalState(null);
     setSaveError(null);
-    setLatestTelemetry(null);
+    setLatestPythonTelemetry(null);
   };
 
   const handleSkipZone = () => {
-    triggerLivekitSkip();
+    if (calibrationEngine === "browser") {
+      skipBrowserCalibrationStep();
+    } else {
+      triggerLivekitSkip();
+    }
     toast.info("Advancing past current calibration zone…");
   };
 
@@ -396,7 +658,20 @@ export function GuidedCalibrationWizard({
     setHasPendingProfileRetry(false);
     setIsSuccess(false);
     setSaveError(null);
-    setCalState(null);
+    setPythonCalState(null);
+
+    if (calibrationEngine === "browser") {
+      const target = zone as PoseZone;
+      if (cameraState !== "active") {
+        pendingBrowserActionRef.current = { type: "zone", zone: target };
+        await startCamera();
+      } else {
+        recalibrateBrowserZone(target);
+      }
+      toast.info(`Recalibrating ${formatZoneLabel(zone)} in Browser AI…`);
+      return;
+    }
+
     if (cameraState !== "active") {
       await startCamera();
     }
@@ -410,22 +685,44 @@ export function GuidedCalibrationWizard({
     }
   };
 
-  const handleSwitchBackend = (target: "cloud" | "local") => {
-    if (backendType === target) return;
-    if (isCalibrating) {
-      triggerLivekitCancel();
+  const handleSelectEngine = (
+    engine: "browser" | "python",
+    pythonTarget?: "cloud" | "local"
+  ) => {
+    if (engine === calibrationEngine && (!pythonTarget || pythonTarget === backendType)) {
+      return;
     }
-    setCalState(null);
-    setSaveError(null);
-    switchBackend(target);
-    toast.info(
-      target === "local"
-        ? "Switched AI Engine to Localhost (127.0.0.1:8000)."
-        : "Switched AI Engine to LiveKit Cloud."
-    );
-  };
 
-  const isFaceVisible = latestTelemetry ? latestTelemetry.face_detected : null;
+    pendingBrowserActionRef.current = null;
+    if (isCalibrating) {
+      if (calibrationEngine === "browser") {
+        cancelBrowserCalibration();
+      } else {
+        triggerLivekitCancel();
+      }
+    }
+
+    setPythonCalState(null);
+    setSaveError(null);
+    setIsSuccess(false);
+
+    if (engine === "browser") {
+      stopStreamingLoop();
+      setCalibrationEngine("browser");
+      toast.info("Switched to Browser AI (On-Device MediaPipe — zero server required).");
+    } else {
+      stopBrowserMonitoring();
+      setCalibrationEngine("python");
+      if (pythonTarget && pythonTarget !== backendType) {
+        switchBackend(pythonTarget);
+      }
+      toast.info(
+        (pythonTarget ?? backendType) === "local"
+          ? "Switched to Python Local AI (127.0.0.1:8000)."
+          : "Switched to LiveKit Cloud Python AI Worker."
+      );
+    }
+  };
 
   const journeyStage: CalibrationJourneyStage = isSuccess
     ? "complete"
@@ -453,7 +750,7 @@ export function GuidedCalibrationWizard({
       {!isFullscreen && (
         <CalibrationStepper
           journeyStage={journeyStage}
-          currentZone={calState?.current_zone}
+          currentZone={effectiveCalState?.current_zone}
           isCalibrating={isCalibrating}
           isSuccess={isSuccess}
         />
@@ -474,13 +771,14 @@ export function GuidedCalibrationWizard({
           isMirrored={isMirrored}
           resolution={resolution}
           opticalQuality={opticalQuality}
+          calibrationEngine={calibrationEngine}
           backendType={backendType}
-          onSwitchBackend={handleSwitchBackend}
-          connectionStatus={connectionStatus}
-          backendProcessingStatus={backendProcessingStatus}
-          workerError={workerError}
-          isStale={isStale}
-          calState={calState}
+          onSelectEngine={handleSelectEngine}
+          connectionStatus={effectiveConnectionStatus}
+          backendProcessingStatus={effectiveProcessingStatus}
+          workerError={effectiveWorkerError}
+          isStale={calibrationEngine === "browser" ? false : livekitIsStale}
+          calState={effectiveCalState}
           isCalibrating={isCalibrating}
           isSuccess={isSuccess}
           isSavingProfile={isSavingProfile}
@@ -504,17 +802,23 @@ export function GuidedCalibrationWizard({
             cameraState={cameraState}
             resolution={resolution}
             opticalQuality={opticalQuality}
-            isLivekitConnected={isLivekitConnected}
-            connectionStatus={connectionStatus}
-            backendProcessingStatus={backendProcessingStatus}
+            calibrationEngine={calibrationEngine}
+            profileSyncStatus={profileSyncStatus}
+            isLivekitConnected={
+              calibrationEngine === "browser"
+                ? browserEngineStatus === "running"
+                : isLivekitConnected
+            }
+            connectionStatus={effectiveConnectionStatus}
+            backendProcessingStatus={effectiveProcessingStatus}
             backendType={backendType}
-            workerError={workerError}
+            workerError={effectiveWorkerError}
             saveError={saveError}
             hasPendingProfileRetry={hasPendingProfileRetry}
             isCalibrating={isCalibrating}
             isSavingProfile={isSavingProfile}
             isSuccess={isSuccess}
-            calState={calState}
+            calState={effectiveCalState}
             savedProfile={savedProfile}
             isFaceVisible={isFaceVisible}
             embeddedInOnboarding={embeddedInOnboarding}
@@ -523,7 +827,7 @@ export function GuidedCalibrationWizard({
             onCancelCalibration={handleCancelCalibration}
             onSkipZone={handleSkipZone}
             onRetrySave={handleRetrySave}
-            onSwitchToCloud={() => handleSwitchBackend("cloud")}
+            onSwitchToCloud={() => handleSelectEngine("python", "cloud")}
           />
         )}
       </div>

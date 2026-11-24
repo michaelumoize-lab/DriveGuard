@@ -11,6 +11,7 @@ import { Progress } from "@/components/ui/progress";
 import {
   Camera,
   CheckCircle2,
+  Cpu,
   FastForward,
   FlipHorizontal,
   Maximize2,
@@ -41,8 +42,9 @@ interface CalibrationViewportProps {
   isMirrored: boolean;
   resolution: CameraResolution | null;
   opticalQuality: OpticalFrameQuality | null;
+  calibrationEngine: "browser" | "python";
   backendType: "cloud" | "local";
-  onSwitchBackend: (mode: "cloud" | "local") => void;
+  onSelectEngine: (engine: "browser" | "python", pythonTarget?: "cloud" | "local") => void;
   connectionStatus: "disconnected" | "connecting" | "connected" | "reconnecting" | "error";
   backendProcessingStatus: BackendProcessingStatus;
   workerError: string | null;
@@ -75,8 +77,9 @@ export function CalibrationViewport({
   isMirrored,
   resolution,
   opticalQuality,
+  calibrationEngine,
   backendType,
-  onSwitchBackend,
+  onSelectEngine,
   connectionStatus,
   backendProcessingStatus,
   workerError,
@@ -135,36 +138,50 @@ export function CalibrationViewport({
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Local vs Cloud AI Backend Selector */}
+          {/* Calibration AI Engine Selector: Browser AI (Default) vs Python Local vs LiveKit Cloud */}
           <div
             role="group"
-            aria-label="Calibration AI backend"
+            aria-label="Calibration AI engine"
             className="inline-flex items-center bg-muted/60 rounded-lg p-0.5 text-[11px] font-medium border border-border"
           >
             <button
               type="button"
-              aria-pressed={backendType === "local"}
-              onClick={() => onSwitchBackend("local")}
+              aria-pressed={calibrationEngine === "browser"}
+              onClick={() => onSelectEngine("browser")}
               className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                backendType === "local"
+                calibrationEngine === "browser"
+                  ? "bg-primary text-primary-foreground font-semibold shadow-xs"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              title="Use On-Device Browser AI (MediaPipe WASM — works offline, zero backend required)"
+            >
+              <Cpu className="size-3" aria-hidden="true" />
+              <span>Browser AI</span>
+            </button>
+            <button
+              type="button"
+              aria-pressed={calibrationEngine === "python" && backendType === "local"}
+              onClick={() => onSelectEngine("python", "local")}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                calibrationEngine === "python" && backendType === "local"
                   ? "bg-primary text-primary-foreground font-semibold shadow-xs"
                   : "text-muted-foreground hover:text-foreground"
               }`}
               title="Use Local Python AI Engine (127.0.0.1:8000)"
             >
               <Server className="size-3" aria-hidden="true" />
-              <span>Local</span>
+              <span>Python Local</span>
             </button>
             <button
               type="button"
-              aria-pressed={backendType === "cloud"}
-              onClick={() => onSwitchBackend("cloud")}
+              aria-pressed={calibrationEngine === "python" && backendType === "cloud"}
+              onClick={() => onSelectEngine("python", "cloud")}
               className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                backendType === "cloud"
+                calibrationEngine === "python" && backendType === "cloud"
                   ? "bg-primary text-primary-foreground font-semibold shadow-xs"
                   : "text-muted-foreground hover:text-foreground"
               }`}
-              title="Use Remote LiveKit Cloud AI Worker"
+              title="Use Remote LiveKit Cloud Python AI Worker"
             >
               <Cloud className="size-3" aria-hidden="true" />
               <span>LiveKit Cloud</span>

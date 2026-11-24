@@ -16,28 +16,43 @@ export default async function CalibrationPage() {
   const session = await getServerSession();
   const userId = session?.user?.id;
 
-  const driverProfile = userId
-    ? await prisma.driverProfile.findUnique({
-        where: { userId_engineType: { userId, engineType: "PYTHON" } },
+  const driverProfiles = userId
+    ? await prisma.driverProfile.findMany({
+        where: { userId },
       })
-    : null;
+    : [];
 
-  const initialDriverProfile: InitialDriverProfileData | null = driverProfile
-    ? {
-        isCalibrated: driverProfile.isCalibrated,
-        calibrationMode: driverProfile.calibrationMode,
-        centerEarMedian: driverProfile.centerEarMedian,
-        centerEarMadScaled: driverProfile.centerEarMadScaled,
-        blinkDurationMedianMs: driverProfile.blinkDurationMedianMs,
-        blinkDurationMadMs: driverProfile.blinkDurationMadMs,
-        blinkRcrMedian: driverProfile.blinkRcrMedian,
-        blinkRcrMad: driverProfile.blinkRcrMad,
-        neutralPitchDeg: driverProfile.neutralPitchDeg,
-        neutralYawDeg: driverProfile.neutralYawDeg,
-        calibrationReliability: driverProfile.calibrationReliability,
-        zoneBaselines: (driverProfile.zoneBaselines as Record<string, unknown> | null) ?? null,
-      }
-    : null;
+  const mapProfile = (
+    p: (typeof driverProfiles)[number] | undefined
+  ): InitialDriverProfileData | null =>
+    p
+      ? {
+          engineType: p.engineType,
+          isCalibrated: p.isCalibrated,
+          calibrationMode: p.calibrationMode,
+          centerEarMedian: p.centerEarMedian,
+          centerEarMadScaled: p.centerEarMadScaled,
+          blinkDurationMedianMs: p.blinkDurationMedianMs,
+          blinkDurationMadMs: p.blinkDurationMadMs,
+          blinkRcrMedian: p.blinkRcrMedian,
+          blinkRcrMad: p.blinkRcrMad,
+          neutralPitchDeg: p.neutralPitchDeg,
+          neutralYawDeg: p.neutralYawDeg,
+          neutralRotMat: (p.neutralRotMat as number[][] | null) ?? null,
+          calibrationIsMirrored: p.calibrationIsMirrored ?? null,
+          calibrationReliability: p.calibrationReliability,
+          profileVersion: p.profileVersion,
+          profileHash: p.contentHash ?? null,
+          zoneBaselines: (p.zoneBaselines as Record<string, unknown> | null) ?? null,
+        }
+      : null;
+
+  const initialBrowserProfile = mapProfile(
+    driverProfiles.find((p) => p.engineType === "BROWSER")
+  );
+  const initialPythonProfile = mapProfile(
+    driverProfiles.find((p) => p.engineType === "PYTHON")
+  );
 
   return (
     <div className="p-4 sm:p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
@@ -47,13 +62,15 @@ export default async function CalibrationPage() {
         </h1>
         <p className="text-xs sm:text-sm text-muted-foreground max-w-2xl">
           Personalize DriveGuard to your eyes and driving posture across 4 views (Road Ahead,
-          Left Mirror, Right Mirror, and Dashboard) in about 15–20 seconds.
+          Left Mirror, Right Mirror, and Dashboard) in about 15–20 seconds. Runs locally in
+          Browser AI by default with optional Python AI calibration.
         </p>
       </div>
 
       <GuidedCalibrationWizard
         driverId={userId || "driver_default"}
-        initialDriverProfile={initialDriverProfile}
+        initialDriverProfile={initialBrowserProfile}
+        initialPythonProfile={initialPythonProfile}
       />
     </div>
   );

@@ -62,12 +62,14 @@ interface OnboardingWizardProps {
   };
   initialProfile: InitialProfile;
   initialDriverProfile?: InitialDriverProfileData | null;
+  initialPythonProfile?: InitialDriverProfileData | null;
 }
 
 export function OnboardingWizard({
   user,
   initialProfile,
   initialDriverProfile = null,
+  initialPythonProfile = null,
 }: OnboardingWizardProps) {
   const router = useRouter();
 
@@ -127,6 +129,7 @@ export function OnboardingWizard({
         payload = {
           ...payload,
           completedStepKey: "DRIVER_PROFILE",
+          fullName: fullName.trim(),
           phoneNumber,
           licenseNumber,
           emergencyContactName: emergencyName,
@@ -512,8 +515,7 @@ export function OnboardingWizard({
                     I Wear Eyeglasses
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    Activates Stage-2 CNN arbitration to eliminate glare and frame edge
-                    interference.
+                    Accounts for eyewear framing and lens reflection when evaluating eye openness.
                   </div>
                 </div>
                 <Switch checked={wearsGlasses} onCheckedChange={setWearsGlasses} />
@@ -522,12 +524,13 @@ export function OnboardingWizard({
           </div>
         )}
 
-        {/* STEP 4: 4-ZONE SPATIAL + 2-MINUTE BLINK RATE CALIBRATION */}
+        {/* STEP 4: 4-ZONE SPATIAL CALIBRATION (Defaults to Browser AI) */}
         {currentStep === 4 && (
           <div className="space-y-4">
             <GuidedCalibrationWizard
               driverId={user.id}
               initialDriverProfile={calibratedDriverProfile}
+              initialPythonProfile={initialPythonProfile}
               embeddedInOnboarding={true}
               onCalibrationSaved={(savedProf) => {
                 setCalibratedDriverProfile(savedProf);
@@ -546,8 +549,8 @@ export function OnboardingWizard({
               </div>
               <p className="text-xs text-muted-foreground">
                 {calibratedDriverProfile?.isCalibrated
-                  ? "Your 4-Zone spatial EAR thresholds and 2-minute personal blink rate & duration baselines have been saved to PostgreSQL and synced to the AI engine."
-                  : "Your driver profile is configured. You can run or update your 4-Zone + 2-Minute Blink calibration anytime in Calibration Studio."}
+                  ? "Your 4-Zone spatial eye-closure thresholds and personal baselines are saved locally and synced for immediate monitoring."
+                  : "Your driver profile is configured. You can run or update your 4-Zone calibration anytime in Calibration Studio before live monitoring."}
               </p>
             </div>
 

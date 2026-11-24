@@ -55,36 +55,48 @@ export default async function LiveMonitorPage({ searchParams }: LiveMonitorPageP
 
   const targetEngineType = initialRuntimeMode === "remote" ? "PYTHON" : "BROWSER";
 
-  const [userProfile, driverProfile] = await Promise.all([
+  const [userProfile, driverProfiles] = await Promise.all([
     userId ? getOrCreateUserProfile(userId) : null,
     userId
-      ? prisma.driverProfile.findUnique({
-          where: {
-            userId_engineType: {
-              userId,
-              engineType: targetEngineType,
-            },
-          },
+      ? prisma.driverProfile.findMany({
+          where: { userId },
         })
-      : null,
+      : [],
   ]);
 
-  const initialDriverProfile: InitialDriverProfileData | null = driverProfile
-    ? {
-        isCalibrated: driverProfile.isCalibrated,
-        calibrationMode: driverProfile.calibrationMode,
-        centerEarMedian: driverProfile.centerEarMedian,
-        centerEarMadScaled: driverProfile.centerEarMadScaled,
-        blinkDurationMedianMs: driverProfile.blinkDurationMedianMs,
-        blinkDurationMadMs: driverProfile.blinkDurationMadMs,
-        blinkRcrMedian: driverProfile.blinkRcrMedian,
-        blinkRcrMad: driverProfile.blinkRcrMad,
-        neutralPitchDeg: driverProfile.neutralPitchDeg,
-        neutralYawDeg: driverProfile.neutralYawDeg,
-        calibrationReliability: driverProfile.calibrationReliability,
-        zoneBaselines: (driverProfile.zoneBaselines as Record<string, unknown> | null) ?? null,
-      }
-    : null;
+  const mapProfile = (
+    p: (typeof driverProfiles)[number] | undefined
+  ): InitialDriverProfileData | null =>
+    p
+      ? {
+          engineType: p.engineType,
+          isCalibrated: p.isCalibrated,
+          calibrationMode: p.calibrationMode,
+          centerEarMedian: p.centerEarMedian,
+          centerEarMadScaled: p.centerEarMadScaled,
+          blinkDurationMedianMs: p.blinkDurationMedianMs,
+          blinkDurationMadMs: p.blinkDurationMadMs,
+          blinkRcrMedian: p.blinkRcrMedian,
+          blinkRcrMad: p.blinkRcrMad,
+          neutralPitchDeg: p.neutralPitchDeg,
+          neutralYawDeg: p.neutralYawDeg,
+          neutralRotMat: (p.neutralRotMat as number[][] | null) ?? null,
+          calibrationIsMirrored: p.calibrationIsMirrored ?? null,
+          calibrationReliability: p.calibrationReliability,
+          profileVersion: p.profileVersion,
+          profileHash: p.contentHash ?? null,
+          zoneBaselines: (p.zoneBaselines as Record<string, unknown> | null) ?? null,
+        }
+      : null;
+
+  const browserProfile = mapProfile(
+    driverProfiles.find((p) => p.engineType === "BROWSER")
+  );
+  const pythonProfile = mapProfile(
+    driverProfiles.find((p) => p.engineType === "PYTHON")
+  );
+  const initialDriverProfile =
+    targetEngineType === "PYTHON" ? pythonProfile : browserProfile;
 
   const initialPreferences: InitialUserPreferencesData = {
     audioAlertsEnabled: userProfile?.audioAlertsEnabled ?? true,
@@ -97,7 +109,8 @@ export default async function LiveMonitorPage({ searchParams }: LiveMonitorPageP
     <div className="p-3 sm:p-5 lg:p-6 max-w-[1600px] mx-auto w-full">
       <UnifiedLiveMonitor
         driverId={userId || "driver_default"}
-        initialDriverProfile={initialDriverProfile}
+        initialDriverProfile={browserProfile ?? initialDriverProfile}
+        initialPythonProfile={pythonProfile}
         initialPreferences={initialPreferences}
         initialConsoleMode={initialConsoleMode}
         initialInspectorTab={initialInspectorTab}

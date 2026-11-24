@@ -37,6 +37,8 @@ interface CalibrationGuidancePanelProps {
   cameraState: CameraState;
   resolution: CameraResolution | null;
   opticalQuality: OpticalFrameQuality | null;
+  calibrationEngine?: "browser" | "python";
+  profileSyncStatus?: string;
   isLivekitConnected: boolean;
   connectionStatus: "disconnected" | "connecting" | "connected" | "reconnecting" | "error";
   backendProcessingStatus: BackendProcessingStatus;
@@ -77,6 +79,8 @@ export function CalibrationGuidancePanel({
   cameraState,
   resolution,
   opticalQuality,
+  calibrationEngine = "browser",
+  profileSyncStatus,
   isLivekitConnected,
   connectionStatus,
   backendProcessingStatus,
@@ -155,8 +159,8 @@ export function CalibrationGuidancePanel({
       </CardHeader>
 
       <CardContent className="pt-4 space-y-4 text-xs flex-1">
-        {/* Connection / Worker Error Banner */}
-        {(workerError || connectionStatus === "error") && (
+        {/* Connection / Worker Error Banner (Remote Python mode only) */}
+        {calibrationEngine === "python" && (workerError || connectionStatus === "error") && (
           <div
             role="alert"
             className="p-3.5 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive space-y-2"
@@ -388,14 +392,18 @@ export function CalibrationGuidancePanel({
                 </span>
                 <span className="text-[11px] font-semibold text-foreground">
                   {isEngineConnecting
-                    ? "Connecting to AI…"
+                    ? calibrationEngine === "browser"
+                      ? "Loading MediaPipe WASM…"
+                      : "Connecting to AI…"
                     : isFaceVisible === true
                       ? "Face locked · Ready"
                       : isFaceVisible === false
                         ? "Center your face"
                         : isLivekitConnected
                           ? "Awaiting first frame…"
-                          : "Ready to connect"}
+                          : calibrationEngine === "browser"
+                            ? "Browser AI ready"
+                            : "Ready to connect"}
                 </span>
               </div>
             </div>
@@ -537,9 +545,22 @@ export function CalibrationGuidancePanel({
         {isSuccess && !isSavingProfile && (
           <div className="space-y-4">
             <div className="p-4 rounded-xl border border-emerald-500/35 bg-emerald-500/10 space-y-2">
-              <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400 font-semibold text-sm">
-                <CheckCircle2 className="size-5 shrink-0" aria-hidden="true" />
-                <span>4-Zone Profile Active</span>
+              <div className="flex items-center justify-between gap-2 text-emerald-600 dark:text-emerald-400 font-semibold text-sm">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="size-5 shrink-0" aria-hidden="true" />
+                  <span>
+                    4-Zone {calibrationEngine === "browser" ? "Browser AI" : "Python AI"} Profile Active
+                  </span>
+                </div>
+                {calibrationEngine === "browser" && profileSyncStatus && (
+                  <Badge variant="outline" className="text-[10px] font-mono border-emerald-500/40 text-emerald-600 dark:text-emerald-400">
+                    {profileSyncStatus === "SYNCED"
+                      ? "INDEXEDDB + DB SYNCED"
+                      : profileSyncStatus === "PENDING_SYNC"
+                        ? "SAVED LOCALLY (SYNC PENDING)"
+                        : profileSyncStatus}
+                  </Badge>
+                )}
               </div>
               <p className="text-foreground/85 leading-relaxed">
                 DriveGuard now knows your resting eye openness (
