@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { getServerSession } from "@/lib/get-session";
 import { getOrCreateUserProfile } from "@/lib/user-profile";
 import { prisma } from "@/lib/prisma";
-import { AdminSidebar } from "@/components/admin-sidebar";
+import { Sidebar } from "@/components/sidebar";
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
@@ -51,7 +51,7 @@ export default async function DashboardLayout({
     <TooltipProvider>
       <SidebarProvider defaultOpen={true}>
         <div className="flex h-svh w-full bg-background text-foreground overflow-hidden">
-          <AdminSidebar user={user} />
+          <Sidebar user={user} />
 
           <SidebarInset className="flex flex-col flex-1 bg-background min-w-0 h-full overflow-hidden">
             {/* Top Navbar Header aligned seamlessly at h-14 with Sidebar Header */}

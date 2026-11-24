@@ -26,7 +26,7 @@ import { ZoneBaselineEntry } from "@/types/telemetry";
 
 export const dynamic = "force-dynamic";
 
-export default async function AdminDashboardPage() {
+export default async function DashboardPage() {
   const session = await getServerSession();
   const userId = session?.user?.id;
 

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
+import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,6 +20,7 @@ import {
   ShieldAlert,
   CheckCircle2,
   Gauge,
+  Play,
 } from "lucide-react";
 import { explainReasonCode } from "@/types/telemetry";
 import { FormattedTimestamp } from "@/components/ui/formatted-timestamp";

@@ -28,6 +28,11 @@
   --color-border: var(--border);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-safe: var(--safe);
+  --color-warning: var(--warning);
+  --color-critical: var(--critical);
+  --color-primary-accent: var(--primary-accent);
+  --color-surface-panel: var(--surface-panel);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -51,74 +56,86 @@
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  color-scheme: light;
+  --background: #f6f4ee;
+  --foreground: #141715;
+  --card: #fcfbf8;
+  --card-foreground: #141715;
+  --popover: #fcfbf8;
+  --popover-foreground: #141715;
+  --primary: #e58b43;
+  --primary-foreground: #101211;
+  --primary-accent: #b85d19;
+  --surface-panel: #efece4;
+  --secondary: #ece8df;
+  --secondary-foreground: #191d1a;
+  --muted: #ece8df;
+  --muted-foreground: #596057;
+  --accent: #e5e0d5;
+  --accent-foreground: #141715;
+  --destructive: #c94136;
+  --destructive-foreground: #fffdf9;
+  --safe: #2d7d5b;
+  --warning: #c0731a;
+  --critical: #c94136;
+  --border: rgba(20, 23, 21, 0.11);
+  --input: rgba(20, 23, 21, 0.16);
+  --ring: #d4782f;
+  --chart-1: #2d7d5b;
+  --chart-2: #c96d24;
+  --chart-3: #c0731a;
+  --chart-4: #c94136;
+  --chart-5: #596057;
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar: #efece4;
+  --sidebar-foreground: #141715;
+  --sidebar-primary: #e58b43;
+  --sidebar-primary-foreground: #101211;
+  --sidebar-accent: #e3dfd4;
+  --sidebar-accent-foreground: #141715;
+  --sidebar-border: rgba(20, 23, 21, 0.10);
+  --sidebar-ring: #d4782f;
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.637 0.237 25.331);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  color-scheme: dark;
+  --background: #101211;
+  --foreground: #f5f3ec;
+  --card: #191d1a;
+  --card-foreground: #f5f3ec;
+  --popover: #191d1a;
+  --popover-foreground: #f5f3ec;
+  --primary: #e58b43;
+  --primary-foreground: #101211;
+  --primary-accent: #e58b43;
+  --surface-panel: #141715;
+  --secondary: #1f2521;
+  --secondary-foreground: #f5f3ec;
+  --muted: #171b18;
+  --muted-foreground: #9ea39b;
+  --accent: #232924;
+  --accent-foreground: #f5f3ec;
+  --destructive: #e45e52;
+  --destructive-foreground: #f5f3ec;
+  --safe: #79b99a;
+  --warning: #e8a04b;
+  --critical: #e45e52;
+  --border: rgba(245, 243, 236, 0.10);
+  --input: rgba(245, 243, 236, 0.15);
+  --ring: #e58b43;
+  --chart-1: #79b99a;
+  --chart-2: #e58b43;
+  --chart-3: #e8a04b;
+  --chart-4: #e45e52;
+  --chart-5: #9ea39b;
+  --sidebar: #141715;
+  --sidebar-foreground: #f5f3ec;
+  --sidebar-primary: #e58b43;
+  --sidebar-primary-foreground: #101211;
+  --sidebar-accent: #1e2420;
+  --sidebar-accent-foreground: #f5f3ec;
+  --sidebar-border: rgba(245, 243, 236, 0.09);
+  --sidebar-ring: #e58b43;
 }
 
 @layer base {
@@ -133,6 +150,19 @@
   }
   html {
     @apply font-sans;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    html {
+      scroll-behavior: smooth;
+    }
+  }
+
+  h1,
+  h2,
+  h3,
+  .font-display {
+    font-family: var(--font-manrope), var(--font-dm-sans), var(--font-sans), sans-serif;
   }
 
   /* Premium Modern Scrollbar Styling */
@@ -168,32 +198,4 @@
       scroll-behavior: auto !important;
     }
   }
-}
-
-/* Scoped DriveGuard Landing Page Design System (Automotive + AI Hybrid) */
-.driveguard-landing {
-  --dg-bg-main: #101211;
-  --dg-bg-elevated: #191d1a;
-  --dg-bg-panel: #141715;
-  --dg-text-primary: #f5f3ec;
-  --dg-text-muted: #9ea39b;
-  --dg-text-subtle: #6e746c;
-  --dg-accent: #e58b43;
-  --dg-safe: #79b99a;
-  --dg-warning: #e8a04b;
-  --dg-critical: #e45e52;
-  --dg-border: rgba(245, 243, 236, 0.09);
-  --dg-border-strong: rgba(245, 243, 236, 0.16);
-
-  background-color: var(--dg-bg-main);
-  color: var(--dg-text-primary);
-  font-family: var(--font-dm-sans), var(--font-sans), sans-serif;
-  color-scheme: dark;
-}
-
-.driveguard-landing h1,
-.driveguard-landing h2,
-.driveguard-landing h3,
-.driveguard-landing .font-display {
-  font-family: var(--font-manrope), var(--font-dm-sans), sans-serif;
 }

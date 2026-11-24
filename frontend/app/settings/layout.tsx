@@ -1,7 +1,7 @@
 import React from "react";
 import { redirect } from "next/navigation";
 import { getServerSession } from "@/lib/get-session";
-import { AdminSidebar } from "@/components/admin-sidebar";
+import { Sidebar } from "@/components/sidebar";
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { NavbarSystemHealthBadge } from "@/components/dashboard/navbar-health-badge";
@@ -31,7 +31,7 @@ export default async function SettingsLayout({
     <TooltipProvider>
       <SidebarProvider defaultOpen={true}>
         <div className="flex min-h-screen w-full bg-background text-foreground">
-          <AdminSidebar user={user} />
+          <Sidebar user={user} />
 
           <SidebarInset className="flex flex-col flex-1 bg-background min-w-0">
             {/* Top Navbar Header aligned seamlessly with Sidebar */}

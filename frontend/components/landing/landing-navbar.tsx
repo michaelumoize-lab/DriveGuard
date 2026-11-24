@@ -1,32 +1,34 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import { useMotionValueEvent, useScroll } from "motion/react";
-import { Menu, X } from "lucide-react";
+import { AnimatePresence, motion, useMotionValueEvent, useReducedMotion, useScroll } from "motion/react";
+import { ArrowUpRight, Menu, X } from "lucide-react";
 import { Logo } from "@/components/logo";
 import {
   LandingHeaderAuth,
   type LandingHeaderUser,
-} from "@/components/landing-header-auth";
+} from "@/components/landing/landing-header-auth";
+import { scrollToSection } from "@/lib/smooth-scroll";
 import { cn } from "@/lib/utils";
 
 interface LandingNavbarProps {
   user: LandingHeaderUser | null;
 }
 
-const NAV_LINKS = [
-  { href: "#vision", label: "Vision" },
-  { href: "#calibration", label: "Calibration" },
-  { href: "#alerts", label: "Alerts" },
-  { href: "#dashboard-preview", label: "Dashboard" },
-  { href: "/help", label: "Documentation", isRoute: true },
+const SECTION_LINKS = [
+  { href: "#vision", id: "vision", label: "Vision" },
+  { href: "#calibration", id: "calibration", label: "Calibration" },
+  { href: "#alerts", id: "alerts", label: "Alerts" },
+  { href: "#dashboard-preview", id: "dashboard-preview", label: "Dashboard" },
 ] as const;
 
 export function LandingNavbar({ user }: LandingNavbarProps) {
   const { scrollY } = useScroll();
+  const prefersReducedMotion = useReducedMotion();
   const [isScrolled, setIsScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [activeSection, setActiveSection] = useState<string>("vision");
 
   useMotionValueEvent(scrollY, "change", (latest) => {
     const next = latest > 24;
@@ -35,64 +37,140 @@ export function LandingNavbar({ user }: LandingNavbarProps) {
     }
   });
 
+  useEffect(() => {
+    const sections = SECTION_LINKS.map((item) => document.getElementById(item.id)).filter(
+      (el): el is HTMLElement => el !== null
+    );
+    if (sections.length === 0) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setActiveSection(entry.target.id);
+          }
+        }
+      },
+      { rootMargin: "-35% 0px -50% 0px", threshold: 0.05 }
+    );
+
+    sections.forEach((sec) => observer.observe(sec));
+    return () => observer.disconnect();
+  }, []);
+
+  const handleAnchorClick = (
+    e: React.MouseEvent<HTMLAnchorElement>,
+    href: string,
+    id: string,
+    closeMobile = false
+  ) => {
+    setActiveSection(id);
+    scrollToSection(
+      e,
+      href,
+      closeMobile ? () => setMobileMenuOpen(false) : undefined
+    );
+  };
+
   return (
     <header
       className={cn(
-        "fixed inset-x-0 top-0 z-50 transition-[background-color,border-color,backdrop-filter] duration-300",
-        isScrolled || mobileMenuOpen
-          ? "bg-[#101211]/90 backdrop-blur-md border-b border-[#F5F3EC]/10"
-          : "bg-transparent border-b border-transparent"
+        "fixed inset-x-0 top-0 z-50 transition-[padding,background-color,border-color,backdrop-filter] duration-300",
+        isScrolled
+          ? "py-0 bg-background/85 backdrop-blur-xl border-b border-border/80 shadow-xs"
+          : "pt-2.5 sm:pt-3.5 bg-transparent border-b border-transparent"
       )}
     >
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
+      <div
+        className={cn(
+          "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-4 transition-[height] duration-300",
+          isScrolled ? "h-16" : "h-16"
+        )}
+      >
+        {/* Brand Identity */}
         <Link
           href="/"
-          className="flex items-center gap-3 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-[#E58B43]"
+          className="group flex items-center gap-3 rounded-xl py-1 pr-2 outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <Logo variant="black" className="size-9 rounded-xl border border-[#F5F3EC]/10" />
-          <div>
-            <span className="font-display font-bold tracking-tight text-base block text-[#F5F3EC] whitespace-nowrap">
+          <Logo className="size-9 rounded-xl border border-border/80 transition-transform duration-200 group-hover:scale-[1.03]" />
+          <div className="leading-tight">
+            <span className="font-display font-bold tracking-tight text-base block text-foreground whitespace-nowrap">
               DriveGuard
             </span>
-            <span className="text-[10px] font-mono text-[#9EA39B] uppercase tracking-[0.14em] hidden xs:block whitespace-nowrap">
+            <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-[0.14em] hidden xs:block whitespace-nowrap">
               Driver Monitoring AI
             </span>
           </div>
         </Link>
 
+        {/* Centered Architectural Pill Navigation Rail */}
         <nav
           aria-label="Primary Navigation"
-          className="hidden md:flex items-center gap-7 text-xs font-medium text-[#9EA39B]"
+          className={cn(
+            "hidden md:flex items-center gap-1 rounded-full p-1 transition-all duration-300",
+            isScrolled
+              ? "bg-muted/70 border border-border/80"
+              : "bg-card/80 border border-border/80 backdrop-blur-xl shadow-sm"
+          )}
         >
-          {NAV_LINKS.map((item) =>
-            "isRoute" in item && item.isRoute ? (
-              <Link
-                key={item.href}
-                href={item.href}
-                className="hover:text-[#F5F3EC] transition-colors py-1 outline-none focus-visible:text-[#F5F3EC] focus-visible:underline"
-              >
-                {item.label}
-              </Link>
-            ) : (
+          {SECTION_LINKS.map((item) => {
+            const isActive = activeSection === item.id;
+            return (
               <a
                 key={item.href}
                 href={item.href}
-                className="hover:text-[#F5F3EC] transition-colors py-1 outline-none focus-visible:text-[#F5F3EC] focus-visible:underline"
+                onClick={(e) => handleAnchorClick(e, item.href, item.id)}
+                className={cn(
+                  "relative px-3.5 py-1.5 rounded-full text-xs font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  isActive
+                    ? "text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
               >
-                {item.label}
+                {isActive && (
+                  <motion.span
+                    layoutId="landing-nav-pill"
+                    transition={
+                      prefersReducedMotion
+                        ? { duration: 0 }
+                        : { type: "spring", stiffness: 380, damping: 32 }
+                    }
+                    className="absolute inset-0 rounded-full bg-background border border-border/90 shadow-2xs"
+                  />
+                )}
+                <span className="relative z-10 inline-flex items-center gap-1.5">
+                  {isActive && (
+                    <span
+                      aria-hidden="true"
+                      className="size-1.5 rounded-full bg-primary"
+                    />
+                  )}
+                  <span>{item.label}</span>
+                </span>
               </a>
-            )
-          )}
+            );
+          })}
+
+          <span aria-hidden="true" className="mx-1 h-3.5 w-px bg-border" />
+
+          <Link
+            href="/help"
+            className="inline-flex items-center gap-1 px-3.5 py-1.5 rounded-full text-xs font-medium text-muted-foreground hover:text-foreground transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <span>Docs</span>
+            <ArrowUpRight className="size-3 opacity-70" />
+          </Link>
         </nav>
 
+        {/* Right Actions + Mobile Trigger */}
         <div className="flex items-center gap-2">
-          <LandingHeaderAuth user={user} variant="landing" />
+          <LandingHeaderAuth user={user} />
           <button
             type="button"
             onClick={() => setMobileMenuOpen((prev) => !prev)}
             aria-expanded={mobileMenuOpen}
             aria-label={mobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
-            className="md:hidden inline-flex items-center justify-center size-9 rounded-xl border border-[#F5F3EC]/15 text-[#F5F3EC] hover:bg-[#191D1A] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#E58B43]"
+            className="md:hidden inline-flex items-center justify-center size-9 rounded-xl border border-border bg-card/80 text-foreground hover:bg-accent transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {mobileMenuOpen ? <X className="size-4" /> : <Menu className="size-4" />}
           </button>
@@ -100,34 +178,46 @@ export function LandingNavbar({ user }: LandingNavbarProps) {
       </div>
 
       {/* Mobile Navigation Drawer */}
-      {mobileMenuOpen && (
-        <nav
-          aria-label="Mobile Navigation"
-          className="md:hidden border-t border-[#F5F3EC]/10 bg-[#101211]/95 backdrop-blur-md px-4 py-4 space-y-1"
-        >
-          {NAV_LINKS.map((item) =>
-            "isRoute" in item && item.isRoute ? (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={() => setMobileMenuOpen(false)}
-                className="block rounded-lg px-3 py-2.5 text-sm font-medium text-[#F5F3EC]/85 hover:bg-[#191D1A] hover:text-[#F5F3EC] transition-colors"
-              >
-                {item.label}
-              </Link>
-            ) : (
-              <a
-                key={item.href}
-                href={item.href}
-                onClick={() => setMobileMenuOpen(false)}
-                className="block rounded-lg px-3 py-2.5 text-sm font-medium text-[#F5F3EC]/85 hover:bg-[#191D1A] hover:text-[#F5F3EC] transition-colors"
-              >
-                {item.label}
-              </a>
-            )
-          )}
-        </nav>
-      )}
+      <AnimatePresence>
+        {mobileMenuOpen && (
+          <motion.nav
+            aria-label="Mobile Navigation"
+            initial={prefersReducedMotion ? false : { opacity: 0, y: -8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={prefersReducedMotion ? undefined : { opacity: 0, y: -8 }}
+            transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+            className="md:hidden mt-1 border-y border-border bg-card/95 backdrop-blur-xl px-4 py-3 space-y-1 shadow-lg"
+          >
+            {SECTION_LINKS.map((item) => {
+              const isActive = activeSection === item.id;
+              return (
+                <a
+                  key={item.href}
+                  href={item.href}
+                  onClick={(e) => handleAnchorClick(e, item.href, item.id, true)}
+                  className={cn(
+                    "flex items-center justify-between rounded-xl px-3.5 py-2.5 text-sm font-medium transition-colors",
+                    isActive
+                      ? "bg-muted text-foreground"
+                      : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                  )}
+                >
+                  <span>{item.label}</span>
+                  {isActive && <span className="size-1.5 rounded-full bg-primary" />}
+                </a>
+              );
+            })}
+            <Link
+              href="/help"
+              onClick={() => setMobileMenuOpen(false)}
+              className="flex items-center justify-between rounded-xl px-3.5 py-2.5 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+            >
+              <span>Documentation</span>
+              <ArrowUpRight className="size-4 opacity-70" />
+            </Link>
+          </motion.nav>
+        )}
+      </AnimatePresence>
     </header>
   );
 }

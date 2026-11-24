@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useRef, useState } from "react";
 import Link from "next/link";
 import { motion, useReducedMotion, useScroll, useTransform } from "motion/react";
 import {
@@ -44,7 +44,7 @@ const SESSION_HISTORY = [
     avgPerclos: "3.4%",
     events: "0 Critical · 1 Early",
     status: "NORMAL",
-    color: "#79B99A",
+    color: "var(--safe)",
   },
   {
     route: "Ring Road Commute",
@@ -52,7 +52,7 @@ const SESSION_HISTORY = [
     avgPerclos: "4.1%",
     events: "0 Critical · 0 Early",
     status: "NORMAL",
-    color: "#79B99A",
+    color: "var(--safe)",
   },
   {
     route: "Late Evening Transfer",
@@ -60,7 +60,7 @@ const SESSION_HISTORY = [
     avgPerclos: "9.8%",
     events: "1 Critical · 2 Early",
     status: "WARNING",
-    color: "#E8A04B",
+    color: "var(--warning)",
   },
 ];
 
@@ -91,20 +91,20 @@ export function DashboardPreviewSection() {
   return (
     <section
       id="dashboard-preview"
-      className="py-20 md:py-28 border-t border-[#F5F3EC]/8 scroll-mt-20"
+      className="py-20 md:py-28 border-t border-border scroll-mt-24"
     >
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-10">
         {/* Section Heading */}
         <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6">
           <div className="max-w-2xl space-y-3">
-            <span className="inline-flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-[#E58B43]">
+            <span className="inline-flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.18em] text-primary-accent">
               <LayoutDashboard className="size-3.5" />
               <span>Command Center &amp; Session Analytics</span>
             </span>
-            <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-[-0.025em] text-[#F5F3EC] leading-[1.12] text-balance">
+            <h2 className="font-display text-3xl sm:text-4xl font-bold tracking-[-0.025em] text-foreground leading-[1.12] text-balance">
               Complete visibility across every journey.
             </h2>
-            <p className="text-sm sm:text-base text-[#9EA39B] leading-relaxed">
+            <p className="text-sm sm:text-base text-muted-foreground leading-relaxed">
               Review monitoring session history, drowsiness events, attention trends, and your personalized 4-zone calibration profile in one unified cockpit.
             </p>
           </div>
@@ -113,7 +113,7 @@ export function DashboardPreviewSection() {
           <div
             role="tablist"
             aria-label="Dashboard preview views"
-            className="inline-flex flex-nowrap items-center gap-1 rounded-2xl border border-[#F5F3EC]/12 bg-[#191D1A] p-1.5 self-start lg:self-auto"
+            className="inline-flex flex-nowrap items-center gap-1 rounded-2xl border border-border bg-card p-1.5 self-start lg:self-auto shadow-xs"
           >
             <button
               type="button"
@@ -121,10 +121,10 @@ export function DashboardPreviewSection() {
               aria-selected={activeTab === "overview"}
               onClick={() => setActiveTab("overview")}
               className={cn(
-                "relative px-4 py-2 rounded-xl text-xs font-semibold transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#E58B43]",
+                "relative px-4 py-2 rounded-xl text-xs font-semibold transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 activeTab === "overview"
-                  ? "bg-[#101211] text-[#F5F3EC] border border-[#F5F3EC]/14"
-                  : "text-[#9EA39B] hover:text-[#F5F3EC]"
+                  ? "bg-background text-foreground border border-border shadow-2xs"
+                  : "text-muted-foreground hover:text-foreground"
               )}
             >
               Session Analytics
@@ -135,10 +135,10 @@ export function DashboardPreviewSection() {
               aria-selected={activeTab === "live"}
               onClick={() => setActiveTab("live")}
               className={cn(
-                "relative px-4 py-2 rounded-xl text-xs font-semibold transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#E58B43]",
+                "relative px-4 py-2 rounded-xl text-xs font-semibold transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 activeTab === "live"
-                  ? "bg-[#101211] text-[#F5F3EC] border border-[#F5F3EC]/14"
-                  : "text-[#9EA39B] hover:text-[#F5F3EC]"
+                  ? "bg-background text-foreground border border-border shadow-2xs"
+                  : "text-muted-foreground hover:text-foreground"
               )}
             >
               Live Cockpit View
@@ -150,15 +150,15 @@ export function DashboardPreviewSection() {
         <motion.div
           ref={frameRef}
           style={prefersReducedMotion ? undefined : { y: frameY }}
-          className="rounded-3xl border border-[#F5F3EC]/14 bg-[#191D1A] p-2.5 sm:p-4 shadow-[0_40px_100px_-30px_rgba(0,0,0,0.9)]"
+          className="rounded-3xl border border-border bg-card p-2.5 sm:p-4 shadow-2xl"
         >
           {/* Application Window Chrome */}
-          <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-2.5 border-b border-[#F5F3EC]/10 mb-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 px-3 py-2.5 border-b border-border mb-3">
             <div className="flex items-center gap-2">
-              <span className="size-2.5 rounded-full bg-[#F5F3EC]/20" />
-              <span className="size-2.5 rounded-full bg-[#F5F3EC]/20" />
-              <span className="size-2.5 rounded-full bg-[#F5F3EC]/20" />
-              <span className="ml-2 text-xs font-mono text-[#9EA39B]">
+              <span className="size-2.5 rounded-full bg-foreground/20" />
+              <span className="size-2.5 rounded-full bg-foreground/20" />
+              <span className="size-2.5 rounded-full bg-foreground/20" />
+              <span className="ml-2 text-xs font-mono text-muted-foreground">
                 driveguard.app/dashboard
                 {activeTab === "live" ? "/live-monitor" : ""}
               </span>
@@ -166,32 +166,30 @@ export function DashboardPreviewSection() {
 
             <Link
               href={activeTab === "live" ? "/dashboard/live-monitor" : "/dashboard"}
-              className="inline-flex items-center gap-1 text-[11px] font-mono text-[#E58B43] hover:underline"
+              className="inline-flex items-center gap-1 text-[11px] font-mono text-primary-accent hover:underline"
             >
               <span>Open App</span>
               <ArrowUpRight className="size-3.5" />
             </Link>
           </div>
 
-          {/* If real application screenshot is provided in LANDING_MEDIA, display it directly */}
           {hasRealScreenshot ? (
             <LandingMediaSlot
               slot={activeSlot}
               sizes="(max-width: 1280px) 100vw, 1200px"
-              className="aspect-[16/10] w-full rounded-2xl border border-[#F5F3EC]/10"
+              className="aspect-[16/10] w-full rounded-2xl border border-border"
               showSlotHint={false}
             />
           ) : (
-            /* Otherwise render the authentic structured dark-mode application preview with drop-in slot hint */
-            <div className="relative rounded-2xl border border-[#F5F3EC]/10 bg-[#101211] p-4 sm:p-6 space-y-6 overflow-hidden">
+            <div className="relative rounded-2xl border border-border bg-background p-4 sm:p-6 space-y-6 overflow-hidden">
               {/* Top App Summary Strip */}
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-[#F5F3EC]/8">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-border">
                 <div className="space-y-1">
-                  <div className="inline-flex items-center gap-2 text-[11px] font-mono text-[#79B99A]">
+                  <div className="inline-flex items-center gap-2 text-[11px] font-mono text-safe font-semibold">
                     <ShieldCheck className="size-3.5" />
                     <span>CALIBRATION ACTIVE · 4-ZONE PROFILE</span>
                   </div>
-                  <h3 className="font-display text-lg sm:text-xl font-semibold text-[#F5F3EC]">
+                  <h3 className="font-display text-lg sm:text-xl font-semibold text-foreground">
                     {activeTab === "overview"
                       ? "Driver Safety Overview & Session History"
                       : "Live WebRTC Optical Cockpit & Telemetry"}
@@ -200,26 +198,26 @@ export function DashboardPreviewSection() {
 
                 <div className="grid grid-cols-3 gap-4 sm:gap-6 text-left md:text-right">
                   <div>
-                    <span className="block text-[10px] font-mono uppercase text-[#9EA39B]">
+                    <span className="block text-[10px] font-mono uppercase text-muted-foreground">
                       Monitored Time
                     </span>
-                    <span className="font-mono text-base font-bold tabular-nums text-[#F5F3EC]">
+                    <span className="font-mono text-base font-bold tabular-nums text-foreground">
                       14h 22m
                     </span>
                   </div>
                   <div>
-                    <span className="block text-[10px] font-mono uppercase text-[#9EA39B]">
+                    <span className="block text-[10px] font-mono uppercase text-muted-foreground">
                       Avg PERCLOS
                     </span>
-                    <span className="font-mono text-base font-bold tabular-nums text-[#79B99A]">
+                    <span className="font-mono text-base font-bold tabular-nums text-safe">
                       3.8%
                     </span>
                   </div>
                   <div>
-                    <span className="block text-[10px] font-mono uppercase text-[#9EA39B]">
+                    <span className="block text-[10px] font-mono uppercase text-muted-foreground">
                       Critical Events
                     </span>
-                    <span className="font-mono text-base font-bold tabular-nums text-[#F5F3EC]">
+                    <span className="font-mono text-base font-bold tabular-nums text-foreground">
                       1
                     </span>
                   </div>
@@ -229,46 +227,52 @@ export function DashboardPreviewSection() {
               {activeTab === "overview" ? (
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                   {/* Left: Attention & PERCLOS Trend Chart */}
-                  <div className="lg:col-span-7 rounded-2xl border border-[#F5F3EC]/10 bg-[#141715] p-4 sm:p-5 space-y-4">
+                  <div className="lg:col-span-7 rounded-2xl border border-border bg-surface-panel p-4 sm:p-5 space-y-4">
                     <div className="flex items-center justify-between">
                       <div>
-                        <span className="text-xs font-semibold text-[#F5F3EC] block">
+                        <span className="text-xs font-semibold text-foreground block">
                           Driver Attention &amp; PERCLOS Trend
                         </span>
-                        <span className="text-[11px] text-[#9EA39B]">
+                        <span className="text-[11px] text-muted-foreground">
                           30-minute rolling session window (illustrative sample)
                         </span>
                       </div>
-                      <Activity className="size-4 text-[#E58B43]" />
+                      <Activity className="size-4 text-primary-accent" />
                     </div>
 
-                    <div className="h-56 w-full">
+                    <div className="h-56 w-full min-w-0">
                       {mounted ? (
-                        <ResponsiveContainer width="100%" height="100%">
+                        <ResponsiveContainer
+                          width="100%"
+                          height="100%"
+                          minWidth={0}
+                          minHeight={224}
+                          initialDimension={{ width: 520, height: 224 }}
+                        >
                           <AreaChart
                             data={TREND_DATA}
                             margin={{ top: 8, right: 8, left: -24, bottom: 0 }}
                           >
                             <defs>
                               <linearGradient id="dgAttentionFill" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="5%" stopColor="#79B99A" stopOpacity={0.35} />
-                                <stop offset="95%" stopColor="#79B99A" stopOpacity={0} />
+                                <stop offset="5%" stopColor="var(--safe)" stopOpacity={0.35} />
+                                <stop offset="95%" stopColor="var(--safe)" stopOpacity={0} />
                               </linearGradient>
                             </defs>
                             <CartesianGrid
-                              stroke="rgba(245,243,236,0.06)"
+                              stroke="var(--border)"
                               strokeDasharray="3 3"
                               vertical={false}
                             />
                             <XAxis
                               dataKey="time"
-                              stroke="#6E746C"
+                              stroke="var(--muted-foreground)"
                               fontSize={11}
                               tickLine={false}
                               axisLine={false}
                             />
                             <YAxis
-                              stroke="#6E746C"
+                              stroke="var(--muted-foreground)"
                               fontSize={11}
                               tickLine={false}
                               axisLine={false}
@@ -276,18 +280,18 @@ export function DashboardPreviewSection() {
                             />
                             <Tooltip
                               contentStyle={{
-                                backgroundColor: "#101211",
-                                border: "1px solid rgba(245,243,236,0.14)",
+                                backgroundColor: "var(--card)",
+                                border: "1px solid var(--border)",
                                 borderRadius: "10px",
                                 fontSize: "12px",
-                                color: "#F5F3EC",
+                                color: "var(--foreground)",
                               }}
                             />
                             <Area
                               type="monotone"
                               dataKey="attention"
                               name="Attention Score"
-                              stroke="#79B99A"
+                              stroke="var(--safe)"
                               strokeWidth={2}
                               fillOpacity={1}
                               fill="url(#dgAttentionFill)"
@@ -296,32 +300,31 @@ export function DashboardPreviewSection() {
                           </AreaChart>
                         </ResponsiveContainer>
                       ) : (
-                        <div className="h-full w-full rounded-xl bg-[#191D1A]/50" />
+                        <div className="h-full w-full rounded-xl bg-muted/50" />
                       )}
                     </div>
                   </div>
 
                   {/* Right: Calibration Profile & Recent Sessions */}
                   <div className="lg:col-span-5 space-y-4">
-                    {/* Calibration Profile Summary */}
-                    <div className="rounded-2xl border border-[#F5F3EC]/10 bg-[#141715] p-4 space-y-3">
+                    <div className="rounded-2xl border border-border bg-surface-panel p-4 space-y-3">
                       <div className="flex items-center justify-between">
-                        <span className="text-xs font-semibold text-[#F5F3EC] inline-flex items-center gap-1.5">
-                          <Compass className="size-3.5 text-[#E58B43]" />
+                        <span className="text-xs font-semibold text-foreground inline-flex items-center gap-1.5">
+                          <Compass className="size-3.5 text-primary-accent" />
                           4-Zone Calibration Profile
                         </span>
-                        <span className="text-[10px] font-mono text-[#79B99A]">VERIFIED</span>
+                        <span className="text-[10px] font-mono text-safe font-semibold">VERIFIED</span>
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         {CALIBRATION_ZONES.map((z) => (
                           <div
                             key={z.zone}
-                            className="rounded-xl border border-[#F5F3EC]/8 bg-[#101211] px-3 py-2"
+                            className="rounded-xl border border-border bg-background px-3 py-2"
                           >
-                            <span className="block text-[10px] font-mono text-[#9EA39B]">
+                            <span className="block text-[10px] font-mono text-muted-foreground">
                               {z.zone}
                             </span>
-                            <span className="text-xs font-mono font-semibold tabular-nums text-[#F5F3EC]">
+                            <span className="text-xs font-mono font-semibold tabular-nums text-foreground">
                               Thresh {z.thresh}
                             </span>
                           </div>
@@ -329,11 +332,10 @@ export function DashboardPreviewSection() {
                       </div>
                     </div>
 
-                    {/* Monitoring Session History & Drowsiness Events */}
-                    <div className="rounded-2xl border border-[#F5F3EC]/10 bg-[#141715] p-4 space-y-3">
+                    <div className="rounded-2xl border border-border bg-surface-panel p-4 space-y-3">
                       <div className="flex items-center justify-between">
-                        <span className="text-xs font-semibold text-[#F5F3EC] inline-flex items-center gap-1.5">
-                          <History className="size-3.5 text-[#9EA39B]" />
+                        <span className="text-xs font-semibold text-foreground inline-flex items-center gap-1.5">
+                          <History className="size-3.5 text-muted-foreground" />
                           Recent Sessions &amp; Events
                         </span>
                       </div>
@@ -341,13 +343,13 @@ export function DashboardPreviewSection() {
                         {SESSION_HISTORY.map((item) => (
                           <div
                             key={item.route}
-                            className="flex items-center justify-between gap-2 rounded-xl border border-[#F5F3EC]/8 bg-[#101211] px-3 py-2.5 text-xs"
+                            className="flex items-center justify-between gap-2 rounded-xl border border-border bg-background px-3 py-2.5 text-xs"
                           >
                             <div className="min-w-0">
-                              <span className="block font-medium text-[#F5F3EC] truncate">
+                              <span className="block font-medium text-foreground truncate">
                                 {item.route}
                               </span>
-                              <span className="block text-[11px] font-mono text-[#9EA39B]">
+                              <span className="block text-[11px] font-mono text-muted-foreground">
                                 {item.duration} · {item.events}
                               </span>
                             </div>
@@ -355,8 +357,8 @@ export function DashboardPreviewSection() {
                               className="shrink-0 rounded-md px-2 py-0.5 text-[10px] font-mono font-semibold"
                               style={{
                                 color: item.color,
-                                backgroundColor: "rgba(245,243,236,0.04)",
-                                border: `1px solid ${item.color}44`,
+                                backgroundColor: `color-mix(in srgb, ${item.color} 12%, transparent)`,
+                                border: `1px solid color-mix(in srgb, ${item.color} 35%, transparent)`,
                               }}
                             >
                               {item.status}
@@ -368,15 +370,14 @@ export function DashboardPreviewSection() {
                   </div>
                 </div>
               ) : (
-                /* Live Cockpit Blank Screenshot Slot */
                 <LandingMediaSlot
                   slot="dashboardLiveMonitor"
                   isHiddenPanel
                   sizes="(max-width: 1280px) 100vw, 1140px"
-                  className="aspect-[16/9] w-full rounded-2xl border border-[#F5F3EC]/10 flex items-center justify-center p-6"
+                  className="aspect-[16/9] w-full rounded-2xl border border-border flex items-center justify-center p-6"
                 >
                   <div className="relative z-10 text-center max-w-md space-y-2">
-                    <span className="inline-flex items-center gap-2 rounded-full border border-[#E58B43]/35 bg-[#E58B43]/10 px-3 py-1 text-[11px] font-mono text-[#E58B43]">
+                    <span className="inline-flex items-center gap-2 rounded-full border border-[#E58B43]/35 bg-[#E58B43]/15 px-3 py-1 text-[11px] font-mono text-[#E58B43]">
                       LIVE MONITOR SCREENSHOT SLOT
                     </span>
                     <p className="text-sm font-medium text-[#F5F3EC]">
@@ -392,8 +393,7 @@ export function DashboardPreviewSection() {
                 </LandingMediaSlot>
               )}
 
-              {/* Subtle drop-in hint for overview screenshot */}
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#F5F3EC]/8 text-[11px] font-mono text-[#6E746C]">
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border text-[11px] font-mono text-muted-foreground">
                 <span>Illustrative application preview · Replace anytime via lib/landing-media.ts</span>
                 <span>Target slot: media/{LANDING_MEDIA[activeSlot].placeholderFilename}</span>
               </div>

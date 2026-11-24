@@ -24,7 +24,7 @@ export default async function Home() {
 
   return (
     <LandingMotionProvider>
-      <div className="driveguard-landing min-h-dvh bg-[#101211] text-[#F5F3EC] flex flex-col selection:bg-[#E58B43]/25 selection:text-[#F5F3EC]">
+      <div className="min-h-dvh bg-background text-foreground flex flex-col selection:bg-primary/25 selection:text-foreground">
         <LandingNavbar user={user} />
 
         <main id="main-content" className="flex-1">

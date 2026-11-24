@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ArrowLeft, ShieldCheck } from "lucide-react";
 import { getServerSession } from "@/lib/get-session";
-import { LandingHeaderAuth } from "@/components/landing-header-auth";
+import { LandingHeaderAuth } from "@/components/landing/landing-header-auth";
 import { Logo } from "@/components/logo";
 import HelpPage from "@/app/dashboard/help/page";
 

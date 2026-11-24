@@ -18,12 +18,15 @@ export const viewport: Viewport = {
   maximumScale: 5,
   viewportFit: "cover",
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
-    { media: "(prefers-color-scheme: dark)", color: "#09090b" },
+    { media: "(prefers-color-scheme: light)", color: "#f6f4ee" },
+    { media: "(prefers-color-scheme: dark)", color: "#101211" },
   ],
 };
 
 export const metadata: Metadata = {
+  other: {
+    "color-scheme": "light dark",
+  },
   title: {
     default: "DriveGuard - Personalised AI Driver Drowsiness Detection System",
     template: "%s | DriveGuard",

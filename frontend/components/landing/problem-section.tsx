@@ -33,20 +33,19 @@ export function ProblemSection() {
   const prefersReducedMotion = useReducedMotion();
 
   return (
-    <section className="py-16 md:py-24 border-t border-[#F5F3EC]/8">
+    <section className="py-16 md:py-24 border-t border-border">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="relative overflow-hidden rounded-3xl border border-[#F5F3EC]/12 bg-[#191D1A]">
-          {/* Cinematic Driving Media Container (Blank Drop-In Slot + Dark Scrim) */}
+        <div className="relative overflow-hidden rounded-3xl border border-border bg-card shadow-xl">
+          {/* Cinematic Night Driving Media Container (Dark overlay ensures legible text in both Light & Dark modes) */}
           <LandingMediaSlot
             slot="nightFatigue"
             sizes="(max-width: 1280px) 100vw, 1280px"
             className="min-h-[440px] sm:min-h-[480px] flex flex-col justify-between p-6 sm:p-10 md:p-14"
             overlayClassName="bg-gradient-to-r from-[#101211]/95 via-[#101211]/82 to-[#101211]/65"
           >
-            {/* Subtle Night Road Horizon Accent */}
             <div
               aria-hidden="true"
-              className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-gradient-to-r from-transparent via-[#E58B43]/20 to-transparent"
+              className="pointer-events-none absolute inset-x-0 top-1/2 h-px bg-gradient-to-r from-transparent via-[#E58B43]/25 to-transparent"
             />
 
             <motion.div
@@ -83,10 +82,10 @@ export function ProblemSection() {
                       delay: prefersReducedMotion ? 0 : index * 0.1,
                       ease: [0.22, 1, 0.36, 1],
                     }}
-                    className="rounded-2xl border border-[#F5F3EC]/12 bg-[#101211]/82 backdrop-blur-md p-5 space-y-3 hover:border-[#E58B43]/35 transition-colors"
+                    className="rounded-2xl border border-white/12 bg-[#101211]/82 backdrop-blur-md p-5 space-y-3 hover:border-[#E58B43]/40 transition-colors"
                   >
                     <div className="flex items-center justify-between">
-                      <span className="inline-flex items-center justify-center size-9 rounded-xl border border-[#F5F3EC]/12 bg-[#191D1A] text-[#E58B43]">
+                      <span className="inline-flex items-center justify-center size-9 rounded-xl border border-white/12 bg-[#191D1A] text-[#E58B43]">
                         <Icon className="size-4" />
                       </span>
                       <span className="text-[10px] font-mono tracking-wider text-[#9EA39B]">

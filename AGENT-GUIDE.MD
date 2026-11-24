@@ -2,8 +2,8 @@
 
 **Project:** DriveGuard  
 **Project Type:** Personalized AI-Based Driver Drowsiness Detection and Early Warning System  
-**Primary Language:** Python 3.11  
-**Architecture:** Local-first, modular and explainable  
+**Primary Stack:** Dual-Runtime Edge AI — TypeScript / Next.js 16 (In-Browser MediaPipe WASM + `onnxruntime-web`) and Python 3.11 (FastAPI Reference Engine, Benchmarks & Hardware Bridge)  
+**Architecture:** Client-edge-first, modular, parity-verified, and explainable  
 **Repository:** michaelumoize-lab/DriveGuard  
 **Branch:** `core-engine`
 
@@ -59,6 +59,8 @@ Before implementing anything:
 
 If a feature from a future phase is needed for the current phase, explain why before introducing it.
 
+> **Dual-Runtime Note:** `docs/PHASE_BY_PHASE_PLAN.md` documents the original Python core-engine phases. The active web application (`frontend/lib/ai/`) implements those validated algorithms in-browser (MediaPipe WASM + `onnxruntime-web`), while `backend/app/` remains the Python reference engine, benchmark suite, and ESP32 hardware bridge. Both runtimes must stay aligned on thresholds, feature formulas, and alert FSM semantics.
+
 ---
 
 # 3. Repository Protection Rules
@@ -97,21 +99,26 @@ Never push, merge, delete branches or deploy without explicit approval.
 
 # 4. Architecture Rules
 
-DriveGuard must follow a LOCAL-FIRST architecture.
+DriveGuard follows a **CLIENT-EDGE-FIRST** dual-runtime architecture.
 
-The core application must operate without:
+Core drowsiness detection must run **on-device** (either in the user's browser via `frontend/lib/ai/` using WebAssembly/`onnxruntime-web`, or locally in the Python engine `backend/app/`) without:
 
-- A web account.
-- Internet access.
-- Cloud services.
-- A remote AI inference server.
-- The Next.js dashboard.
+- Uploading raw camera video to a remote AI inference server.
+- Streaming live webcam frames over the network for detection.
+- Requiring internet access for core inference once models/WASM assets are cached or bundled.
 
 ### Core architecture
 
-Camera Input → Computer Vision → Feature Extraction → Intelligence Engine → Decision Engine → Alert System.
+Both runtimes follow the same logical pipeline:
 
-The dashboard and hardware are separate interfaces/adapters.
+```text
+Camera Input → Face Landmarks (MediaPipe) + Eye Classifier (ONNX) → Feature Extraction → Temporal & Personalization Engine → Decision FSM → Alert System / Persistence
+```
+
+In the web runtime:
+- `frontend/lib/ai/` executes MediaPipe (`face_landmarker.task`) + `onnxruntime-web` (`mobilenetv3_eye.onnx`) locally in the browser and buffers telemetry/events via `OfflineEventQueue`.
+- `frontend/components/` and `frontend/app/` are strictly presentation and workspace orchestration layers.
+- `backend/app/` serves as the Python reference/parity engine, offline benchmarking suite, and optional local hardware (ESP32) bridge.
 
 ### Separation of responsibilities
 
@@ -119,27 +126,28 @@ Each module must have one clearly defined responsibility.
 
 | Module | Responsibility |
 |---|---|
-| Camera | Acquire video frames |
-| Vision | Detect facial landmarks |
-| Features | Calculate EAR, MAR, PERCLOS and other measurements |
-| Intelligence | Analyse measurements over time |
-| Personalization | Manage driver calibration |
-| Alerts | Manage warning states |
-| Hardware | Communicate with ESP32 |
-| Storage | Manage local database records |
-| Monitoring | Collect session metrics |
-| Interfaces | Expose information to local interfaces |
+| Camera | Acquire video frames (browser `getUserMedia` or Python OpenCV/UVC adapters) |
+| Vision | Detect facial landmarks (MediaPipe) and run eye-state ONNX inference |
+| Features | Calculate EAR, MAR, PERCLOS, blink kinematics, and 6-DoF head pose |
+| Intelligence | Analyse measurements over time and fuse evidence into FSM states |
+| Personalization | Manage 4-zone driver calibration and bounded adaptive baselines |
+| Alerts | Manage warning states, local audio alerts, and reason codes |
+| Hardware | Communicate with ESP32 (Python backend bridge) |
+| Storage | Manage session persistence (PostgreSQL/Neon via Prisma + `OfflineEventQueue`, or local SQLite) |
+| Monitoring | Collect runtime FPS, inference latency, and session metrics |
+| Interfaces | Expose telemetry and controls to the Next.js workspace and local APIs |
 
-Never combine the entire application into one large Python file.
+Never combine the entire application into one large file.
 
 ### Dependency direction
 
-- Camera modules must not depend on the dashboard.
-- Feature calculations must not depend on camera hardware.
-- Decision logic must not directly depend on ESP32 serial communication.
+- Camera modules must not depend on dashboard UI components.
+- Feature calculations must not depend on camera hardware or React state.
+- Decision logic must not directly depend on ESP32 serial communication or database availability.
 - Hardware communication must not determine AI decisions.
-- The AI engine must not require SQLite simply to calculate a feature.
-- Frontend code must not contain the core drowsiness detection algorithm.
+- The AI engine must not require a live database round-trip simply to calculate a frame's features.
+- **UI components (`frontend/components/`, `frontend/app/`) must not contain drowsiness detection math or direct ONNX/MediaPipe orchestration** — all browser AI logic must remain isolated inside `frontend/lib/ai/`.
+- Changes to detection thresholds, feature math, or FSM transitions in `frontend/lib/ai/` must maintain parity with `backend/app/` and pass the contract-sync and parity tests.
 
 Prefer dependency injection and composition over unnecessary inheritance.
 
@@ -329,7 +337,12 @@ Keep:
 
 Separate experimental thresholds from validated or literature-supported thresholds.
 
-Do not introduce complex deep-learning models before the simpler baseline has been implemented and evaluated.
+### Hybrid Geometry + ONNX Pipeline
+
+DriveGuard combines interpretable geometric landmarks (MediaPipe 478 Face Landmarker for EAR, MAR, PERCLOS, and 6-DoF head pose) with a lightweight neural eye-state classifier (`mobilenetv3_eye.onnx`, executed in-browser via `onnxruntime-web` and in Python via ONNX Runtime).
+
+- Geometric features remain the primary explainable backbone; the ONNX eye classifier provides secondary/complementary eye-closure confidence.
+- Do not introduce heavier deep-learning models in-browser without measuring inference latency, memory impact, and parity against the baseline.
 
 ---
 
@@ -353,6 +366,13 @@ Performance must be considered from the beginning.
 Do not claim a specific FPS or latency without measuring it.
 
 Optimize only after identifying a measurable bottleneck.
+
+### Browser Runtime (WASM / `onnxruntime-web`) Rules
+
+- Decouple full-rate camera video preview from throttled AI inference scheduling (e.g., ~10–15 FPS).
+- Bundle `.task`, `.wasm`, and `.onnx` model assets locally under `frontend/public/` so detection does not depend on external CDNs at runtime.
+- Support graceful execution-provider fallback (`webgpu` / `webgl` / `wasm`) and track per-frame inference latency in `RuntimePerformanceMetrics`.
+- Never block the React main thread with synchronous model initialization or heavy tensor allocations.
 
 ---
 
@@ -453,7 +473,8 @@ Every important feature must be tested.
 
 Use:
 
-- `pytest` for automated tests.
+- `pytest` for Python backend and contract-sync tests.
+- `npm test` (in `frontend/`) for TypeScript AI, audio, camera, security, and browser-AI parity tests.
 - Mocks for hardware-dependent unit tests.
 - Integration tests for module interactions.
 - Manual tests for real cameras and ESP32 hardware.
@@ -507,19 +528,23 @@ Never expose sensitive personal information unnecessarily.
 
 # 16. Frontend and Dashboard Rules
 
-The existing Next.js dashboard must be preserved.
+The Next.js application serves three distinct layers that must remain cleanly separated:
+
+1. **Public Website (`/`):** Product introduction, technology explanation, calibration/alert overview, and privacy transparency.
+2. **Authenticated Workspace (`/dashboard/*`, `/settings`, `/onboarding`):** Driver overview, live monitoring, 4-zone calibration, session history/replay, and secondary FYP engineering/viva tools (`hardware`, `benchmarks`, `camera-simulation`, `defense-guide`, `project-overview`).
+3. **Browser Edge AI Runtime (`frontend/lib/ai/`):** Isolated on-device inference (MediaPipe WASM + `onnxruntime-web`), feature extraction, temporal analysis, decision FSM, and `OfflineEventQueue`.
+
+The existing Next.js dashboard and test suites must be preserved.
 
 Do not:
 
-- Delete dashboard pages.
+- Delete existing dashboard pages without explicit approval.
 - Replace the frontend unnecessarily.
 - Move existing components without approval.
-- Make browser streaming mandatory.
-- Require browser authentication for local camera access.
+- Stream raw camera video to a remote AI server for detection.
+- Place drowsiness detection math or direct ONNX/MediaPipe orchestration inside React UI components (`frontend/components/`, `frontend/app/`).
 
-The eventual architecture should allow the dashboard to communicate with the local Python engine through a local API and WebSocket connection where appropriate.
-
-The dashboard is an optional interface, not the AI engine itself.
+When modifying Next.js-specific APIs or routing, follow `frontend/AGENTS.md` and verify against `frontend/node_modules/next/dist/docs/`.
 
 ---
 
