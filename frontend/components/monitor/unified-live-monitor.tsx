@@ -7,6 +7,7 @@ import { useCamera } from "@/hooks/use-camera";
 import { useLivekitTelemetryStream } from "@/hooks/use-livekit-telemetry-stream";
 import { useBrowserDetection } from "@/hooks/use-browser-detection";
 import {
+  AlertTransition,
   convertBrowserTelemetryToFrameTelemetry,
   DecisionResult,
   DetectionTelemetry,
@@ -375,6 +376,7 @@ export function UnifiedLiveMonitor({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            eventId: event.event_id,
             sessionCode,
             severity: event.new_state,
             riskScore:
@@ -484,34 +486,47 @@ export function UnifiedLiveMonitor({
     },
   });
 
-  // Handle safety alerts triggered by Browser Detection Engine
+  // Handle safety alerts triggered by Browser Detection Engine (AlertStateManager transitions only).
+  // Persistence is owned exclusively by BrowserDetectionEngine's OfflineEventQueue (single idempotent channel),
+  // so this callback handles immediate Web Audio + screen-reader announcements without duplicate POSTs.
   const handleBrowserSafetyAlert = useCallback(
-    (decision: DecisionResult, t: DetectionTelemetry) => {
+    (decision: DecisionResult, t: DetectionTelemetry, transition?: AlertTransition) => {
       const isCritical = decision.state === DrowsinessState.CRITICAL_WARNING;
       const isWarning = decision.state === DrowsinessState.DROWSINESS_WARNING;
       if (!isCritical && !isWarning) return;
 
-      const safetyEvent: SafetyEvent = {
-        event_id: `evt_browser_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        event_type: "DROWSINESS_ALERT",
-        severity: isCritical ? "CRITICAL" : "WARNING",
-        new_state: isCritical ? "CRITICAL" : "WARNING",
-        prev_state: "NORMAL",
-        timestamp: (t.timestampMs || Date.now()) / 1000,
-        metrics: {
-          ear: t.ear,
-          perclos: t.perclosPct,
-          risk_score: isCritical ? 0.95 : 0.65,
-          reasons: t.reasons,
-          pose_zone: t.poseZone,
-        },
-      };
-      handleSafetyEvent(safetyEvent);
+      const alertState = isCritical ? "CRITICAL" : "WARNING";
+      const eventId =
+        transition?.eventId ??
+        `evt_browser_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const eventTsMs = t.timestampMs || Date.now();
+
+      audioEngine?.setRiskState(alertState, eventId, eventTsMs);
+
+      if (alertState !== lastAnnouncedStateRef.current) {
+        lastAnnouncedStateRef.current = alertState;
+        if (isCritical) {
+          setSrAnnouncement(
+            "Critical drowsiness alert! Prolonged eye closure or high fatigue detected. Pull over safely."
+          );
+        } else {
+          setSrAnnouncement("Drowsiness warning: elevated eyelid closure detected.");
+        }
+      }
+
+      lastAlertTimeRef.current = Date.now();
+      if (isCritical) {
+        sessionStatsRef.current.criticalCount++;
+      } else {
+        sessionStatsRef.current.warningCount++;
+      }
     },
-    [handleSafetyEvent]
+    [audioEngine]
   );
 
   // Browser-Side AI Detection Hook (Local MediaPipe Face Landmarker & TypeScript detection)
+  // Note: isMirrored is explicitly false because raw browser webcam video pixels are NOT flipped
+  // (CSS scale-x-[-1] preview mirroring must never invert head-pose yaw coordinates).
   const {
     engineStatus: browserEngineStatus,
     telemetry: browserTelemetry,
@@ -524,7 +539,7 @@ export function UnifiedLiveMonitor({
   } = useBrowserDetection({
     driverId,
     initialProfile: (initialDriverProfile as unknown) as DriverBehaviourProfileData | null,
-    isMirrored,
+    isMirrored: false,
     targetInferenceFps: 12,
     autoStartSession: false,
     onSafetyAlert: handleBrowserSafetyAlert,
@@ -660,8 +675,13 @@ export function UnifiedLiveMonitor({
       audioEngine?.setRiskState(effectiveTelemetry.state, undefined, effectiveTelemetry.timestamp_ms);
     }
 
-    // Fallback sustained CRITICAL logging if state remains CRITICAL for > 8s without a transition packet
-    if (effectiveTelemetry.state === "CRITICAL" && activeSessionCodeRef.current) {
+    // Fallback sustained CRITICAL logging for Remote LiveKit mode only.
+    // Browser AI persistence is owned solely by AlertStateManager + OfflineEventQueue.
+    if (
+      runtimeMode === "remote" &&
+      effectiveTelemetry.state === "CRITICAL" &&
+      activeSessionCodeRef.current
+    ) {
       if (nowMs - lastAlertTimeRef.current >= 8000) {
         lastAlertTimeRef.current = nowMs;
         stats.criticalCount++;
@@ -671,6 +691,7 @@ export function UnifiedLiveMonitor({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            eventId: `evt_remote_sustained_${activeSessionCodeRef.current}_${Math.floor(nowMs / 8000)}`,
             sessionCode: activeSessionCodeRef.current,
             severity: "CRITICAL",
             riskScore: effectiveTelemetry.risk_score ?? 0.85,
@@ -678,7 +699,7 @@ export function UnifiedLiveMonitor({
             perclosPct: perclos,
             poseZone: effectiveTelemetry.pose_zone ?? "CENTER",
             reasons: effectiveTelemetry.reason_codes ?? ["CRITICAL_STATE"],
-            cascadeDecision: effectiveTelemetry.cascade?.arbitration_winner || (runtimeMode === "browser" ? "BROWSER_AI" : "GEOMETRY"),
+            cascadeDecision: effectiveTelemetry.cascade?.arbitration_winner || "GEOMETRY",
             timestampMs: nowMs,
           }),
         }).catch(() => {});
@@ -860,6 +881,7 @@ export function UnifiedLiveMonitor({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          engineType: runtimeMode === "browser" ? "BROWSER" : "PYTHON",
           mode: experimentMode,
           device: isMobileDevice ? "MOBILE_PORTRAIT" : "DESKTOP_HUD",
         }),
@@ -899,16 +921,48 @@ export function UnifiedLiveMonitor({
     setBrowserSessionCode,
   ]);
 
-  // Stop live monitoring, persist full session summary & completely clear the cockpit
+  // Stop live monitoring, persist full session summary ONCE & completely clear the cockpit
   const handleStopMonitoring = useCallback(async () => {
     audioEngine?.stopCurrentAlert();
     audioEngine?.setRiskState("NORMAL");
+
+    const code = activeSessionCodeRef.current;
+    if (code) {
+      activeSessionCodeRef.current = null;
+      setHasActiveSession(false);
+    }
+
     if (runtimeMode === "browser") {
+      // Single idempotent session finalization via OfflineEventQueue BEFORE stopping/resetting engine stats
+      if (code) {
+        queueBrowserSessionEnd(streamDurationSec);
+        toast.success(`Session ${code} ended & queued for persistence (${streamDurationSec}s).`);
+      }
       stopBrowserMonitoring();
     } else {
       stopStreamingLoop();
+      if (code) {
+        const payload = {
+          ...buildSessionEndPayload(code, streamDurationSec),
+          finalizeToken: `fin_${code}_${Date.now()}`,
+        };
+        try {
+          const res = await fetch("/api/sessions/end", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          if (res.ok) {
+            toast.success(
+              `Session ${code} ended & saved (${payload.durationSeconds}s, Avg PERCLOS ${payload.averagePerclosPct.toFixed(1)}%)`
+            );
+          }
+        } catch (_) {}
+      }
     }
+
     stopCamera();
+    resetSessionStats();
     setChartHistory([]);
     lastChartSampleMsRef.current = 0;
     setActiveFault(null);
@@ -919,31 +973,6 @@ export function UnifiedLiveMonitor({
     lastAnnouncedStateRef.current = "NORMAL";
     lastAlertTimeRef.current = 0;
     handledEventIdsRef.current.clear();
-
-    const code = activeSessionCodeRef.current;
-    if (code) {
-      activeSessionCodeRef.current = null;
-      setHasActiveSession(false);
-      const payload = buildSessionEndPayload(code, streamDurationSec);
-      resetSessionStats();
-      if (runtimeMode === "browser") {
-        queueBrowserSessionEnd(streamDurationSec);
-      }
-      try {
-        const res = await fetch("/api/sessions/end", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (res.ok) {
-          toast.success(
-            `Session ${code} ended & saved (${payload.durationSeconds}s, Avg PERCLOS ${payload.averagePerclosPct.toFixed(1)}%)`
-          );
-        }
-      } catch (_) {}
-    } else {
-      resetSessionStats();
-    }
   }, [audioEngine, runtimeMode, stopBrowserMonitoring, stopStreamingLoop, stopCamera, buildSessionEndPayload, streamDurationSec, resetSessionStats, queueBrowserSessionEnd]);
 
   // Switch between Cloud and Localhost engines: cleanly ends any active session, stops camera, and resets cockpit
@@ -1005,7 +1034,9 @@ export function UnifiedLiveMonitor({
 
   const isPortrait = viewOrientation === "portrait";
 
-  // Helper for distinct video overlay badge per authoritative safety state (never green before telemetry)
+  // Helper for distinct video overlay badge per authoritative safety & operational state
+  // Always routes through resolveEffectiveDisplayState() so uncalibrated/degraded/face-lost
+  // frames NEVER display a green NORMAL badge.
   const renderOverlayStateBadge = () => {
     if (runtimeMode === "browser") {
       if (browserEngineStatus === "idle" || browserEngineStatus === "stopped") {
@@ -1029,57 +1060,81 @@ export function UnifiedLiveMonitor({
           </Badge>
         );
       }
-      if (effectiveTelemetry) {
-        const state = (effectiveTelemetry.alert_state || effectiveTelemetry.state) as string;
-        if (state === "CRITICAL") {
-          return (
-            <Badge className="text-xs uppercase font-extrabold shadow-lg px-2.5 py-1 bg-rose-600 text-white border border-rose-300 animate-pulse gap-1.5">
-              <Flame className="size-3.5" />
-              <span>CRITICAL FATIGUE</span>
-            </Badge>
-          );
-        }
-        if (state === "WARNING") {
-          return (
-            <Badge className="text-xs uppercase font-extrabold shadow-lg px-2.5 py-1 bg-amber-500 text-slate-950 gap-1.5">
-              <AlertTriangle className="size-3.5" />
-              <span>WARNING</span>
-            </Badge>
-          );
-        }
-        if (state === "ATTENTION") {
-          return (
-            <Badge className="text-xs uppercase font-extrabold shadow-lg px-2.5 py-1 bg-amber-500/80 text-slate-950 gap-1.5">
-              <AlertTriangle className="size-3.5" />
-              <span>ATTENTION</span>
-            </Badge>
-          );
-        }
-        if (state === "MONITORING_UNAVAILABLE") {
-          return (
-            <Badge
-              variant="outline"
-              className="text-xs uppercase font-bold shadow-lg px-2.5 py-1 bg-slate-900/90 text-amber-300 border-amber-400/80 border-dashed gap-1.5"
-            >
-              <EyeOff className="size-3.5 text-amber-400" />
-              <span>MONITORING UNAVAILABLE</span>
-            </Badge>
-          );
-        }
+      if (browserEngineStatus === "error") {
         return (
-          <Badge className="text-xs uppercase font-extrabold shadow-lg px-2.5 py-1 bg-emerald-600 text-white gap-1.5">
-            <ShieldCheck className="size-3.5" />
-            <span>NORMAL</span>
+          <Badge
+            variant="outline"
+            className="text-xs uppercase font-bold shadow-lg px-2.5 py-1 bg-rose-950/90 text-rose-200 border-rose-400/80 gap-1.5"
+          >
+            <AlertTriangle className="size-3.5 text-rose-400" />
+            <span>ENGINE ERROR</span>
           </Badge>
         );
       }
     }
 
-    const effectiveState = resolveEffectiveDisplayState(telemetry, {
-      isConnected: isWsConnected,
-      isStale,
-      backendStatus: backendProcessingStatus,
-    });
+    const effectiveState = resolveEffectiveDisplayState(
+      runtimeMode === "browser" ? effectiveTelemetry : telemetry,
+      runtimeMode === "browser"
+        ? {
+            isConnected: browserEngineStatus === "running",
+            isStale: false,
+            backendStatus: effectiveProcessingStatus,
+          }
+        : {
+            isConnected: isWsConnected,
+            isStale,
+            backendStatus: backendProcessingStatus,
+          }
+    );
+
+    if (effectiveState === "ERROR") {
+      return (
+        <Badge
+          variant="outline"
+          className="text-xs uppercase font-bold shadow-lg px-2.5 py-1 bg-rose-950/90 text-rose-200 border-rose-400/80 gap-1.5"
+        >
+          <AlertTriangle className="size-3.5 text-rose-400" />
+          <span>ENGINE ERROR</span>
+        </Badge>
+      );
+    }
+
+    if (effectiveState === "CALIBRATION_REQUIRED") {
+      return (
+        <Badge
+          variant="outline"
+          className="text-xs uppercase font-bold shadow-lg px-2.5 py-1 bg-amber-950/90 text-amber-200 border-amber-400/80 gap-1.5"
+        >
+          <Compass className="size-3.5 text-amber-400" />
+          <span>CALIBRATION REQUIRED</span>
+        </Badge>
+      );
+    }
+
+    if (effectiveState === "CALIBRATING") {
+      return (
+        <Badge
+          variant="outline"
+          className="text-xs uppercase font-bold shadow-lg px-2.5 py-1 bg-sky-950/90 text-sky-200 border-sky-400/80 gap-1.5"
+        >
+          <Compass className="size-3.5 text-sky-400 animate-spin" />
+          <span>CALIBRATING…</span>
+        </Badge>
+      );
+    }
+
+    if (effectiveState === "DEGRADED") {
+      return (
+        <Badge
+          variant="outline"
+          className="text-xs uppercase font-bold shadow-lg px-2.5 py-1 bg-slate-900/90 text-amber-300 border-amber-400/80 border-dashed gap-1.5"
+        >
+          <EyeOff className="size-3.5 text-amber-400" />
+          <span>DEGRADED / NO FACE</span>
+        </Badge>
+      );
+    }
 
     if (effectiveState === "STALE") {
       return (

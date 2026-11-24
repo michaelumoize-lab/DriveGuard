@@ -25,6 +25,8 @@ export interface BufferedAlertEvent {
 
 export interface BufferedSessionSummary {
   sessionCode: string;
+  clientSessionId?: string;
+  finalizeToken?: string;
   durationSeconds: number;
   averageFps: number;
   averageLatencyMs: number;
@@ -47,7 +49,10 @@ export class OfflineEventQueue {
   private _alertQueue: BufferedAlertEvent[] = [];
   private _pendingSessionEnd: BufferedSessionSummary | null = null;
   private _isFlushing: boolean = false;
-  private _isOnline: boolean = typeof navigator !== "undefined" ? navigator.onLine : true;
+  private _isOnline: boolean =
+    typeof navigator !== "undefined" && typeof navigator.onLine === "boolean"
+      ? navigator.onLine
+      : true;
   private _authExpired: boolean = false;
   private _listeners: Set<(status: PersistenceSyncStatus, pendingCount: number) => void> = new Set();
   private _flushTimer: ReturnType<typeof setInterval> | null = null;
@@ -147,6 +152,7 @@ export class OfflineEventQueue {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              eventId: item.eventId,
               sessionCode: item.sessionCode,
               severity: item.severity,
               riskScore: item.riskScore,

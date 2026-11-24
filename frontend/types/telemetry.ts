@@ -525,6 +525,20 @@ export const REASON_CODE_CATALOG: Record<string, ReasonExplanation> = {
     subsystem: "QUALITY",
     severity: "WARNING",
   },
+  CALIBRATION_REQUIRED: {
+    code: "CALIBRATION_REQUIRED",
+    title: "Personal Calibration Required",
+    description: "Complete 4-Zone baseline calibration before drowsiness monitoring can activate.",
+    subsystem: "QUALITY",
+    severity: "WARNING",
+  },
+  CALIBRATION_IN_PROGRESS: {
+    code: "CALIBRATION_IN_PROGRESS",
+    title: "Calibration In Progress",
+    description: "Collecting personalised spatial EAR baselines across cockpit zones.",
+    subsystem: "CONTEXT",
+    severity: "INFO",
+  },
 
   // --- Transport & Session Availability Codes ---
   NO_FACE_DETECTED: {

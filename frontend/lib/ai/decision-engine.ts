@@ -16,6 +16,7 @@ import {
   DecisionResult,
   DrowsinessState,
   ExplainableReason,
+  OperationalState,
   ReasonCode,
   TemporalMetrics,
 } from "./types";
@@ -27,6 +28,8 @@ export interface ConfidenceAssessment {
   yawnViable: boolean;
   isReliable: boolean;
   isOcularAvailable?: boolean | null;
+  isCalibrated?: boolean;
+  isCalibrating?: boolean;
 }
 
 export class DecisionEngine {
@@ -125,17 +128,39 @@ export class DecisionEngine {
       yawnViable: true,
       isReliable: true,
       isOcularAvailable: true,
+      isCalibrated: true,
+      isCalibrating: false,
     };
 
     // Monotonic timestamp validation
     if (!Number.isFinite(tsMs) || tsMs < 0.0) {
-      return this._buildResult(this._prevTsMs || 0.0, this.currentState, [], null, false);
+      return this._buildResult(
+        this._prevTsMs || 0.0,
+        this.currentState,
+        [],
+        null,
+        false,
+        false,
+        conf.isCalibrated === false
+          ? OperationalState.CALIBRATION_REQUIRED
+          : OperationalState.MONITORING_ACTIVE
+      );
     }
 
     if (this._prevTsMs !== null) {
       const dtMs = tsMs - this._prevTsMs;
       if (dtMs <= 0.0) {
-        return this._buildResult(this._prevTsMs, this.currentState, [], null, false);
+        return this._buildResult(
+          this._prevTsMs,
+          this.currentState,
+          [],
+          null,
+          false,
+          false,
+          conf.isCalibrated === false
+            ? OperationalState.CALIBRATION_REQUIRED
+            : OperationalState.MONITORING_ACTIVE
+        );
       }
       if (dtMs > this.maxSamplingGapMs) {
         this._recoveryStartTsMs = null;
@@ -145,6 +170,52 @@ export class DecisionEngine {
     }
 
     this._prevTsMs = tsMs;
+
+    // STEP 0: Strict Operational Calibration Gate (Decision 2)
+    // Never emit NORMAL when calibration is in progress or missing/infeasible.
+    if (conf.isCalibrating === true) {
+      this._recoveryStartTsMs = null;
+      this._recoveryCandidateSev = null;
+      this._alertRecoveryStartTsMs = null;
+      const primary: ExplainableReason = {
+        code: ReasonCode.CALIBRATION_IN_PROGRESS,
+        message: "Guided 4-Zone baseline calibration is in progress",
+      };
+      this.currentState = DrowsinessState.INSUFFICIENT_DATA;
+      return this._buildResult(
+        tsMs,
+        DrowsinessState.INSUFFICIENT_DATA,
+        [primary],
+        primary,
+        false,
+        false,
+        OperationalState.CALIBRATING
+      );
+    }
+
+    if (conf.isCalibrated === false) {
+      this._stableFaceStartTsMs = null;
+      this._recoveryStartTsMs = null;
+      this._recoveryCandidateSev = null;
+      this._alertRecoveryStartTsMs = null;
+      this.alertActive = false;
+      this._unresolvedAlertState = null;
+      this._historicalReason = null;
+      const primary: ExplainableReason = {
+        code: ReasonCode.CALIBRATION_REQUIRED,
+        message: "Personalised 4-Zone calibration is required before drowsiness monitoring activates",
+      };
+      this.currentState = DrowsinessState.INSUFFICIENT_DATA;
+      return this._buildResult(
+        tsMs,
+        DrowsinessState.INSUFFICIENT_DATA,
+        [primary],
+        primary,
+        false,
+        false,
+        OperationalState.CALIBRATION_REQUIRED
+      );
+    }
 
     // STEP 1: Sensor & Face Viability Evaluation
     const isFaceLost = !metrics.hasFace;
@@ -182,7 +253,15 @@ export class DecisionEngine {
       };
       reasons.push(primary);
       this.currentState = candidateState;
-      return this._buildResult(tsMs, candidateState, reasons, primary, false);
+      return this._buildResult(
+        tsMs,
+        candidateState,
+        reasons,
+        primary,
+        false,
+        false,
+        OperationalState.DEGRADED
+      );
     }
 
     if (isFaceLost || isSensorUnreliable) {
@@ -200,7 +279,15 @@ export class DecisionEngine {
         metricValue: dur,
         threshold: limit,
       };
-      return this._buildResult(tsMs, this.currentState, [primary], primary, false);
+      return this._buildResult(
+        tsMs,
+        this.currentState,
+        [primary],
+        primary,
+        false,
+        false,
+        OperationalState.DEGRADED
+      );
     }
 
     if (this._stableFaceStartTsMs === null) {
@@ -536,7 +623,8 @@ export class DecisionEngine {
       reasons,
       primaryReason,
       isAlertRecovering,
-      metrics.isMirrorCheckContext
+      metrics.isMirrorCheckContext,
+      OperationalState.MONITORING_ACTIVE
     );
   }
 
@@ -546,14 +634,16 @@ export class DecisionEngine {
     reasons: ExplainableReason[],
     primaryReason: ExplainableReason | null,
     isAlertRecovering: boolean,
-    isMirrorCheckContext: boolean = false
+    isMirrorCheckContext: boolean = false,
+    operationalState: OperationalState = OperationalState.MONITORING_ACTIVE
   ): DecisionResult {
     const sev = DecisionEngine.SEVERITY_MAP[state];
     const codeStr = primaryReason ? primaryReason.code : "NONE";
-    const summaryText = `[${state} (Sev ${sev}) | ${codeStr}]`;
+    const summaryText = `[${operationalState} | ${state} (Sev ${sev}) | ${codeStr}]`;
 
     return {
       timestampMs,
+      operationalState,
       state,
       severity: sev,
       reasons,

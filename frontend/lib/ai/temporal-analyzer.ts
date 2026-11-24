@@ -26,6 +26,8 @@ export class TemporalAnalyzer {
   public noddingPitchDropDeg: number;
   public noddingMinClosureMs: number;
   public maxSamplingGapMs: number;
+  public mirrorCheckMaxMs: number;
+  public dashboardCheckMaxMs: number;
 
   private _blinks: BlinkEvent[] = [];
   private _yawns: YawnEvent[] = [];
@@ -43,12 +45,16 @@ export class TemporalAnalyzer {
     noddingPitchDropDeg?: number;
     noddingMinClosureMs?: number;
     maxSamplingGapMs?: number;
+    mirrorCheckMaxMs?: number;
+    dashboardCheckMaxMs?: number;
   }) {
     this.window60sMs = options?.window60sMs ?? 60_000.0;
     this.window30sMs = options?.window30sMs ?? 30_000.0;
     this.noddingPitchDropDeg = options?.noddingPitchDropDeg ?? -15.0;
     this.noddingMinClosureMs = options?.noddingMinClosureMs ?? 800.0;
     this.maxSamplingGapMs = options?.maxSamplingGapMs ?? 250.0;
+    this.mirrorCheckMaxMs = options?.mirrorCheckMaxMs ?? 3000.0;
+    this.dashboardCheckMaxMs = options?.dashboardCheckMaxMs ?? 2000.0;
   }
 
   public update(features: DriverFeatures): TemporalMetrics {
@@ -149,10 +155,14 @@ export class TemporalAnalyzer {
       }
     }
 
-    // Context classifications
+    // Context classifications (capped at mirrorCheckMaxMs / dashboardCheckMaxMs to match Python)
     const isMirrorCheckContext =
-      features.headPose.zone === PoseZone.LEFT_MIRROR || features.headPose.zone === PoseZone.RIGHT_MIRROR;
-    const isDashboardCheckContext = features.headPose.zone === PoseZone.DASHBOARD;
+      (features.headPose.zone === PoseZone.LEFT_MIRROR ||
+        features.headPose.zone === PoseZone.RIGHT_MIRROR) &&
+      activeOffRoadDwellMs <= this.mirrorCheckMaxMs;
+    const isDashboardCheckContext =
+      features.headPose.zone === PoseZone.DASHBOARD &&
+      activeOffRoadDwellMs <= this.dashboardCheckMaxMs;
 
     // Multi-window aggregations
     const blinks60s = this._blinks;

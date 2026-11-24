@@ -2,10 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AlertTransition,
   BrowserDetectionEngine,
   CalibrationProgress,
   DecisionResult,
-  DetectionEngineConfig,
   DetectionTelemetry,
   DriverBehaviourProfileData,
   EngineStatus,
@@ -14,11 +14,15 @@ import {
 
 export interface UseBrowserDetectionOptions {
   driverId?: string;
-  initialProfile?: DriverBehaviourProfileData | null;
+  initialProfile?: DriverBehaviourProfileData | unknown | null;
   isMirrored?: boolean;
   targetInferenceFps?: number;
   autoStartSession?: boolean;
-  onSafetyAlert?: (decision: DecisionResult, telemetry: DetectionTelemetry) => void;
+  onSafetyAlert?: (
+    decision: DecisionResult,
+    telemetry: DetectionTelemetry,
+    transition?: AlertTransition
+  ) => void;
   onCalibrationProgress?: (progress: CalibrationProgress) => void;
   onError?: (err: Error) => void;
 }
@@ -27,7 +31,7 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
   const {
     driverId = "driver_default",
     initialProfile = null,
-    isMirrored = true,
+    isMirrored = false,
     targetInferenceFps = 12,
     autoStartSession = false,
     onSafetyAlert,
@@ -64,11 +68,11 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
           setSyncStatus(t.persistenceSyncStatus);
         }
       },
-      onSafetyAlert: (decision, t) => {
+      onSafetyAlert: (decision, t, transition) => {
         if (engineRef.current?.status !== "running") return;
-        // Immediate unthrottled alert dispatch
+        // Immediate unthrottled alert dispatch (emitted only on AlertStateManager transitions/cooldowns)
         if (onSafetyAlert) {
-          onSafetyAlert(decision, t);
+          onSafetyAlert(decision, t, transition);
         }
       },
       onCalibrationProgress: (p) => {
@@ -131,7 +135,7 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
             const res = await fetch("/api/sessions/start", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({}),
+              body: JSON.stringify({ engineType: "BROWSER" }),
             });
             if (currentRunId !== runIdRef.current || !engineRef.current) {
               return;

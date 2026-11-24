@@ -3,11 +3,12 @@
  *
  * Direct, verified port of backend/app/features/feature_extractor.py.
  * Coordinates:
- * - EAR extraction (yaw-weighted and pitch-compensated)
- * - Head pose estimation (Euler angles and cockpit zone)
+ * - EAR extraction (yaw-weighted and relative-pitch-compensated)
+ * - Head pose estimation (Euler angles and cockpit zone with 1.5° hysteresis)
  * - Mouth Aspect Ratio & Yawn detection
  * - Blink kinematics state machine with sub-frame interpolation
- * - Rolling PERCLOS (P80) calculation
+ * - Rolling PERCLOS (P80) calculation using hysteretic closure
+ * - Strict PDBP profile normalization & feasibility gating (disables ocular classification when uncalibrated)
  * - Dynamic PDBP zone baseline threshold latching (prevents threshold jumps during in-flight blinks)
  */
 
@@ -15,15 +16,14 @@ import { BlinkKinematicsDetector } from "./blink-detector";
 import { extractEyeAspectRatio } from "./ear";
 import { estimateHeadPose } from "./head-pose";
 import { YawnDetector } from "./mar";
-import { computeZoneThresholds } from "./pdbp-calibration";
 import { PerclosCalculator } from "./perclos";
+import { normalizeDriverProfile, ZoneThresholdPair } from "./profile-normalizer";
 import {
   BlinkState,
   DriverBehaviourProfileData,
   DriverFeatures,
   NormalizedLandmark,
   PoseZone,
-  ZoneBaselineData,
 } from "./types";
 
 export class DriverFeatureExtractor {
@@ -32,17 +32,20 @@ export class DriverFeatureExtractor {
   public yawnDetector: YawnDetector;
 
   private _profile: DriverBehaviourProfileData | null = null;
-  private _zoneThresholds: Map<PoseZone, { closureThreshold: number; reopenThreshold: number }> = new Map();
+  private _zoneThresholds: Map<PoseZone, ZoneThresholdPair> = new Map();
   private _latchedThresholds: { closureThreshold: number; reopenThreshold: number } | null = null;
   private _currentActiveThresholds: { closureThreshold: number; reopenThreshold: number } = {
     closureThreshold: 0.20,
     reopenThreshold: 0.23,
   };
+  private _isProfileCalibrated: boolean = false;
   private _isProfileFeasible: boolean = false;
+  private _profileRejectionReason: string | null = "NO_PROFILE";
   private _isMirrored: boolean = false;
+  private _lastZone: PoseZone | null = null;
 
   constructor(options?: {
-    profile?: DriverBehaviourProfileData | null;
+    profile?: DriverBehaviourProfileData | unknown | null;
     isMirrored?: boolean;
     closureThreshold?: number;
     reopenThreshold?: number;
@@ -58,52 +61,64 @@ export class DriverFeatureExtractor {
     this.perclosCalculator = new PerclosCalculator();
     this.yawnDetector = new YawnDetector();
 
-    if (options?.profile) {
+    if (options?.profile !== undefined) {
       this.setProfile(options.profile);
     }
   }
 
-  public setProfile(profile: DriverBehaviourProfileData | null): void {
-    this._profile = profile;
-    this._zoneThresholds.clear();
+  public get isProfileCalibrated(): boolean {
+    return this._isProfileCalibrated;
+  }
 
-    if (!profile) {
-      this._isProfileFeasible = false;
+  public get isProfileFeasible(): boolean {
+    return this._isProfileFeasible;
+  }
+
+  public get profileRejectionReason(): string | null {
+    return this._profileRejectionReason;
+  }
+
+  public get activeClosureThreshold(): number {
+    return this._latchedThresholds
+      ? this._latchedThresholds.closureThreshold
+      : this._currentActiveThresholds.closureThreshold;
+  }
+
+  public get activeReopenThreshold(): number {
+    return this._latchedThresholds
+      ? this._latchedThresholds.reopenThreshold
+      : this._currentActiveThresholds.reopenThreshold;
+  }
+
+  public get normalizedProfile(): DriverBehaviourProfileData | null {
+    return this._profile;
+  }
+
+  public setProfile(rawProfile: DriverBehaviourProfileData | unknown | null): void {
+    const normalized = normalizeDriverProfile(rawProfile);
+    this._profile = normalized.profile;
+    this._zoneThresholds = normalized.zoneThresholds;
+    this._isProfileCalibrated = normalized.isCalibrated;
+    this._isProfileFeasible = normalized.isFeasible;
+    this._profileRejectionReason = normalized.rejectionReason;
+    this._latchedThresholds = null;
+
+    if (!normalized.isCalibrated || !normalized.isFeasible) {
       this._currentActiveThresholds = { closureThreshold: 0.20, reopenThreshold: 0.23 };
       this.blinkDetector.updateThresholds(0.20, 0.23);
       return;
     }
 
-    // Evaluate feasibility of CENTER baseline
-    const centerT = computeZoneThresholds(profile.centerEarMedian, profile.centerEarMadScaled);
-    this._isProfileFeasible = centerT.isFeasible;
-
-    // Cache per-zone thresholds
-    for (const zoneKey of [PoseZone.CENTER, PoseZone.LEFT_MIRROR, PoseZone.RIGHT_MIRROR, PoseZone.DASHBOARD]) {
-      const zb: ZoneBaselineData | undefined = profile.zoneBaselines[zoneKey];
-      if (zb) {
-        const t = computeZoneThresholds(zb.earMedian, zb.earMadScaled);
-        this._zoneThresholds.set(zoneKey, {
-          closureThreshold: t.closureThreshold,
-          reopenThreshold: t.reopenThreshold,
-        });
-      } else {
-        // Fallback relative to center
-        let scale = 1.0;
-        if (zoneKey === PoseZone.LEFT_MIRROR || zoneKey === PoseZone.RIGHT_MIRROR) scale = 0.92;
-        else if (zoneKey === PoseZone.DASHBOARD) scale = 0.88;
-        const t = computeZoneThresholds(profile.centerEarMedian * scale, Math.max(profile.centerEarMadScaled, 0.015));
-        this._zoneThresholds.set(zoneKey, {
-          closureThreshold: t.closureThreshold,
-          reopenThreshold: t.reopenThreshold,
-        });
-      }
-    }
-
-    if (this._isProfileFeasible) {
-      const centerZoneT = this._zoneThresholds.get(PoseZone.CENTER) || centerT;
-      this._currentActiveThresholds = { ...centerZoneT };
-      this.blinkDetector.updateThresholds(centerZoneT.closureThreshold, centerZoneT.reopenThreshold);
+    const centerZoneT = this._zoneThresholds.get(PoseZone.CENTER);
+    if (centerZoneT) {
+      this._currentActiveThresholds = {
+        closureThreshold: centerZoneT.closureThreshold,
+        reopenThreshold: centerZoneT.reopenThreshold,
+      };
+      this.blinkDetector.updateThresholds(
+        centerZoneT.closureThreshold,
+        centerZoneT.reopenThreshold
+      );
     }
   }
 
@@ -116,118 +131,139 @@ export class DriverFeatureExtractor {
     timestampMs: number,
     frameWidth: number = 640,
     frameHeight: number = 480,
-    facialTransformMatrix?: number[] | number[][] | null
+    facialTransformMatrix?: ArrayLike<number> | number[][] | null
   ): DriverFeatures {
     const hasFace = Boolean(landmarks && landmarks.length >= 468);
     const ts = Number(timestampMs);
     const aspectRatio = frameWidth > 0 && frameHeight > 0 ? frameWidth / frameHeight : 16.0 / 9.0;
 
-    // 1. Head Pose Estimation
-    let headPose = estimateHeadPose(
-      landmarks || [],
-      frameWidth,
-      frameHeight,
-      this._profile?.neutralPitchDeg ?? 0.0,
-      this._profile?.neutralYawDeg ?? 0.0,
-      this._profile?.neutralRotMat ?? null,
-      this._isMirrored,
-      null,
-      facialTransformMatrix,
-      this._profile?.calibrationIsMirrored ?? null
-    );
+    // 1. Head Pose Estimation (passes _lastZone to enable 1.5° zone hysteresis)
+    let headPose = hasFace
+      ? estimateHeadPose(
+          landmarks!,
+          frameWidth,
+          frameHeight,
+          this._profile?.neutralPitchDeg ?? 0.0,
+          this._profile?.neutralYawDeg ?? 0.0,
+          this._profile?.neutralRotMat ?? null,
+          this._isMirrored,
+          this._lastZone,
+          facialTransformMatrix,
+          this._profile?.calibrationIsMirrored ?? null
+        )
+      : {
+          pitchDeg: 0.0,
+          yawDeg: 0.0,
+          rollDeg: 0.0,
+          zone: PoseZone.UNKNOWN,
+          isLookingAway: false,
+          isValid: false,
+          relPitchDeg: 0.0,
+          relYawDeg: 0.0,
+          relRollDeg: 0.0,
+          rotMat: null,
+        };
 
-    if (!hasFace) {
-      headPose = {
-        pitchDeg: 0.0,
-        yawDeg: 0.0,
-        rollDeg: 0.0,
-        zone: PoseZone.UNKNOWN,
-        isLookingAway: false,
-        isValid: false,
-        relPitchDeg: 0.0,
-        relYawDeg: 0.0,
-        relRollDeg: 0.0,
-        rotMat: null,
-      };
-    }
+    this._lastZone = hasFace && headPose.isValid ? headPose.zone : null;
 
     // 2. Resolve Thresholds with Blink Latching
-    // Determine target thresholds for the current zone
+    const ocularClassificationAllowed = this._isProfileCalibrated && this._isProfileFeasible;
     const targetZone = headPose.isValid ? headPose.zone : PoseZone.CENTER;
     const zoneT =
       this._zoneThresholds.get(targetZone) ||
       this._zoneThresholds.get(PoseZone.CENTER) ||
       this._currentActiveThresholds;
 
-    // Latching logic: do not alter thresholds during an in-flight blink (CLOSING, CLOSED, PROLONGED_CLOSURE, REOPENING)
+    // Latching logic: do not alter thresholds during an in-flight blink
     const isBlinkInFlight =
       this.blinkDetector.state !== BlinkState.OPEN &&
       this.blinkDetector.state !== BlinkState.UNCERTAIN_GAP;
 
-    if (isBlinkInFlight) {
-      if (!this._latchedThresholds) {
-        this._latchedThresholds = { ...this._currentActiveThresholds };
+    if (ocularClassificationAllowed) {
+      if (isBlinkInFlight) {
+        if (!this._latchedThresholds) {
+          this._latchedThresholds = { ...this._currentActiveThresholds };
+        }
+      } else {
+        this._latchedThresholds = null;
+        if (
+          this._currentActiveThresholds.closureThreshold !== zoneT.closureThreshold ||
+          this._currentActiveThresholds.reopenThreshold !== zoneT.reopenThreshold
+        ) {
+          this._currentActiveThresholds = {
+            closureThreshold: zoneT.closureThreshold,
+            reopenThreshold: zoneT.reopenThreshold,
+          };
+          this.blinkDetector.updateThresholds(zoneT.closureThreshold, zoneT.reopenThreshold);
+        }
       }
     } else {
       this._latchedThresholds = null;
-      if (
-        this._currentActiveThresholds.closureThreshold !== zoneT.closureThreshold ||
-        this._currentActiveThresholds.reopenThreshold !== zoneT.reopenThreshold
-      ) {
-        this._currentActiveThresholds = { ...zoneT };
-        this.blinkDetector.updateThresholds(zoneT.closureThreshold, zoneT.reopenThreshold);
-      }
     }
 
     const effectiveClosureThreshold = this._latchedThresholds
       ? this._latchedThresholds.closureThreshold
       : this._currentActiveThresholds.closureThreshold;
 
-    // 3. EAR Feature Extraction
-    const ear = hasFace && landmarks
-      ? extractEyeAspectRatio(
-          landmarks,
-          headPose.yawDeg,
-          headPose.pitchDeg,
-          aspectRatio,
-          effectiveClosureThreshold,
-          true,
-          this._isMirrored
-        )
+    // 3. EAR Feature Extraction (uses relative pitch headPose.relPitchDeg for pitch compensation)
+    const rawEarResult =
+      hasFace && landmarks
+        ? extractEyeAspectRatio(
+            landmarks,
+            headPose.relYawDeg,
+            headPose.relPitchDeg,
+            aspectRatio,
+            effectiveClosureThreshold,
+            true,
+            this._isMirrored
+          )
+        : {
+            leftEar: 0.0,
+            rightEar: 0.0,
+            weightedEar: 0.0,
+            compensatedEar: 0.0,
+            closureThreshold: effectiveClosureThreshold,
+            isLeftClosed: false,
+            isRightClosed: false,
+            isClosed: false,
+            isValid: false,
+            rawEar: 0.0,
+            isLeftValid: false,
+            isRightValid: false,
+            isGeometricValid: false,
+          };
+
+    // Strict calibrated feasibility gate: when uncalibrated, preserve raw EAR numbers
+    // for calibration capture / diagnostics, but disable ocular closure classification.
+    const ear = ocularClassificationAllowed
+      ? rawEarResult
       : {
-          leftEar: 0.0,
-          rightEar: 0.0,
-          weightedEar: 0.0,
-          compensatedEar: 0.0,
-          closureThreshold: effectiveClosureThreshold,
+          ...rawEarResult,
           isLeftClosed: false,
           isRightClosed: false,
           isClosed: false,
           isValid: false,
-          rawEar: 0.0,
-          isLeftValid: false,
-          isRightValid: false,
-          isGeometricValid: false,
         };
 
-    // 4. Blink Kinematics Detection
+    // 4. Blink Kinematics Detection (disabled when uncalibrated)
     const blink = this.blinkDetector.update(
       ear.leftEar,
       ear.rightEar,
       ear.weightedEar,
       ts,
-      hasFace && ear.isValid,
+      hasFace && ear.isValid && ocularClassificationAllowed,
       ear.compensatedEar,
-      ear.isLeftValid,
-      ear.isRightValid
+      ear.isLeftValid && ocularClassificationAllowed,
+      ear.isRightValid && ocularClassificationAllowed
     );
 
-    // 5. PERCLOS Accumulation
+    // 5. PERCLOS Accumulation (uses hysteretic closure: ear.isClosed || blink.isEyeClosed)
+    const hystereticClosed = ear.isClosed || blink.isEyeClosed;
     const perclos = this.perclosCalculator.update(
       ts,
-      hasFace && ear.isValid ? ear.isClosed : null,
-      hasFace,
-      ear.isValid
+      hasFace && ear.isValid && ocularClassificationAllowed ? hystereticClosed : null,
+      hasFace && ocularClassificationAllowed,
+      ear.isValid && ocularClassificationAllowed
     );
 
     // 6. Mouth Aspect Ratio & Yawn Detection
@@ -240,9 +276,11 @@ export class DriverFeatureExtractor {
       headPose.isLookingAway
     );
 
-    const summaryText = hasFace
-      ? `EAR: ${ear.compensatedEar.toFixed(2)} | PERCLOS: ${perclos.perclosPct.toFixed(1)}% | Blinks: ${blink.totalBlinkCount} | Pose: ${headPose.zone} | MAR: ${mar.mar.toFixed(2)}`
-      : "FACE: LOST";
+    const summaryText = !hasFace
+      ? "FACE: LOST"
+      : !ocularClassificationAllowed
+        ? `CALIBRATION REQUIRED | Raw EAR: ${rawEarResult.weightedEar.toFixed(2)} | Pose: ${headPose.zone}`
+        : `EAR: ${ear.compensatedEar.toFixed(2)} | PERCLOS: ${perclos.perclosPct.toFixed(1)}% | Blinks: ${blink.totalBlinkCount} | Pose: ${headPose.zone} | MAR: ${mar.mar.toFixed(2)}`;
 
     return {
       timestampMs: ts,
@@ -261,5 +299,6 @@ export class DriverFeatureExtractor {
     this.perclosCalculator.reset();
     this.yawnDetector.reset();
     this._latchedThresholds = null;
+    this._lastZone = null;
   }
 }

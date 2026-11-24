@@ -190,6 +190,8 @@ export enum ReasonCode {
   ALERT_NORMAL = "ALERT_NORMAL",
   FACE_LOST = "FACE_LOST",
   SENSOR_DEGRADED = "SENSOR_DEGRADED",
+  CALIBRATION_REQUIRED = "CALIBRATION_REQUIRED",
+  CALIBRATION_IN_PROGRESS = "CALIBRATION_IN_PROGRESS",
 }
 
 export interface ExplainableReason {
@@ -201,6 +203,7 @@ export interface ExplainableReason {
 
 export interface DecisionResult {
   timestampMs: number;
+  operationalState?: OperationalState;
   state: DrowsinessState;
   severity: number;
   reasons: ExplainableReason[];
