@@ -94,8 +94,12 @@ export function OnboardingWizard({
   const [emergencyName, setEmergencyName] = useState(initialProfile.emergencyContactName || "");
   const [emergencyPhone, setEmergencyPhone] = useState(initialProfile.emergencyContactPhone || "");
 
-  const [sensitivityLevel, setSensitivityLevel] = useState<"STANDARD" | "HIGH" | "HIGHWAY">(
-    (initialProfile.sensitivityLevel as "STANDARD" | "HIGH" | "HIGHWAY") || "STANDARD"
+  const [sensitivityLevel, setSensitivityLevel] = useState<"RELAXED" | "STANDARD" | "HIGH">(
+    (initialProfile.sensitivityLevel === "RELAXED" ||
+    initialProfile.sensitivityLevel === "STANDARD" ||
+    initialProfile.sensitivityLevel === "HIGH"
+      ? initialProfile.sensitivityLevel
+      : "STANDARD")
   );
   const [audioAlerts, setAudioAlerts] = useState(initialProfile.audioAlertsEnabled ?? true);
   const [mirrorSuppression, setMirrorSuppression] = useState(initialProfile.mirrorSuppression ?? true);
@@ -105,7 +109,7 @@ export function OnboardingWizard({
     { number: 1, title: "Driver Profile", icon: User },
     { number: 2, title: "Vehicle Info", icon: Car },
     { number: 3, title: "Safety Prefs", icon: Shield },
-    { number: 4, title: "4-Zone & Blink Cal", icon: Camera },
+    { number: 4, title: "4-Zone Calibration", icon: Camera },
     { number: 5, title: "Review & Activate", icon: CheckCircle2 },
   ];
 
@@ -244,7 +248,7 @@ export function OnboardingWizard({
           {currentStep === 1 && "Personal & Driver Contact Information"}
           {currentStep === 2 && "Vehicle Details"}
           {currentStep === 3 && "AI Detection & Alert Preferences"}
-          {currentStep === 4 && "4-Zone Spatial + 2-Minute Personal Blink Rate Calibration"}
+          {currentStep === 4 && "4-Zone Driver Calibration"}
           {currentStep === 5 && "Review & System Activation"}
         </CardTitle>
         <CardDescription>
@@ -255,7 +259,7 @@ export function OnboardingWizard({
           {currentStep === 3 &&
             "Customise the sensitivity of the early warning cascade and fatigue alerts."}
           {currentStep === 4 &&
-            "Calibrate your 4 cabin gaze zones (~20s) followed by a 2-minute natural blink stream so DriveGuard adapts to your personal blink rate and duration."}
+            "Calibrate your 4 cabin gaze zones (Road Ahead, Left Mirror, Right Mirror, and Dashboard) in about 15–20 seconds."}
           {currentStep === 5 &&
             "Confirm your personal baselines and vehicle setup. You will be ready to begin live driving telemetry."}
         </CardDescription>
@@ -437,19 +441,19 @@ export function OnboardingWizard({
               >
                 {[
                   {
+                    level: "RELAXED",
+                    title: "Relaxed",
+                    desc: "Higher alert thresholds to reduce false warnings on bright routes or frequent mirror checks.",
+                  },
+                  {
                     level: "STANDARD",
-                    title: "Standard (Urban)",
-                    desc: "Balanced thresholds suitable for daily commuting and stop-and-go driving.",
+                    title: "Standard (Recommended)",
+                    desc: "Balanced provisional thresholds suitable for daily commuting and typical driving.",
                   },
                   {
                     level: "HIGH",
                     title: "High Sensitivity",
-                    desc: "Tighter eye-closure and PERCLOS thresholds for maximum responsiveness.",
-                  },
-                  {
-                    level: "HIGHWAY",
-                    title: "Highway & Night",
-                    desc: "Aggressive micro-sleep detection optimized for long, monotonous routes.",
+                    desc: "Tighter eye-closure and PERCLOS thresholds for earlier fatigue escalation.",
                   },
                 ].map((s) => (
                   <button
@@ -458,7 +462,7 @@ export function OnboardingWizard({
                     role="radio"
                     aria-checked={sensitivityLevel === s.level}
                     onClick={() =>
-                      setSensitivityLevel(s.level as "STANDARD" | "HIGH" | "HIGHWAY")
+                      setSensitivityLevel(s.level as "RELAXED" | "STANDARD" | "HIGH")
                     }
                     className={`cursor-pointer rounded-lg border p-3.5 transition-all text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                       sensitivityLevel === s.level

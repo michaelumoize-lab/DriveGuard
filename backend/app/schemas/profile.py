@@ -39,6 +39,10 @@ class DriverProfileDTO(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     version: int = Field(default=1, description="Calibration format algorithm version")
+    engine_type: str = Field(default="PYTHON", description="Engine ownership tag: PYTHON or BROWSER")
+    profile_version: int = Field(default=1, description="Server-authoritative monotonic profile version", ge=1)
+    profile_uuid: Optional[str] = Field(default=None, description="Unique profile revision UUID")
+    content_hash: Optional[str] = Field(default=None, description="Canonical server-computed SHA-256 profile hash")
     driver_id: str = Field(default="driver_default", description="Unique driver identifier")
     calibrated_at: Optional[str] = Field(
         default=None, description="ISO timestamp of calibration completion"

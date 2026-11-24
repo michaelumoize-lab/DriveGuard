@@ -536,11 +536,20 @@ export function UnifiedLiveMonitor({
     return convertBrowserTelemetryToFrameTelemetry(browserTelemetry);
   }, [browserTelemetry]);
 
-  // Unified telemetry & processing state
-  const effectiveTelemetry = runtimeMode === "browser" ? convertedBrowserTelemetry : telemetry;
-  const effectiveProcessingStatus = runtimeMode === "browser"
-    ? (browserEngineStatus === "running" ? "processing" : browserEngineStatus === "initializing" ? "connecting" : "idle")
-    : backendProcessingStatus;
+  // Unified telemetry & processing state (always cleared once camera session is stopped/idle)
+  const isSessionLive = cameraState === "active" || cameraState === "paused";
+  const effectiveTelemetry = isSessionLive
+    ? runtimeMode === "browser"
+      ? convertedBrowserTelemetry
+      : telemetry
+    : null;
+  const effectiveLatencyDiagnostics =
+    isSessionLive && runtimeMode === "remote" ? latencyDiagnostics : null;
+  const effectiveProcessingStatus = !isSessionLive
+    ? "idle"
+    : runtimeMode === "browser"
+      ? (browserEngineStatus === "running" ? "processing" : browserEngineStatus === "initializing" ? "connecting" : "idle")
+      : backendProcessingStatus;
 
   // Sync browser session code
   useEffect(() => {
@@ -901,10 +910,15 @@ export function UnifiedLiveMonitor({
     }
     stopCamera();
     setChartHistory([]);
+    lastChartSampleMsRef.current = 0;
+    setActiveFault(null);
     setCapturedSnapshot(null);
+    setIsSnapshotOpen(false);
     setShowInlineCalibration(false);
     setSrAnnouncement("");
     lastAnnouncedStateRef.current = "NORMAL";
+    lastAlertTimeRef.current = 0;
+    handledEventIdsRef.current.clear();
 
     const code = activeSessionCodeRef.current;
     if (code) {
@@ -1541,7 +1555,7 @@ export function UnifiedLiveMonitor({
                 onSwitchRuntimeMode={handleSwitchRuntimeMode}
                 backendType={backendType}
                 onSwitchBackend={handleSwitchBackend}
-                latencyDiagnostics={latencyDiagnostics}
+                latencyDiagnostics={effectiveLatencyDiagnostics}
                 isStale={isStale}
                 isAudioUnlocked={isAudioUnlocked}
                 isMuted={audioMuted}

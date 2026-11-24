@@ -44,15 +44,21 @@ export default async function ProjectOverviewPage() {
   // Fetch user-scoped summary counts for the dashboard overview
   const [
     totalSessionsCount,
-    driverProfile,
+    driverProfiles,
     warningAlertsCount,
     criticalAlertsCount,
   ] = await Promise.all([
     prisma.drivingSession.count({ where: { userId } }),
-    prisma.driverProfile.findUnique({ where: { userId } }),
+    prisma.driverProfile.findMany({ where: { userId } }),
     prisma.drowsinessAlert.count({ where: { severity: "WARNING", session: { userId } } }),
     prisma.drowsinessAlert.count({ where: { severity: "CRITICAL", session: { userId } } }),
   ]);
+
+  const driverProfile =
+    driverProfiles.find((p) => p.engineType === "PYTHON" && p.isCalibrated) ??
+    driverProfiles.find((p) => p.isCalibrated) ??
+    driverProfiles[0] ??
+    null;
 
   const calibratedZonesCount = driverProfile?.zoneBaselines
     ? Object.keys(driverProfile.zoneBaselines as Record<string, unknown>).length

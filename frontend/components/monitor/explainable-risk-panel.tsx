@@ -40,6 +40,7 @@ export const ExplainableRiskPanel = React.memo(function ExplainableRiskPanel({
       ? nonNormalReasons.filter((r) => !primaryReasons.includes(r))
       : nonNormalReasons.filter((r) => r.subsystem === "QUALITY");
 
+  const hasTimingTelemetry = Boolean(telemetry || latencyDiagnostics);
   const queueMs =
     latencyDiagnostics?.queue_latency_ms ?? telemetry?.timing?.queue_latency_ms ?? 0;
   const inferMs =
@@ -209,11 +210,15 @@ export const ExplainableRiskPanel = React.memo(function ExplainableRiskPanel({
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono tabular-nums">
             <div className="p-2 rounded-lg bg-muted/40 border border-border/60">
               <span className="text-[10px] text-muted-foreground block">Ingest Queue</span>
-              <span className="font-semibold text-foreground">{queueMs.toFixed(1)} ms</span>
+              <span className="font-semibold text-foreground">
+                {hasTimingTelemetry ? `${queueMs.toFixed(1)} ms` : "—"}
+              </span>
             </div>
             <div className="p-2 rounded-lg bg-muted/40 border border-border/60">
               <span className="text-[10px] text-muted-foreground block">Engine Infer</span>
-              <span className="font-semibold text-foreground">{inferMs.toFixed(1)} ms</span>
+              <span className="font-semibold text-foreground">
+                {hasTimingTelemetry ? `${inferMs.toFixed(1)} ms` : "—"}
+              </span>
             </div>
             <div className="p-2 rounded-lg bg-muted/40 border border-border/60">
               <span className="text-[10px] text-muted-foreground block">Signal Conf.</span>

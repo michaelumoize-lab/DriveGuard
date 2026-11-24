@@ -59,7 +59,9 @@ async function proxyToFastApi(
     // profile from PostgreSQL to FastAPI so cold-started workers immediately have calibrated baselines.
     if (subPath === "livekit/token" || subPath === "sessions") {
       try {
-        const dbProfile = await prisma.driverProfile.findUnique({ where: { userId } });
+        const dbProfile = await prisma.driverProfile.findUnique({
+          where: { userId_engineType: { userId, engineType: "PYTHON" } },
+        });
         if (dbProfile && dbProfile.isCalibrated) {
           const syncUrl = `${primaryBase}/api/v1/profiles`;
           const fastApiProfileDto = buildDriverProfileDtoPayload(

@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Activity } from "lucide-react";
 
 interface KinematicsOscilloscopeProps {
-  currentEar: number;
+  currentEar: number | null;
   closureThreshold?: number;
   dEarDt?: number;
   rcr?: number;
@@ -90,6 +90,13 @@ export function KinematicsOscilloscope({
   }, [closureThreshold]);
 
   useEffect(() => {
+    if (currentEar === null) {
+      earHistoryRef.current = [];
+      derivHistoryRef.current = [];
+      drawFrame();
+      return;
+    }
+
     earHistoryRef.current.push(currentEar);
     if (earHistoryRef.current.length > maxPoints) {
       earHistoryRef.current.shift();
@@ -134,17 +141,19 @@ export function KinematicsOscilloscope({
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <Badge variant="outline" className="text-[11px] font-mono tabular-nums text-cyan-400 border-cyan-400/30">
-            EAR {currentEar.toFixed(3)}
+            EAR {currentEar !== null ? currentEar.toFixed(3) : "—"}
           </Badge>
           <Badge
             variant="outline"
             className={`text-[11px] font-mono tabular-nums ${
-              rcr !== undefined && rcr < 0.85
-                ? "text-amber-400 border-amber-400/40 bg-amber-400/10"
-                : "text-emerald-400 border-emerald-400/30"
+              currentEar === null
+                ? "text-muted-foreground border-border"
+                : rcr !== undefined && rcr < 0.85
+                  ? "text-amber-400 border-amber-400/40 bg-amber-400/10"
+                  : "text-emerald-400 border-emerald-400/30"
             }`}
           >
-            RCR {rcr !== undefined ? rcr.toFixed(2) : "1.00"}
+            RCR {currentEar === null ? "—" : rcr !== undefined ? rcr.toFixed(2) : "1.00"}
           </Badge>
         </div>
       </div>

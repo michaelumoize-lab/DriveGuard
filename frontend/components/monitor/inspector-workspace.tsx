@@ -227,8 +227,12 @@ export function InspectorWorkspace({
           <LiveTelemetryChart data={chartHistory} />
 
           <KinematicsOscilloscope
-            currentEar={telemetry?.eye_metrics?.ear_raw ?? 0.285}
-            closureThreshold={telemetry?.comparison?.personalised_threshold ?? 0.2}
+            currentEar={telemetry ? (telemetry.eye_metrics?.ear_raw ?? null) : null}
+            closureThreshold={
+              telemetry?.comparison?.personalised_threshold ??
+              telemetry?.eye_metrics?.ear_closure_threshold ??
+              0.2
+            }
             dEarDt={telemetry?.eye_metrics?.blink_rcr ? -0.15 : 0}
             rcr={telemetry?.eye_metrics?.blink_rcr ?? undefined}
             isActive={cameraState === "active" && activeTab === "signals"}
@@ -238,7 +242,8 @@ export function InspectorWorkspace({
             pitchDeg={telemetry?.head_pose?.pitch_deg ?? 0}
             yawDeg={telemetry?.head_pose?.yaw_deg ?? 0}
             rollDeg={telemetry?.head_pose?.roll_deg ?? 0}
-            zone={telemetry?.comparison?.personalised_zone ?? "CENTER"}
+            zone={telemetry?.comparison?.personalised_zone ?? telemetry?.pose_zone ?? "CENTER"}
+            hasTelemetry={Boolean(telemetry)}
           />
         </TabsContent>
 

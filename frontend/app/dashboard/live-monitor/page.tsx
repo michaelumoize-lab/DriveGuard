@@ -53,9 +53,20 @@ export default async function LiveMonitorPage({ searchParams }: LiveMonitorPageP
   const session = await getServerSession();
   const userId = session?.user?.id;
 
+  const targetEngineType = initialRuntimeMode === "remote" ? "PYTHON" : "BROWSER";
+
   const [userProfile, driverProfile] = await Promise.all([
     userId ? getOrCreateUserProfile(userId) : null,
-    userId ? prisma.driverProfile.findUnique({ where: { userId } }) : null,
+    userId
+      ? prisma.driverProfile.findUnique({
+          where: {
+            userId_engineType: {
+              userId,
+              engineType: targetEngineType,
+            },
+          },
+        })
+      : null,
   ]);
 
   const initialDriverProfile: InitialDriverProfileData | null = driverProfile
@@ -77,7 +88,7 @@ export default async function LiveMonitorPage({ searchParams }: LiveMonitorPageP
 
   const initialPreferences: InitialUserPreferencesData = {
     audioAlertsEnabled: userProfile?.audioAlertsEnabled ?? true,
-    sensitivityLevel: userProfile?.sensitivityLevel ?? "MEDIUM",
+    sensitivityLevel: userProfile?.sensitivityLevel ?? "STANDARD",
     mirrorSuppression: userProfile?.mirrorSuppression ?? true,
     wearsGlasses: userProfile?.wearsGlasses ?? false,
   };

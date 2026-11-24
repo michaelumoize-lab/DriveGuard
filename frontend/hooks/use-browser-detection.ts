@@ -44,6 +44,7 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
   const engineRef = useRef<BrowserDetectionEngine | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const lastStateUpdateMsRef = useRef<number>(0);
+  const runIdRef = useRef<number>(0);
 
   // Initialize engine instance
   useEffect(() => {
@@ -53,6 +54,8 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
       isMirrored,
       targetInferenceFps,
       onTelemetry: (t) => {
+        // Ignore stray telemetry emitted after monitoring has stopped
+        if (engineRef.current?.status !== "running") return;
         // Throttle React state updates to ~10 Hz to prevent React re-render churn
         const now = performance.now();
         if (now - lastStateUpdateMsRef.current >= 90) {
@@ -62,12 +65,14 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
         }
       },
       onSafetyAlert: (decision, t) => {
+        if (engineRef.current?.status !== "running") return;
         // Immediate unthrottled alert dispatch
         if (onSafetyAlert) {
           onSafetyAlert(decision, t);
         }
       },
       onCalibrationProgress: (p) => {
+        if (engineRef.current?.status !== "running") return;
         setCalibration(p);
         if (onCalibrationProgress) {
           onCalibrationProgress(p);
@@ -104,11 +109,20 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
   const startMonitoring = useCallback(
     async (videoElement: HTMLVideoElement) => {
       if (!engineRef.current) return;
+      const currentRunId = ++runIdRef.current;
       videoRef.current = videoElement;
+      setTelemetry(null);
+      setCalibration(null);
+      lastStateUpdateMsRef.current = 0;
 
       try {
         setEngineStatus("initializing");
         await engineRef.current.initialize();
+
+        // Abort if stopMonitoring() was called while model initialization was in flight
+        if (currentRunId !== runIdRef.current || !engineRef.current) {
+          return;
+        }
 
         // If autoStartSession is enabled, request session code from Next.js API
         let activeCode: string | null = null;
@@ -119,6 +133,9 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({}),
             });
+            if (currentRunId !== runIdRef.current || !engineRef.current) {
+              return;
+            }
             if (res.ok) {
               const data = await res.json();
               activeCode = data.sessionCode;
@@ -130,9 +147,16 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
           }
         }
 
+        if (currentRunId !== runIdRef.current || !engineRef.current) {
+          return;
+        }
+
         engineRef.current.start(videoElement);
         setEngineStatus("running");
       } catch (err) {
+        if (currentRunId !== runIdRef.current) {
+          return;
+        }
         setEngineStatus("error");
         if (onError) onError(err instanceof Error ? err : new Error(String(err)));
       }
@@ -155,11 +179,15 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
   }, []);
 
   const stopMonitoring = useCallback(() => {
+    runIdRef.current++;
     if (engineRef.current) {
       engineRef.current.stop();
-      setEngineStatus("stopped");
-      setSessionCode(null);
     }
+    setEngineStatus("stopped");
+    setTelemetry(null);
+    setCalibration(null);
+    setSessionCode(null);
+    lastStateUpdateMsRef.current = 0;
   }, []);
 
   const startCalibration = useCallback(() => {

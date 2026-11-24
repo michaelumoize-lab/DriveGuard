@@ -5,9 +5,9 @@ import { GuidedCalibrationWizard } from "@/components/calibration/guided-calibra
 import { InitialDriverProfileData } from "@/components/monitor/unified-live-monitor";
 
 export const metadata = {
-  title: "4-Zone Calibration Wizard | DriveGuard",
+  title: "Driver Calibration | DriveGuard",
   description:
-    "Guided 4-Zone Personalised Baseline Calibration with real-time target-acquisition spatial gating.",
+    "2-step guided 4-zone calibration to personalize DriveGuard to your eyes and driving posture.",
 };
 
 export const dynamic = "force-dynamic";
@@ -17,7 +17,9 @@ export default async function CalibrationPage() {
   const userId = session?.user?.id;
 
   const driverProfile = userId
-    ? await prisma.driverProfile.findUnique({ where: { userId } })
+    ? await prisma.driverProfile.findUnique({
+        where: { userId_engineType: { userId, engineType: "PYTHON" } },
+      })
     : null;
 
   const initialDriverProfile: InitialDriverProfileData | null = driverProfile
@@ -39,12 +41,13 @@ export default async function CalibrationPage() {
 
   return (
     <div className="p-4 sm:p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
-      <div>
-        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
-          4-Zone Personal Baseline Calibration
+      <div className="space-y-1">
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground text-balance">
+          Driver Calibration
         </h1>
-        <p className="text-xs sm:text-sm text-muted-foreground">
-          Calibrate your personal Eye Aspect Ratio (EAR) baselines across CENTER, LEFT MIRROR, RIGHT MIRROR, and DASHBOARD.
+        <p className="text-xs sm:text-sm text-muted-foreground max-w-2xl">
+          Personalize DriveGuard to your eyes and driving posture across 4 views (Road Ahead,
+          Left Mirror, Right Mirror, and Dashboard) in about 15–20 seconds.
         </p>
       </div>
 

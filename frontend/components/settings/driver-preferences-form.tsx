@@ -71,8 +71,12 @@ export function DriverPreferencesForm({
   const [emergencyContactPhone, setEmergencyContactPhone] = useState(
     initialProfile.emergencyContactPhone || ""
   );
-  const [sensitivityLevel, setSensitivityLevel] = useState<"STANDARD" | "HIGH" | "HIGHWAY">(
-    (initialProfile.sensitivityLevel as "STANDARD" | "HIGH" | "HIGHWAY") || "STANDARD"
+  const [sensitivityLevel, setSensitivityLevel] = useState<"RELAXED" | "STANDARD" | "HIGH">(
+    (initialProfile.sensitivityLevel === "RELAXED" ||
+    initialProfile.sensitivityLevel === "STANDARD" ||
+    initialProfile.sensitivityLevel === "HIGH"
+      ? initialProfile.sensitivityLevel
+      : "STANDARD")
   );
   const [audioAlertsEnabled, setAudioAlertsEnabled] = useState(
     initialProfile.audioAlertsEnabled ?? true
@@ -180,7 +184,7 @@ export function DriverPreferencesForm({
                 </p>
               </div>
               <Badge variant="outline" className="text-xs font-mono font-medium">
-                {sensitivityLevel === "HIGH" ? "HIGH" : sensitivityLevel === "HIGHWAY" ? "RELAXED" : "STANDARD"}
+                {sensitivityLevel}
               </Badge>
             </div>
 
@@ -190,10 +194,10 @@ export function DriverPreferencesForm({
                 min={0}
                 max={2}
                 step={1}
-                value={[sensitivityLevel === "HIGHWAY" ? 0 : sensitivityLevel === "HIGH" ? 2 : 1]}
+                value={[sensitivityLevel === "RELAXED" ? 0 : sensitivityLevel === "HIGH" ? 2 : 1]}
                 onValueChange={(vals) => {
                   const val = vals[0];
-                  if (val === 0) setSensitivityLevel("HIGHWAY");
+                  if (val === 0) setSensitivityLevel("RELAXED");
                   else if (val === 2) setSensitivityLevel("HIGH");
                   else setSensitivityLevel("STANDARD");
                 }}
@@ -201,7 +205,7 @@ export function DriverPreferencesForm({
                 className="w-full cursor-pointer py-1"
               />
               <div className="flex justify-between text-[11px] font-medium text-muted-foreground px-0.5">
-                <span className={sensitivityLevel === "HIGHWAY" ? "text-primary font-bold" : ""}>
+                <span className={sensitivityLevel === "RELAXED" ? "text-primary font-bold" : ""}>
                   Relaxed
                 </span>
                 <span className={sensitivityLevel === "STANDARD" ? "text-primary font-bold" : ""}>
@@ -220,22 +224,22 @@ export function DriverPreferencesForm({
             >
               {[
                 {
-                  level: "HIGHWAY" as const,
+                  level: "RELAXED" as const,
                   title: "Relaxed",
-                  badge: "Daytime & Highway",
-                  desc: "For daytime highway driving with sunglasses or frequent mirror checks. Reduces false blink alerts.",
+                  badge: "Fewer Alerts",
+                  desc: "Wider provisional alert margins to reduce false blink warnings during frequent mirror checks.",
                 },
                 {
                   level: "STANDARD" as const,
                   title: "Standard",
                   badge: "Recommended",
-                  desc: "Balanced thresholds for everyday commuting with dual-confirmation closure and dynamic PERCLOS.",
+                  desc: "Balanced provisional thresholds for everyday driving with dual-confirmation closure and PERCLOS.",
                 },
                 {
                   level: "HIGH" as const,
                   title: "High Sensitivity",
-                  badge: "Night & Fleet",
-                  desc: "For night driving or high-risk commercial fleets. Alerts early on subtle eyelid narrowing.",
+                  badge: "Earlier Escalation",
+                  desc: "Tighter provisional eye-closure and PERCLOS thresholds for earlier fatigue escalation.",
                 },
               ].map((s) => {
                 const selected = sensitivityLevel === s.level;

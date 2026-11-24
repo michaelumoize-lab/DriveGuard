@@ -418,6 +418,50 @@ async function runTestSuite() {
     assert(frame.eye_metrics?.ear_raw === 0.19, "Telemetry adapter preserves raw EAR");
     assert(frame.eye_metrics?.perclos_pct === 15.5, "Telemetry adapter preserves PERCLOS");
     assert(frame.runtime_mode === "browser", "Telemetry adapter marks runtime_mode as browser");
+
+    // Verify BrowserDetectionEngine.stop() clears cached telemetry & performance metrics
+    const { BrowserDetectionEngine } = await import("../lib/ai/browser-detection-engine");
+    const browserEngine = new BrowserDetectionEngine({ driverId: "driver_test" });
+    (browserEngine as unknown as {
+      _latestTelemetry: typeof mockTelemetry | null;
+      _currentInferenceFps: number;
+      _latencySamples: number[];
+      _lastLatencyMs: number;
+      _totalFrames: number;
+      _droppedFrames: number;
+    })._latestTelemetry = mockTelemetry;
+    (browserEngine as unknown as {
+      _currentInferenceFps: number;
+      _latencySamples: number[];
+      _lastLatencyMs: number;
+      _totalFrames: number;
+      _droppedFrames: number;
+    })._currentInferenceFps = 14.5;
+    (browserEngine as unknown as { _latencySamples: number[] })._latencySamples = [12, 18];
+    (browserEngine as unknown as { _lastLatencyMs: number })._lastLatencyMs = 18;
+    (browserEngine as unknown as { _totalFrames: number })._totalFrames = 42;
+    (browserEngine as unknown as { _droppedFrames: number })._droppedFrames = 3;
+
+    assert(
+      browserEngine.retrieveCurrentState() !== null,
+      "BrowserDetectionEngine holds latest telemetry while session is active"
+    );
+
+    browserEngine.stop();
+
+    assert(
+      browserEngine.retrieveCurrentState() === null,
+      "BrowserDetectionEngine.stop() clears latest telemetry reading"
+    );
+    const clearedMetrics = browserEngine.retrievePerformanceMetrics();
+    assert(
+      clearedMetrics.inferenceFps === 0 &&
+        clearedMetrics.averageInferenceLatencyMs === 0 &&
+        clearedMetrics.totalFramesProcessed === 0 &&
+        clearedMetrics.droppedFrames === 0,
+      "BrowserDetectionEngine.stop() resets FPS, latency, and frame counters to 0"
+    );
+    browserEngine.dispose();
   }
 
   console.log("\n======================================================================");

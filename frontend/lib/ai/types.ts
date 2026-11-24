@@ -151,6 +151,20 @@ export interface DriverFeatures {
   summaryText: string;
 }
 
+export type EngineType = "BROWSER" | "PYTHON";
+
+/**
+ * Operational readiness state for the AI runtime, strictly separated from
+ * drowsiness severity (DrowsinessState).
+ */
+export enum OperationalState {
+  CALIBRATION_REQUIRED = "CALIBRATION_REQUIRED",
+  CALIBRATING = "CALIBRATING",
+  MONITORING_ACTIVE = "MONITORING_ACTIVE",
+  DEGRADED = "DEGRADED",
+  ERROR = "ERROR",
+}
+
 export enum DrowsinessState {
   NORMAL = "NORMAL",
   ATTENTION = "ATTENTION",
@@ -239,6 +253,10 @@ export interface ZoneBaselineData {
 
 export interface DriverBehaviourProfileData {
   driverId: string;
+  engineType?: EngineType;
+  profileVersion?: number;
+  profileUuid?: string;
+  contentHash?: string | null;
   calibrationMode: string;
   centerEarMedian: number;
   centerEarMadScaled: number;
@@ -294,6 +312,8 @@ export interface DetectionTelemetry {
   frameId: number;
   timestampMs: number;
   hasFace: boolean;
+  operationalState?: OperationalState;
+  engineType?: EngineType;
   alertState: DrowsinessState;
   severity: number;
   primaryReason: string;
@@ -302,11 +322,16 @@ export interface DetectionTelemetry {
   rawEar: number;
   leftEar: number;
   rightEar: number;
+  earClosureThreshold?: number;
   perclosPct: number;
   effectivePerclosPct: number | null;
+  perclosCoveragePct?: number;
+  perclosReliable?: boolean;
   isClosed: boolean;
   closureDurationMs: number;
   blinkCount: number;
+  blinkCount60s?: number;
+  totalBlinkCount?: number;
   recentBlinkDurationMs: number | null;
   recentBlinkRcr: number | null;
   mar: number;

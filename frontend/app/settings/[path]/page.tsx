@@ -33,12 +33,18 @@ export default async function SettingsPage({
     );
   }
 
-  const [userProfile, driverProfile] = await Promise.all([
+  const [userProfile, driverProfiles] = await Promise.all([
     getOrCreateUserProfile(session.user.id),
     prisma.driverProfile
-      .findUnique({ where: { userId: session.user.id } })
-      .catch(() => null),
+      .findMany({ where: { userId: session.user.id } })
+      .catch(() => []),
   ]);
+
+  const driverProfile =
+    driverProfiles.find((p) => p.engineType === "PYTHON" && p.isCalibrated) ??
+    driverProfiles.find((p) => p.isCalibrated) ??
+    driverProfiles[0] ??
+    null;
 
   return (
     <HydrationBoundary state={dehydrate(queryClient)}>

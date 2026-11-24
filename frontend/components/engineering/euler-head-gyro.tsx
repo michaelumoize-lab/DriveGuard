@@ -9,6 +9,7 @@ interface EulerHeadGyroProps {
   yawDeg?: number;
   rollDeg?: number;
   zone?: string;
+  hasTelemetry?: boolean;
   className?: string;
 }
 
@@ -17,12 +18,16 @@ export function EulerHeadGyro({
   yawDeg = 0,
   rollDeg = 0,
   zone = "CENTER",
+  hasTelemetry = true,
   className = "",
 }: EulerHeadGyroProps) {
-  const yawOffsetPx = Math.max(-48, Math.min(48, (yawDeg / 40) * 48));
-  const pitchOffsetPx = Math.max(-36, Math.min(36, (-pitchDeg / 30) * 36));
+  const yawOffsetPx = hasTelemetry ? Math.max(-48, Math.min(48, (yawDeg / 40) * 48)) : 0;
+  const pitchOffsetPx = hasTelemetry ? Math.max(-36, Math.min(36, (-pitchDeg / 30) * 36)) : 0;
 
   const zoneColor = useMemo(() => {
+    if (!hasTelemetry) {
+      return "text-muted-foreground border-border bg-muted/40";
+    }
     switch (zone) {
       case "LEFT_MIRROR":
         return "text-sky-400 border-sky-400/40 bg-sky-400/10";
@@ -33,7 +38,7 @@ export function EulerHeadGyro({
       default:
         return "text-emerald-400 border-emerald-400/40 bg-emerald-400/10";
     }
-  }, [zone]);
+  }, [hasTelemetry, zone]);
 
   return (
     <div className={`p-4 rounded-2xl bg-card border border-border/80 shadow-xs space-y-3 ${className}`}>
@@ -45,7 +50,7 @@ export function EulerHeadGyro({
           </span>
         </div>
         <Badge variant="outline" className={`text-[10px] font-mono ${zoneColor}`}>
-          {zone}
+          {hasTelemetry ? zone : "STANDBY"}
         </Badge>
       </div>
 
@@ -64,12 +69,20 @@ export function EulerHeadGyro({
 
           <div
             style={{
-              transform: `translate(${yawOffsetPx}px, ${pitchOffsetPx}px) rotate(${rollDeg}deg)`,
+              transform: `translate(${yawOffsetPx}px, ${pitchOffsetPx}px) rotate(${hasTelemetry ? rollDeg : 0}deg)`,
             }}
-            className="relative size-10 rounded-full border-2 border-primary bg-primary/20 shadow-lg flex items-center justify-center text-primary transition-transform duration-100 ease-out motion-reduce:transition-none"
+            className={`relative size-10 rounded-full border-2 shadow-lg flex items-center justify-center transition-transform duration-100 ease-out motion-reduce:transition-none ${
+              hasTelemetry
+                ? "border-primary bg-primary/20 text-primary"
+                : "border-muted-foreground/40 bg-muted/20 text-muted-foreground"
+            }`}
           >
             <Eye className="size-4" />
-            <div className="absolute -top-1 w-1.5 h-1.5 bg-primary rounded-full" />
+            <div
+              className={`absolute -top-1 w-1.5 h-1.5 rounded-full ${
+                hasTelemetry ? "bg-primary" : "bg-muted-foreground/50"
+              }`}
+            />
           </div>
         </div>
 
@@ -78,10 +91,10 @@ export function EulerHeadGyro({
             <span className="text-[11px] text-muted-foreground">Yaw (turn)</span>
             <span
               className={`font-mono font-bold tabular-nums ${
-                Math.abs(yawDeg) > 20 ? "text-sky-400" : "text-foreground"
+                hasTelemetry && Math.abs(yawDeg) > 20 ? "text-sky-400" : "text-foreground"
               }`}
             >
-              {yawDeg > 0 ? `+${yawDeg.toFixed(1)}°` : `${yawDeg.toFixed(1)}°`}
+              {!hasTelemetry ? "—" : yawDeg > 0 ? `+${yawDeg.toFixed(1)}°` : `${yawDeg.toFixed(1)}°`}
             </span>
           </div>
 
@@ -89,17 +102,17 @@ export function EulerHeadGyro({
             <span className="text-[11px] text-muted-foreground">Pitch (nod)</span>
             <span
               className={`font-mono font-bold tabular-nums ${
-                pitchDeg < -12 ? "text-amber-400" : "text-foreground"
+                hasTelemetry && pitchDeg < -12 ? "text-amber-400" : "text-foreground"
               }`}
             >
-              {pitchDeg > 0 ? `+${pitchDeg.toFixed(1)}°` : `${pitchDeg.toFixed(1)}°`}
+              {!hasTelemetry ? "—" : pitchDeg > 0 ? `+${pitchDeg.toFixed(1)}°` : `${pitchDeg.toFixed(1)}°`}
             </span>
           </div>
 
           <div className="p-2 rounded-lg bg-muted/25 border border-border/60 flex items-center justify-between gap-2">
             <span className="text-[11px] text-muted-foreground">Roll (tilt)</span>
             <span className="font-mono font-bold tabular-nums text-foreground">
-              {rollDeg > 0 ? `+${rollDeg.toFixed(1)}°` : `${rollDeg.toFixed(1)}°`}
+              {!hasTelemetry ? "—" : rollDeg > 0 ? `+${rollDeg.toFixed(1)}°` : `${rollDeg.toFixed(1)}°`}
             </span>
           </div>
         </div>

@@ -74,8 +74,8 @@ export function LiveTelemetryHUD({
 }: LiveTelemetryHUDProps) {
   const isCameraActive = cameraState === "active";
 
-  // 1. Standby / Connecting State
-  if (!telemetry) {
+  // 1. Standby / Connecting State (never display stale readings once camera is stopped/offline)
+  if (!telemetry || cameraState === "stopped" || cameraState === "not-initialized") {
     return (
       <div
         className={`p-5 rounded-2xl bg-card/90 backdrop-blur-md border border-border/80 shadow-md space-y-4 ${className}`}

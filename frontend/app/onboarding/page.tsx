@@ -14,7 +14,9 @@ export default async function OnboardingPage() {
 
   const [profile, driverProfile] = await Promise.all([
     getOrCreateUserProfile(session.user.id),
-    prisma.driverProfile.findUnique({ where: { userId: session.user.id } }),
+    prisma.driverProfile.findUnique({
+      where: { userId_engineType: { userId: session.user.id, engineType: "PYTHON" } },
+    }),
   ]);
 
   if (profile.onboardingCompleted) {

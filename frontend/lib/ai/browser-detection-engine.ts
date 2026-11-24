@@ -220,6 +220,23 @@ export class BrowserDetectionEngine {
         mirrorSuppressions: this._sessionStats.mirrorSuppressions,
       });
     }
+
+    // Clear live telemetry snapshot and reset rolling analyzers/metrics so ended
+    // sessions never retain stale readings or leak state into the next drive.
+    this._latestTelemetry = null;
+    this._calibrationEngine = null;
+    this._featureExtractor.reset();
+    this._temporalAnalyzer.reset();
+    this._decisionEngine.reset();
+    this._frameId = 0;
+    this._fpsCounter = 0;
+    this._lastFpsCalcWallMs = 0;
+    this._lastInferenceWallMs = 0;
+    this._currentInferenceFps = 0;
+    this._latencySamples = [];
+    this._lastLatencyMs = 0;
+    this._droppedFrames = 0;
+    this._totalFrames = 0;
   }
 
   public startCalibration(): void {
@@ -337,6 +354,11 @@ export class BrowserDetectionEngine {
 
       // 4. Decision Engine Pass
       const decision = this._decisionEngine.evaluate(temporal);
+
+      // Guard against emitting telemetry if stop() was called mid-frame
+      if (this._status !== "running") {
+        return;
+      }
 
       // Calculate latency & FPS
       const tEnd = performance.now();

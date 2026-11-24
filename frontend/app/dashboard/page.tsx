@@ -32,7 +32,7 @@ export default async function DashboardPage() {
 
   const [
     profile,
-    driverProfile,
+    driverProfiles,
     totalSessions,
     sessionAggregates,
     sessionsList,
@@ -41,7 +41,7 @@ export default async function DashboardPage() {
     recentAlerts,
   ] = await Promise.all([
     userId ? getOrCreateUserProfile(userId) : null,
-    userId ? prisma.driverProfile.findUnique({ where: { userId } }) : null,
+    userId ? prisma.driverProfile.findMany({ where: { userId } }) : [],
     userId ? prisma.drivingSession.count({ where: { userId } }) : 0,
     userId
       ? prisma.drivingSession.aggregate({
@@ -75,6 +75,12 @@ export default async function DashboardPage() {
         })
       : [],
   ]);
+
+  const driverProfile =
+    driverProfiles.find((p) => p.engineType === "PYTHON" && p.isCalibrated) ??
+    driverProfiles.find((p) => p.isCalibrated) ??
+    driverProfiles[0] ??
+    null;
 
   const totalDurationSec = sessionAggregates._sum.durationSeconds ?? 0;
   const totalHours = Math.floor(totalDurationSec / 3600);

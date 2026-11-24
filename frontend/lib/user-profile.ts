@@ -28,6 +28,19 @@ export async function getOrCreateUserProfile(userId: string): Promise<UserProfil
   });
 }
 
+export function normalizeSensitivityLevel(raw?: string | null): SensitivityLevel | undefined {
+  if (!raw) return undefined;
+  const upper = raw.trim().toUpperCase();
+  if (upper === "RELAXED" || upper === "STANDARD" || upper === "HIGH") {
+    return upper as SensitivityLevel;
+  }
+  // Legacy enum compatibility: map deprecated HIGHWAY to STANDARD defensively
+  if (upper === "HIGHWAY") {
+    return "STANDARD";
+  }
+  return undefined;
+}
+
 export interface OnboardingUpdatePayload {
   step: number;
   completedStepKey?: string;
@@ -40,7 +53,7 @@ export interface OnboardingUpdatePayload {
   licensePlate?: string;
   emergencyContactName?: string;
   emergencyContactPhone?: string;
-  sensitivityLevel?: SensitivityLevel;
+  sensitivityLevel?: SensitivityLevel | string;
   audioAlertsEnabled?: boolean;
   mirrorSuppression?: boolean;
   wearsGlasses?: boolean;
@@ -51,6 +64,7 @@ export async function saveOnboardingStep(
   payload: OnboardingUpdatePayload
 ): Promise<UserProfile> {
   const currentProfile = await getOrCreateUserProfile(userId);
+  const normalizedSensitivity = normalizeSensitivityLevel(payload.sensitivityLevel);
 
   const updatedCompletedSteps = new Set(currentProfile.completedSteps || []);
   if (payload.completedStepKey) {
@@ -75,7 +89,7 @@ export async function saveOnboardingStep(
       ...(payload.licensePlate !== undefined && { licensePlate: payload.licensePlate }),
       ...(payload.emergencyContactName !== undefined && { emergencyContactName: payload.emergencyContactName }),
       ...(payload.emergencyContactPhone !== undefined && { emergencyContactPhone: payload.emergencyContactPhone }),
-      ...(payload.sensitivityLevel !== undefined && { sensitivityLevel: payload.sensitivityLevel }),
+      ...(normalizedSensitivity !== undefined && { sensitivityLevel: normalizedSensitivity }),
       ...(payload.audioAlertsEnabled !== undefined && { audioAlertsEnabled: payload.audioAlertsEnabled }),
       ...(payload.mirrorSuppression !== undefined && { mirrorSuppression: payload.mirrorSuppression }),
       ...(payload.wearsGlasses !== undefined && { wearsGlasses: payload.wearsGlasses }),

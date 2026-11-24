@@ -12,6 +12,14 @@ import type { CalibratedProfilePayload, ZoneBaselineEntry } from "@/types/teleme
 export interface DriverProfileSource {
   driverId?: string;
   driver_id?: string;
+  engineType?: "BROWSER" | "PYTHON" | string;
+  engine_type?: "BROWSER" | "PYTHON" | string;
+  profileVersion?: number;
+  profile_version?: number;
+  profileUuid?: string;
+  profile_uuid?: string;
+  contentHash?: string | null;
+  content_hash?: string | null;
   version?: number;
   calibratedAt?: Date | string | null;
   calibrated_at?: string | null;
@@ -49,8 +57,8 @@ export interface DriverProfileSource {
   neutral_pitch_deg?: number;
   neutralYawDeg?: number;
   neutral_yaw_deg?: number;
-  neutralRotMat?: number[][] | null;
-  neutral_rot_mat?: number[][] | null;
+  neutralRotMat?: unknown;
+  neutral_rot_mat?: unknown;
   calibrationIsMirrored?: boolean | null;
   calibration_is_mirrored?: boolean | null;
   calibrationReliability?: number;
@@ -175,8 +183,21 @@ export function buildDriverProfileDtoPayload(
   const calibrationIsMirrored =
     typeof candidateMirrored === "boolean" ? candidateMirrored : null;
 
+  const rawEngineType = String(source.engine_type ?? source.engineType ?? "PYTHON").toUpperCase();
+  const engineType = rawEngineType === "BROWSER" ? "BROWSER" : "PYTHON";
+  const profileVersion = Math.max(
+    1,
+    Math.round(finiteOrDefault(source.profile_version ?? source.profileVersion, 1))
+  );
+  const profileUuid = source.profile_uuid ?? source.profileUuid;
+  const contentHash = source.content_hash ?? source.contentHash ?? null;
+
   return {
     version: Math.max(1, Math.round(finiteOrDefault(source.version, 1))),
+    engine_type: engineType,
+    profile_version: profileVersion,
+    ...(profileUuid ? { profile_uuid: String(profileUuid) } : {}),
+    ...(contentHash ? { content_hash: String(contentHash) } : {}),
     driver_id: driverId,
     calibrated_at: calibratedAt,
     is_calibrated: isCalibrated,
