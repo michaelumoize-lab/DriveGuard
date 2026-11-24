@@ -27,6 +27,8 @@ export interface ReadinessChecklistProps {
   rttMs?: number;
   audioStatus: string;
   audioMuted: boolean;
+  runtimeMode?: "browser" | "remote";
+  layout?: "grid" | "list";
   onUnlockAudio?: () => void;
   onCalibrateClick?: () => void;
 }
@@ -43,124 +45,129 @@ export const ReadinessChecklist = React.memo(function ReadinessChecklist({
   rttMs,
   audioStatus,
   audioMuted,
+  runtimeMode = "browser",
+  layout = "grid",
   onUnlockAudio,
   onCalibrateClick,
 }: ReadinessChecklistProps) {
+  const engineValue =
+    runtimeMode === "browser"
+      ? backendProcessingStatus === "processing"
+        ? "On-device active"
+        : backendProcessingStatus === "connecting"
+          ? "Loading model…"
+          : "On-device ready"
+      : backendProcessingStatus === "processing" && !isStale
+        ? `Connected${rttMs && rttMs > 0 ? ` (${rttMs}\u00A0ms)` : ""}`
+        : backendProcessingStatus === "awaiting_telemetry"
+          ? "Awaiting frames…"
+          : isStale
+            ? "Stream stalled"
+            : livekitStatus === "connecting" || livekitStatus === "reconnecting"
+              ? "Connecting…"
+              : livekitStatus === "error"
+                ? "Connection error"
+                : livekitStatus === "connected"
+                  ? "Connected"
+                  : "Standby";
+
+  const engineState: "ready" | "warning" | "idle" =
+    runtimeMode === "browser"
+      ? backendProcessingStatus === "processing"
+        ? "ready"
+        : "idle"
+      : backendProcessingStatus === "processing" && !isStale
+        ? "ready"
+        : isStale || livekitStatus === "error"
+          ? "warning"
+          : "idle";
+
   const items: Array<{
     id: string;
     label: string;
     value: string;
     state: "ready" | "warning" | "idle";
     icon: React.ComponentType<{ className?: string }>;
+    actionHint?: string;
     onClick?: () => void;
   }> = [
     {
       id: "camera",
-      label: "Camera Feed",
+      label: "Camera feed",
       value: cameraActive ? cameraResolutionLabel || "Active" : "Standby",
       state: cameraActive ? "ready" : "idle",
       icon: Camera,
     },
     {
       id: "face",
-      label: "Face Tracking",
+      label: "Face tracking",
       value: !cameraActive
-        ? "Awaiting Feed"
+        ? "Waiting for camera"
         : faceDetected
-          ? "478 Landmarks Locked"
-          : "Face Not Detected",
+          ? "Face locked"
+          : "Face not visible",
       state: !cameraActive ? "idle" : faceDetected ? "ready" : "warning",
       icon: ScanFace,
     },
     {
       id: "calibration",
-      label: "4-Zone Baseline",
+      label: "Eye calibration",
       value: isCalibrated
-        ? `Calibrated (${centerEarBaseline !== undefined ? centerEarBaseline.toFixed(3) : "Active"})`
-        : "Calibration Required",
+        ? `Personalised (${centerEarBaseline !== undefined ? centerEarBaseline.toFixed(3) : "Active"})`
+        : "Needs 15s calibration",
       state: isCalibrated ? "ready" : "warning",
       icon: Compass,
+      actionHint: !isCalibrated && onCalibrateClick ? "Calibrate" : undefined,
       onClick: !isCalibrated ? onCalibrateClick : undefined,
     },
     {
       id: "worker",
-      label: "LiveKit AI Worker",
-      value:
-        backendProcessingStatus === "processing" && !isStale
-          ? `Processing${rttMs && rttMs > 0 ? ` (${rttMs} ms)` : ""}`
-          : backendProcessingStatus === "awaiting_telemetry"
-            ? "Awaiting Telemetry…"
-            : isStale
-              ? "Telemetry Stale"
-              : livekitStatus === "connecting" || livekitStatus === "reconnecting"
-                ? "Handshaking…"
-                : livekitStatus === "error"
-                  ? "Connection Error"
-                  : livekitStatus === "connected"
-                    ? "Connected (No Frames)"
-                    : "Standby",
-      state:
-        backendProcessingStatus === "processing" && !isStale
-          ? "ready"
-          : isStale || livekitStatus === "error"
-            ? "warning"
-            : "idle",
+      label: runtimeMode === "browser" ? "On-device AI" : "Remote AI worker",
+      value: engineValue,
+      state: engineState,
       icon: Radio,
     },
     {
       id: "audio",
-      label: "Cabin Siren",
+      label: "Alert audio",
       value: audioMuted
         ? "Muted"
         : audioStatus === "ready"
-          ? "Armed (4-Tier)"
-          : "Tap to Unlock",
+          ? "Armed"
+          : "Tap to enable",
       state: audioMuted ? "warning" : audioStatus === "ready" ? "ready" : "idle",
       icon: audioMuted ? VolumeX : Volume2,
+      actionHint: audioStatus !== "ready" && !audioMuted && onUnlockAudio ? "Enable" : undefined,
       onClick: audioStatus !== "ready" && !audioMuted ? onUnlockAudio : undefined,
     },
   ];
 
+  const containerClass =
+    layout === "list"
+      ? "flex flex-col gap-1.5"
+      : "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2";
+
   return (
-    <div
-      role="region"
-      aria-label="System Readiness Checklist"
-      className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2"
-    >
+    <div role="region" aria-label="System Readiness Checklist" className={containerClass}>
       {items.map((item) => {
         const Icon = item.icon;
         const isReady = item.state === "ready";
         const isWarn = item.state === "warning";
 
-        return (
-          <div
-            key={item.id}
-            onClick={item.onClick}
-            role={item.onClick ? "button" : undefined}
-            tabIndex={item.onClick ? 0 : undefined}
-            onKeyDown={
-              item.onClick
-                ? (e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      item.onClick?.();
-                    }
-                  }
-                : undefined
-            }
-            className={`flex items-center justify-between gap-2 px-3 py-2 rounded-xl border text-xs transition-colors outline-none ${
-              item.onClick ? "cursor-pointer hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-primary" : ""
-            } ${
-              isReady
-                ? "border-emerald-500/30 bg-emerald-500/5 text-foreground"
-                : isWarn
-                  ? "border-amber-500/40 bg-amber-500/10 text-foreground"
-                  : "border-border/80 bg-card/60 text-muted-foreground"
-            }`}
-          >
-            <div className="flex items-center gap-2 min-w-0">
+        const baseClasses = `flex w-full items-center justify-between gap-2.5 px-3 py-2 rounded-xl border text-left text-xs transition-colors ${
+          isReady
+            ? "border-emerald-500/25 bg-emerald-500/5 text-foreground"
+            : isWarn
+              ? "border-amber-500/35 bg-amber-500/10 text-foreground"
+              : "border-border/80 bg-muted/30 text-muted-foreground"
+        }`;
+
+        const inner = (
+          <>
+            <div className="flex items-center gap-2.5 min-w-0">
               <Icon
-                className={`size-3.5 shrink-0 ${
+                aria-hidden="true"
+                className={`size-4 shrink-0 ${
                   isReady
                     ? "text-emerald-500"
                     : isWarn
@@ -178,13 +185,39 @@ export const ReadinessChecklist = React.memo(function ReadinessChecklist({
               </div>
             </div>
 
-            {isReady ? (
-              <CheckCircle2 className="size-3.5 text-emerald-500 shrink-0" aria-hidden="true" />
-            ) : isWarn ? (
-              <AlertTriangle className="size-3.5 text-amber-500 shrink-0" aria-hidden="true" />
-            ) : (
-              <CircleDashed className="size-3.5 text-muted-foreground/60 shrink-0" aria-hidden="true" />
-            )}
+            <div className="flex items-center gap-1.5 shrink-0">
+              {item.actionHint && (
+                <span className="text-[11px] font-semibold text-primary underline-offset-2 group-hover:underline">
+                  {item.actionHint}
+                </span>
+              )}
+              {isReady ? (
+                <CheckCircle2 className="size-4 text-emerald-500 shrink-0" aria-hidden="true" />
+              ) : isWarn ? (
+                <AlertTriangle className="size-4 text-amber-500 shrink-0" aria-hidden="true" />
+              ) : (
+                <CircleDashed className="size-4 text-muted-foreground/60 shrink-0" aria-hidden="true" />
+              )}
+            </div>
+          </>
+        );
+
+        if (item.onClick) {
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={item.onClick}
+              className={`group ${baseClasses} cursor-pointer hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring`}
+            >
+              {inner}
+            </button>
+          );
+        }
+
+        return (
+          <div key={item.id} className={baseClasses}>
+            {inner}
           </div>
         );
       })}

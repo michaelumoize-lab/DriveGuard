@@ -14,7 +14,8 @@ import {
   SwitchCamera,
   Crop,
   FlipHorizontal,
-  Sparkles,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 
 interface CameraControlsProps {
@@ -32,6 +33,10 @@ interface CameraControlsProps {
   onToggleFullscreen: () => void;
   onToggleMirror: () => void;
   isCapturing?: boolean;
+  audioStatus?: "ready" | "muted" | "blocked" | "unavailable";
+  isMuted?: boolean;
+  onToggleMute?: () => void;
+  onUnlockAudio?: () => void;
 }
 
 export function CameraControls({
@@ -49,6 +54,10 @@ export function CameraControls({
   onToggleFullscreen,
   onToggleMirror,
   isCapturing = false,
+  audioStatus,
+  isMuted = false,
+  onToggleMute,
+  onUnlockAudio,
 }: CameraControlsProps) {
   const isActive = cameraState === "active";
   const isPaused = cameraState === "paused";
@@ -57,43 +66,46 @@ export function CameraControls({
     cameraState === "requesting-permission" || cameraState === "permission-granted";
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2.5 p-3 rounded-2xl bg-card border border-border shadow-md">
-      {/* Primary Action Button (Start / Stop) */}
+    <div className="flex flex-wrap items-center justify-between gap-2.5 p-3 rounded-2xl bg-card border border-border/80 shadow-xs">
+      {/* Primary Action Controls (Start/Stop, Pause, Audio Mute) */}
       <div className="flex items-center gap-2">
         {!isRunning ? (
           <Button
+            type="button"
             size="default"
             onClick={onStart}
             disabled={isLoading}
-            className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold px-5 rounded-xl min-h-[44px] shadow-sm flex items-center gap-2"
+            className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold px-5 rounded-xl min-h-[44px] shadow-xs flex items-center gap-2"
           >
             {isLoading ? (
               <>
-                <RefreshCw className="size-4 animate-spin" />
+                <RefreshCw className="size-4 animate-spin" aria-hidden="true" />
                 <span>Connecting…</span>
               </>
             ) : (
               <>
-                <Play className="size-4 fill-current" />
-                <span>Start Camera</span>
+                <Play className="size-4 fill-current" aria-hidden="true" />
+                <span>Start Monitoring</span>
               </>
             )}
           </Button>
         ) : (
           <Button
+            type="button"
             size="default"
             variant="destructive"
             onClick={onStop}
-            className="font-semibold px-5 rounded-xl min-h-[44px] shadow-sm flex items-center gap-2"
+            className="font-semibold px-5 rounded-xl min-h-[44px] shadow-xs flex items-center gap-2"
           >
-            <Square className="size-4 fill-current" />
-            <span>Stop Camera</span>
+            <Square className="size-4 fill-current" aria-hidden="true" />
+            <span>Stop</span>
           </Button>
         )}
 
-        {/* Pause / Resume Button (When active) */}
+        {/* Pause / Resume Button */}
         {isRunning && (
           <Button
+            type="button"
             size="icon"
             variant="outline"
             onClick={isPaused ? onResume : onPause}
@@ -102,83 +114,132 @@ export function CameraControls({
             aria-label={isPaused ? "Resume camera stream" : "Pause camera stream"}
           >
             {isPaused ? (
-              <Play className="size-4 text-emerald-500 fill-emerald-500" />
+              <Play className="size-4 text-emerald-500 fill-emerald-500" aria-hidden="true" />
             ) : (
-              <Pause className="size-4 text-amber-500" />
+              <Pause className="size-4 text-amber-500" aria-hidden="true" />
+            )}
+          </Button>
+        )}
+
+        {/* Unified Audio Mute / Unlock Toggle */}
+        {audioStatus && (onToggleMute || onUnlockAudio) && (
+          <Button
+            type="button"
+            size="icon"
+            variant={audioStatus === "blocked" ? "secondary" : "outline"}
+            onClick={() => {
+              if (audioStatus === "blocked" && onUnlockAudio) {
+                onUnlockAudio();
+              } else if (onToggleMute) {
+                onToggleMute();
+              }
+            }}
+            className={`min-h-[44px] min-w-[44px] rounded-xl border-border ${
+              audioStatus === "blocked"
+                ? "border-amber-500/40 bg-amber-500/10 text-amber-500"
+                : isMuted
+                  ? "border-rose-500/35 bg-rose-500/10 text-rose-500"
+                  : ""
+            }`}
+            title={
+              audioStatus === "blocked"
+                ? "Enable alert audio"
+                : isMuted
+                  ? "Unmute alert audio"
+                  : "Mute alert audio"
+            }
+            aria-label={
+              audioStatus === "blocked"
+                ? "Enable alert audio"
+                : isMuted
+                  ? "Unmute alert audio"
+                  : "Mute alert audio"
+            }
+          >
+            {audioStatus === "blocked" || isMuted ? (
+              <VolumeX className="size-4" aria-hidden="true" />
+            ) : (
+              <Volume2 className="size-4 text-emerald-500" aria-hidden="true" />
             )}
           </Button>
         )}
       </div>
 
-      {/* Auxiliary Controls (Snapshot, Flip, Framing, Fullscreen) */}
+      {/* Auxiliary Camera Utilities */}
       <div className="flex items-center gap-1.5 sm:gap-2">
-        {/* Snapshot Capture Button */}
         <Button
+          type="button"
           size="icon"
           variant="secondary"
           onClick={onCaptureSnapshot}
           disabled={!isActive || isCapturing}
-          className="min-h-[44px] min-w-[44px] rounded-xl border border-border bg-secondary/80 hover:bg-secondary relative"
+          className="min-h-[44px] min-w-[44px] rounded-xl border border-border bg-secondary/80 hover:bg-secondary"
           title="Capture frame snapshot (JPEG)"
           aria-label="Capture current frame snapshot"
         >
           {isCapturing ? (
-            <RefreshCw className="size-4 animate-spin text-primary" />
+            <RefreshCw className="size-4 animate-spin text-primary" aria-hidden="true" />
           ) : (
-            <Camera className="size-4 text-foreground" />
+            <Camera className="size-4 text-foreground" aria-hidden="true" />
           )}
         </Button>
 
-        {/* Switch Front / Back Camera */}
         <Button
+          type="button"
           size="icon"
           variant="outline"
           onClick={onSwitchFacing}
           className="min-h-[44px] min-w-[44px] rounded-xl border-border"
-          title="Switch front / rear camera"
+          title="Switch front or rear camera"
           aria-label="Switch between front and rear facing camera"
         >
-          <SwitchCamera className="size-4 text-foreground" />
+          <SwitchCamera className="size-4 text-foreground" aria-hidden="true" />
         </Button>
 
-        {/* Mirror Toggle */}
         <Button
+          type="button"
           size="icon"
           variant="outline"
           onClick={onToggleMirror}
+          aria-pressed={isMirrored}
           className={`min-h-[44px] min-w-[44px] rounded-xl border-border ${
             isMirrored ? "bg-primary/10 border-primary/40 text-primary" : ""
           }`}
           title={isMirrored ? "Disable mirror view" : "Enable mirror view"}
           aria-label={isMirrored ? "Disable camera mirror mode" : "Enable camera mirror mode"}
         >
-          <FlipHorizontal className="size-4" />
+          <FlipHorizontal className="size-4" aria-hidden="true" />
         </Button>
 
-        {/* Framing Mode Toggle (Cover vs Fit) */}
         <Button
+          type="button"
           size="icon"
           variant="outline"
           onClick={onToggleFraming}
+          aria-pressed={framingMode === "cover"}
           className={`min-h-[44px] min-w-[44px] rounded-xl border-border ${
             framingMode === "cover" ? "bg-primary/10 border-primary/40 text-primary" : ""
           }`}
-          title={framingMode === "cover" ? "Switch to Wide Fit (No crop)" : "Switch to Fullscreen Cover"}
-          aria-label={framingMode === "cover" ? "Switch to wide aspect fit view" : "Switch to viewport cover view"}
+          title={framingMode === "cover" ? "Switch to uncropped fit" : "Switch to fill viewport"}
+          aria-label={framingMode === "cover" ? "Switch to uncropped fit view" : "Switch to viewport cover view"}
         >
-          <Crop className="size-4" />
+          <Crop className="size-4" aria-hidden="true" />
         </Button>
 
-        {/* Fullscreen Toggle */}
         <Button
+          type="button"
           size="icon"
           variant="outline"
           onClick={onToggleFullscreen}
           className="min-h-[44px] min-w-[44px] rounded-xl border-border"
-          title={isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
+          title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
           aria-label={isFullscreen ? "Exit fullscreen monitor" : "Enter fullscreen monitor"}
         >
-          {isFullscreen ? <Minimize2 className="size-4" /> : <Maximize2 className="size-4" />}
+          {isFullscreen ? (
+            <Minimize2 className="size-4" aria-hidden="true" />
+          ) : (
+            <Maximize2 className="size-4" aria-hidden="true" />
+          )}
         </Button>
       </div>
     </div>

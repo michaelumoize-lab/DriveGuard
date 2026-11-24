@@ -12,7 +12,44 @@ export const metadata = {
 
 export const dynamic = "force-dynamic";
 
-export default async function LiveMonitorPage() {
+export type InspectorTab = "overview" | "signals" | "testbench" | "setup";
+
+interface LiveMonitorPageProps {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}
+
+function pickParam(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+export default async function LiveMonitorPage({ searchParams }: LiveMonitorPageProps) {
+  const resolvedParams = searchParams ? await searchParams : {};
+  const modeParam = pickParam(resolvedParams.mode);
+  const tabParam = pickParam(resolvedParams.tab);
+  const runtimeParam = pickParam(resolvedParams.runtime);
+  const viewParam = pickParam(resolvedParams.view);
+
+  const initialConsoleMode =
+    modeParam === "inspector" || modeParam === "diagnostics"
+      ? "diagnostics"
+      : modeParam === "driver" || modeParam === "cockpit"
+        ? "cockpit"
+        : undefined;
+
+  const initialInspectorTab: InspectorTab | undefined =
+    tabParam === "overview" ||
+    tabParam === "signals" ||
+    tabParam === "testbench" ||
+    tabParam === "setup"
+      ? tabParam
+      : undefined;
+
+  const initialRuntimeMode =
+    runtimeParam === "browser" || runtimeParam === "remote" ? runtimeParam : undefined;
+
+  const initialOrientation =
+    viewParam === "portrait" || viewParam === "landscape" ? viewParam : undefined;
+
   const session = await getServerSession();
   const userId = session?.user?.id;
 
@@ -51,6 +88,10 @@ export default async function LiveMonitorPage() {
         driverId={userId || "driver_default"}
         initialDriverProfile={initialDriverProfile}
         initialPreferences={initialPreferences}
+        initialConsoleMode={initialConsoleMode}
+        initialInspectorTab={initialInspectorTab}
+        initialRuntimeMode={initialRuntimeMode}
+        initialOrientation={initialOrientation}
       />
     </div>
   );

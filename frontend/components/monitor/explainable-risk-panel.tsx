@@ -57,9 +57,9 @@ export const ExplainableRiskPanel = React.memo(function ExplainableRiskPanel({
   return (
     <Card className="border-border/80 bg-card/60">
       <CardHeader className="py-3 px-4 border-b border-border/60 flex flex-row items-center justify-between gap-2 space-y-0 flex-wrap">
-        <CardTitle className="text-xs font-mono uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-          <Cpu className="size-3.5 text-primary" />
-          Explainable Risk Rationale &amp; Stage Timings
+        <CardTitle className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+          <Cpu className="size-3.5 text-primary" aria-hidden="true" />
+          <span>Explainable Risk &amp; Pipeline Timings</span>
         </CardTitle>
         <div className="flex items-center gap-1.5">
           {telemetry?.drowsiness_state && (

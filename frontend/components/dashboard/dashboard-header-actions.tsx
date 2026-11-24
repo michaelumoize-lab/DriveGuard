@@ -33,19 +33,14 @@ export function DashboardHeaderActions({
           <span className="hidden xs:inline font-mono text-[11px]">LIVE CONSOLE</span>
         </div>
       ) : (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Link
-              href="/dashboard/live-monitor"
-              aria-label="Launch Live Driver Monitoring"
-              className="px-2.5 sm:px-3 py-1.5 bg-primary/10 hover:bg-primary/20 border border-primary/30 text-primary text-xs font-semibold rounded-xl transition-all flex items-center gap-1.5 shadow-xs shrink-0"
-            >
-              <Activity className="w-3.5 h-3.5" />
-              <span className="hidden xs:inline">Live Monitor</span>
-            </Link>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">Launch Live Driver Monitor</TooltipContent>
-        </Tooltip>
+        <Link
+          href="/dashboard/live-monitor"
+          aria-label="Launch Live Driver Monitoring"
+          className="px-2.5 sm:px-3 py-1.5 bg-primary/10 hover:bg-primary/20 border border-primary/30 text-primary text-xs font-semibold rounded-xl transition-all flex items-center gap-1.5 shadow-xs shrink-0"
+        >
+          <Activity className="w-3.5 h-3.5" />
+          <span className="hidden xs:inline">Live Monitor</span>
+        </Link>
       )}
 
       {/* Safety Alerts Notification Bell */}

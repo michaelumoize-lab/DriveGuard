@@ -3,18 +3,15 @@
 import React from "react";
 import { RefreshCw } from "lucide-react";
 import { useSystemHealth } from "@/hooks/use-system-health";
-import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
 export function NavbarSystemHealthBadge() {
   const { health, isLoading, isRefreshing, refresh } = useSystemHealth();
 
   const fastApiStatus = health?.services?.fastapi?.status;
 
-  let tooltipText = "AI Engine Status (Click to refresh)";
   let badgeContent: React.ReactElement | null = null;
 
   if (isLoading && !health) {
-    tooltipText = "Checking AI Engine status (Click to refresh)";
     badgeContent = (
       <button
         onClick={() => refresh()}
@@ -27,7 +24,6 @@ export function NavbarSystemHealthBadge() {
       </button>
     );
   } else if (fastApiStatus === "online") {
-    tooltipText = `AI Engine Online${health?.services?.fastapi?.latencyMs ? ` (Latency: ${health.services.fastapi.latencyMs}ms)` : ""} — Click to refresh`;
     badgeContent = (
       <button
         onClick={() => refresh()}
@@ -44,7 +40,6 @@ export function NavbarSystemHealthBadge() {
       </button>
     );
   } else if (fastApiStatus === "error") {
-    tooltipText = `AI Engine Degraded: ${health?.services?.fastapi?.message || "Service Degraded"} — Click to retry`;
     badgeContent = (
       <button
         onClick={() => refresh()}
@@ -61,7 +56,6 @@ export function NavbarSystemHealthBadge() {
       </button>
     );
   } else {
-    tooltipText = `AI Engine Offline: ${health?.services?.fastapi?.message || "Service unreachable"} — Click to retry`;
     badgeContent = (
       <button
         onClick={() => refresh()}
@@ -79,12 +73,5 @@ export function NavbarSystemHealthBadge() {
     );
   }
 
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        {badgeContent}
-      </TooltipTrigger>
-      <TooltipContent side="bottom">{tooltipText}</TooltipContent>
-    </Tooltip>
-  );
+  return badgeContent;
 }
