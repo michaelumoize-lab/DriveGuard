@@ -178,7 +178,10 @@ class TestPerformanceInstrumentation(unittest.IsolatedAsyncioTestCase):
 
         cascade_dto = dto.cascade
         self.assertIsInstance(cascade_dto, CascadeStatusDTO)
-        self.assertIn(cascade_dto.cnn_execution_mode, ("MOBILENET_ONNX", "ANALYTICAL_FALLBACK", "UNAVAILABLE"))
+        self.assertIn(
+            cascade_dto.cnn_execution_mode,
+            ("SHADOW_DISABLED", "NOT_APPLICABLE", "MOBILENET_ONNX", "ANALYTICAL_FALLBACK", "UNAVAILABLE"),
+        )
         self.assertIsInstance(cascade_dto.verifier_invoked, bool)
         self.assertIsInstance(cascade_dto.gate_trigger_reason, str)
         self.assertIsInstance(cascade_dto.onnx_inference_executed, bool)

@@ -14,6 +14,18 @@ from enum import Enum
 from typing import Optional
 
 
+class OperationalState(str, Enum):
+    """
+    Five-state operational readiness hierarchy strictly separate from drowsiness severity.
+    An uncalibrated driver or degraded camera must never be presented as NORMAL.
+    """
+    CALIBRATION_REQUIRED = "CALIBRATION_REQUIRED"
+    CALIBRATING = "CALIBRATING"
+    MONITORING_ACTIVE = "MONITORING_ACTIVE"
+    DEGRADED = "DEGRADED"
+    ERROR = "ERROR"
+
+
 class DrowsinessState(str, Enum):
     """
     Five-level discrete alert state hierarchy for DriveGuard.
@@ -64,6 +76,10 @@ class ReasonCode(str, Enum):
     # Vision & Sensor Stream Viability
     FACE_LOST = "FACE_LOST"
     SENSOR_DEGRADED = "SENSOR_DEGRADED"
+
+    # Calibration Operational Readiness
+    CALIBRATION_REQUIRED = "CALIBRATION_REQUIRED"
+    CALIBRATION_IN_PROGRESS = "CALIBRATION_IN_PROGRESS"
 
 
 @dataclass(frozen=True)

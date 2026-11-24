@@ -18,7 +18,11 @@ from backend.app.intelligence.confidence import (
     SignalConfidenceEvaluator,
 )
 from backend.app.intelligence.decision_engine import DecisionEngine, DecisionResult
-from backend.app.intelligence.reason_codes import DrowsinessState, ExplainableReason
+from backend.app.intelligence.reason_codes import (
+    DrowsinessState,
+    ExplainableReason,
+    OperationalState,
+)
 from backend.app.intelligence.temporal_analyzer import TemporalAnalyzer, TemporalMetrics
 from backend.app.vision.face_landmarker import FaceLandmarkStatus
 
@@ -39,6 +43,7 @@ class DrowsinessAssessment:
     unresolved_alert_state: Optional[DrowsinessState] = None
     historical_reason: Optional[ExplainableReason] = None
     is_alert_recovering: Optional[bool] = None
+    operational_state: OperationalState = OperationalState.MONITORING_ACTIVE
 
     @property
     def is_alert_active(self) -> bool:
@@ -112,6 +117,9 @@ class DrowsinessEngine:
         self,
         features: DriverFeatures,
         quality: Optional[FrameQualityResult] = None,
+        *,
+        is_profile_calibrated: bool = True,
+        is_calibrating: bool = False,
     ) -> DrowsinessAssessment:
         """
         Execute full intelligence arbitration for a single frame.
@@ -132,14 +140,17 @@ class DrowsinessEngine:
             )
             and (quality is None or quality.is_viable_for_inference)
         )
-        ocular_tracking_viable = confidence_res.ocular_viable or (
-            is_optical_and_face_viable
-            and not features.blink.sampling_gap_detected
-            and features.blink.state != BlinkState.UNCERTAIN_GAP
+        ocular_tracking_viable = is_profile_calibrated and (
+            confidence_res.ocular_viable
+            or (
+                is_optical_and_face_viable
+                and not features.blink.sampling_gap_detected
+                and features.blink.state != BlinkState.UNCERTAIN_GAP
+            )
         )
         temporal_res = self.temporal_analyzer.update(
             features=features,
-            is_reliable=confidence_res.is_reliable,
+            is_reliable=confidence_res.is_reliable and is_profile_calibrated,
             is_ocular_viable=ocular_tracking_viable,
         )
 
@@ -147,6 +158,8 @@ class DrowsinessEngine:
         decision_res = self.decision_engine.evaluate(
             metrics=temporal_res,
             confidence=confidence_res,
+            is_profile_calibrated=is_profile_calibrated,
+            is_calibrating=is_calibrating,
         )
 
         return DrowsinessAssessment(
@@ -161,6 +174,7 @@ class DrowsinessEngine:
             unresolved_alert_state=decision_res.unresolved_alert_state,
             historical_reason=decision_res.historical_reason,
             is_alert_recovering=decision_res.is_alert_recovering,
+            operational_state=decision_res.operational_state,
         )
 
     def reset(self) -> None:

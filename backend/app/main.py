@@ -150,8 +150,9 @@ def readiness_check() -> JSONResponse:
                 "path": str(task_model_path),
             },
             "eye_verifier": {
-                "mode": "MOBILENET_ONNX" if has_onnx_model else "ANALYTICAL_FALLBACK",
-                "onnx_present": has_onnx_model,
+                "production_mode": "GEOMETRIC_AUTHORITATIVE",
+                "shadow_observer_enabled": False,
+                "shadow_weights_present": has_onnx_model,
             },
             "desktop_audio": {
                 "optional": True,

@@ -266,9 +266,42 @@ class TestDriveGuardFaultInjection(unittest.IsolatedAsyncioTestCase):
 
         await worker.stop()
 
+    def _activate_calibrated_profile(self, engine: SessionAIEngine) -> None:
+        from backend.app.ai.geometry import PoseZone
+        from backend.app.ai.pdbp_calibration import DriverBehaviourProfile, ZoneBaseline
+
+        engine.set_profile(
+            DriverBehaviourProfile(
+                driver_id=self.test_driver,
+                calibration_mode="4_ZONE",
+                center_ear_median=0.32,
+                center_ear_mad_scaled=0.018,
+                blink_duration_median_ms=200.0,
+                blink_duration_mad_ms=25.0,
+                blink_rcr_median=1.0,
+                blink_rcr_mad=0.15,
+                blink_freq_median_per_min=15.0,
+                blink_freq_mad_per_min=4.0,
+                neutral_pitch_deg=0.0,
+                neutral_yaw_deg=0.0,
+                calibration_reliability=0.95,
+                zone_baselines={
+                    PoseZone.CENTER: ZoneBaseline(
+                        zone=PoseZone.CENTER,
+                        ear_median=0.32,
+                        ear_mad_scaled=0.018,
+                        pitch_median_deg=0.0,
+                        yaw_median_deg=0.0,
+                        sample_count=60,
+                    )
+                },
+            )
+        )
+
     async def test_invalid_and_corrupted_frames(self) -> None:
         """Corrupted, zero-byte, or malformed frame buffers return IMAGE_DECODE_FAILED without crashing."""
         engine = await session_manager.get_or_create_session(self.test_room, self.test_driver)
+        self._activate_calibrated_profile(engine)
 
         # 1. Zero-byte array
         empty_arr = np.zeros((0, 0, 3), dtype=np.uint8)
@@ -311,6 +344,7 @@ class TestDriveGuardFaultInjection(unittest.IsolatedAsyncioTestCase):
     async def test_reconnection_after_temporary_video_loss(self) -> None:
         """Temporary video loss marks gap and resets PERCLOS without freezing false blinks."""
         engine = await session_manager.get_or_create_session(self.test_room, self.test_driver)
+        self._activate_calibrated_profile(engine)
 
         # Initial normal frame
         frame_normal = generate_benchmark_frame(0)
@@ -334,6 +368,7 @@ class TestDriveGuardFaultInjection(unittest.IsolatedAsyncioTestCase):
     async def test_mediapipe_runtime_exception_isolation(self) -> None:
         """MediaPipe runtime exception returns LANDMARKER_EXCEPTION without crashing session."""
         engine = await session_manager.get_or_create_session(self.test_room, self.test_driver)
+        self._activate_calibrated_profile(engine)
 
         with patch.object(engine.landmarker, "detect", side_effect=RuntimeError("MediaPipe internal graph failure")):
             valid_img = generate_benchmark_frame(1)
@@ -349,6 +384,7 @@ class TestDriveGuardFaultInjection(unittest.IsolatedAsyncioTestCase):
     async def test_onnx_runtime_exception_graceful_fallback(self) -> None:
         """Downstream feature-extraction runtime exception is isolated without crashing session."""
         engine = await session_manager.get_or_create_session(self.test_room, self.test_driver)
+        self._activate_calibrated_profile(engine)
 
         with patch.object(engine.feature_extractor, "extract", side_effect=RuntimeError("Simulated extractor execution failure")):
             valid_img = generate_benchmark_frame(2)

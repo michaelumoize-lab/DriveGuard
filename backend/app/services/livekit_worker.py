@@ -268,12 +268,13 @@ class LiveKitAIWorkerSession:
 
         self.state = WorkerState.STARTING
         try:
-            # 1. Initialize or acquire existing DriveGuard AI Engine
+            # 1. Initialize or acquire existing DriveGuard AI Engine (WebRTC video tracks are unmirrored)
             self.engine = await session_manager.get_or_create_session(
                 session_id=self.room_name,
                 driver_id=self.driver_id,
                 experiment_mode=self.experiment_mode,
                 owner_id=self.owner_id,
+                is_mirrored=False,
             )
 
             # 2. Mint LiveKit JWT for the AI Worker

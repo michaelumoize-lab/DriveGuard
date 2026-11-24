@@ -18,6 +18,7 @@ from backend.app.intelligence.confidence import ConfidenceAssessment
 from backend.app.intelligence.reason_codes import (
     DrowsinessState,
     ExplainableReason,
+    OperationalState,
     ReasonCode,
 )
 from backend.app.intelligence.temporal_analyzer import TemporalMetrics
@@ -26,7 +27,7 @@ from backend.app.intelligence.temporal_analyzer import TemporalMetrics
 @dataclass(frozen=True)
 class DecisionResult:
     """
-    Final evaluated state, severity, and explainable reasons for a single frame.
+    Final evaluated state, severity, operational readiness, and explainable reasons for a single frame.
     """
     timestamp_ms: float
     state: DrowsinessState
@@ -38,6 +39,7 @@ class DecisionResult:
     unresolved_alert_state: Optional[DrowsinessState] = None
     historical_reason: Optional[ExplainableReason] = None
     is_alert_recovering: Optional[bool] = None
+    operational_state: OperationalState = OperationalState.MONITORING_ACTIVE
 
     @property
     def summary_text(self) -> str:
@@ -119,12 +121,25 @@ class DecisionEngine:
         self,
         metrics: TemporalMetrics,
         confidence: ConfidenceAssessment,
+        *,
+        is_profile_calibrated: bool = True,
+        is_calibrating: bool = False,
     ) -> DecisionResult:
         """
-        Evaluate candidate state against priority rules and apply hysteresis guards.
+        Evaluate candidate state against priority rules, operational calibration gate,
+        and hysteresis guards.
         """
         ts_ms = metrics.timestamp_ms
         reasons: List[ExplainableReason] = []
+        fallback_op_state = (
+            OperationalState.CALIBRATING
+            if is_calibrating
+            else (
+                OperationalState.CALIBRATION_REQUIRED
+                if not is_profile_calibrated
+                else OperationalState.MONITORING_ACTIVE
+            )
+        )
 
         # ------------------------------------------------------------------
         # STEP 0: Timestamp Validation & Sampling Gap Guard
@@ -141,6 +156,7 @@ class DecisionEngine:
                 unresolved_alert_state=self._unresolved_alert_state,
                 historical_reason=self._historical_reason,
                 is_alert_recovering=bool(self.alert_active and self._alert_recovery_start_ts_ms is not None),
+                operational_state=fallback_op_state,
             )
 
         if self._prev_ts_ms is not None:
@@ -158,6 +174,7 @@ class DecisionEngine:
                     unresolved_alert_state=self._unresolved_alert_state,
                     historical_reason=self._historical_reason,
                     is_alert_recovering=bool(self.alert_active and self._alert_recovery_start_ts_ms is not None),
+                    operational_state=fallback_op_state,
                 )
             if dt_ms > self.max_sampling_gap_ms:
                 # Interrupted by camera freeze / sampling gap: cancel in-flight recovery
@@ -166,6 +183,60 @@ class DecisionEngine:
                 self._alert_recovery_start_ts_ms = None
 
         self._prev_ts_ms = ts_ms
+
+        # ------------------------------------------------------------------
+        # STEP 0b: Strict Operational Calibration Gate (Decision 2)
+        # Never emit NORMAL when calibration is in progress or missing/infeasible.
+        # ------------------------------------------------------------------
+        if is_calibrating:
+            self._recovery_start_ts_ms = None
+            self._recovery_candidate_sev = None
+            self._alert_recovery_start_ts_ms = None
+            primary = ExplainableReason(
+                code=ReasonCode.CALIBRATION_IN_PROGRESS,
+                message="Guided 4-Zone baseline calibration is in progress",
+            )
+            self.current_state = DrowsinessState.INSUFFICIENT_DATA
+            return DecisionResult(
+                timestamp_ms=ts_ms,
+                state=DrowsinessState.INSUFFICIENT_DATA,
+                severity=self.SEVERITY_MAP[DrowsinessState.INSUFFICIENT_DATA],
+                reasons=[primary],
+                primary_reason=primary,
+                is_mirror_check_context=False,
+                alert_active=False,
+                unresolved_alert_state=None,
+                historical_reason=None,
+                is_alert_recovering=False,
+                operational_state=OperationalState.CALIBRATING,
+            )
+
+        if not is_profile_calibrated:
+            self._stable_face_start_ts_ms = None
+            self._recovery_start_ts_ms = None
+            self._recovery_candidate_sev = None
+            self._alert_recovery_start_ts_ms = None
+            self.alert_active = False
+            self._unresolved_alert_state = None
+            self._historical_reason = None
+            primary = ExplainableReason(
+                code=ReasonCode.CALIBRATION_REQUIRED,
+                message="Personalised 4-Zone calibration is required before drowsiness monitoring activates",
+            )
+            self.current_state = DrowsinessState.INSUFFICIENT_DATA
+            return DecisionResult(
+                timestamp_ms=ts_ms,
+                state=DrowsinessState.INSUFFICIENT_DATA,
+                severity=self.SEVERITY_MAP[DrowsinessState.INSUFFICIENT_DATA],
+                reasons=[primary],
+                primary_reason=primary,
+                is_mirror_check_context=False,
+                alert_active=False,
+                unresolved_alert_state=None,
+                historical_reason=None,
+                is_alert_recovering=False,
+                operational_state=OperationalState.CALIBRATION_REQUIRED,
+            )
 
         # ------------------------------------------------------------------
         # STEP 1: Sensor & Face Viability Evaluation
@@ -221,6 +292,7 @@ class DecisionEngine:
                 unresolved_alert_state=self._unresolved_alert_state,
                 historical_reason=self._historical_reason,
                 is_alert_recovering=False,
+                operational_state=OperationalState.DEGRADED,
             )
 
         if is_face_lost or is_sensor_unreliable:
@@ -255,6 +327,7 @@ class DecisionEngine:
                 unresolved_alert_state=self._unresolved_alert_state,
                 historical_reason=self._historical_reason,
                 is_alert_recovering=False,
+                operational_state=OperationalState.DEGRADED,
             )
 
         # Track stable face presence recovery

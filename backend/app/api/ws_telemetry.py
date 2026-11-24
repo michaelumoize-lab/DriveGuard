@@ -142,7 +142,7 @@ async def websocket_session_stream(
                     "telemetry": telemetry_dto.model_dump(),
                     "calibration": (
                         cal_status.model_dump()
-                        if (engine.is_calibrating or (cal_status is not None and not cal_status.is_completed))
+                        if cal_status is not None
                         else None
                     ),
                 }

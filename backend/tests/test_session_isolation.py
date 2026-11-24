@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 
+from backend.app.ai.geometry import PoseZone
+from backend.app.ai.pdbp_calibration import DriverBehaviourProfile, ZoneBaseline
 from backend.app.ai.pipeline import SessionAIEngine
 from backend.app.services.livekit_worker import LiveKitAIWorkerSession
 from backend.app.services.session_manager import session_manager
@@ -95,6 +97,36 @@ class TestSessionIsolation(unittest.IsolatedAsyncioTestCase):
             driver_id="driver_beta",
             experiment_mode="EXPERIMENT_C_CONFIDENCE_GATED_CASCADE",
         )
+
+        # Activate calibrated profiles on both sessions so MONITORING_ACTIVE evaluates NORMAL
+        for drv_id, eng in (("driver_alpha", engine_a), ("driver_beta", engine_b)):
+            eng.set_profile(
+                DriverBehaviourProfile(
+                    driver_id=drv_id,
+                    calibration_mode="4_ZONE",
+                    center_ear_median=0.32,
+                    center_ear_mad_scaled=0.018,
+                    blink_duration_median_ms=200.0,
+                    blink_duration_mad_ms=25.0,
+                    blink_rcr_median=1.0,
+                    blink_rcr_mad=0.15,
+                    blink_freq_median_per_min=15.0,
+                    blink_freq_mad_per_min=4.0,
+                    neutral_pitch_deg=0.0,
+                    neutral_yaw_deg=0.0,
+                    calibration_reliability=0.95,
+                    zone_baselines={
+                        PoseZone.CENTER: ZoneBaseline(
+                            zone=PoseZone.CENTER,
+                            ear_median=0.32,
+                            ear_mad_scaled=0.018,
+                            pitch_median_deg=0.0,
+                            yaw_median_deg=0.0,
+                            sample_count=60,
+                        )
+                    },
+                )
+            )
 
         # 1. Warm up both engines with 10 normal open-eyed frames
         for idx in range(10):

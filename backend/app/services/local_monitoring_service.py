@@ -61,6 +61,7 @@ from backend.app.camera.frame_quality import (
 )
 from backend.app.features import DriverFeatureExtractor, DriverFeatures
 from backend.app.intelligence import DrowsinessAssessment, DrowsinessEngine
+from backend.app.intelligence.reason_codes import OperationalState
 from backend.app.schemas.profile import DriverProfileDTO
 from backend.app.services.frame_adapters import AdaptedFrame
 from backend.app.services.profile_store import ProfileStore, profile_store
@@ -253,7 +254,9 @@ class ProcessedTelemetrySnapshot:
     optical_status: str
     inference_latency_ms: float
     calibrated_profile_id: Optional[str] = None
+    operational_state: str = OperationalState.MONITORING_ACTIVE.value
     shadow_status: str = "DISABLED"
+    shadow_is_authoritative: bool = False
     shadow_left_cnn: Optional[str] = None
     shadow_right_cnn: Optional[str] = None
     shadow_binoc_agreement: Optional[bool] = None
@@ -281,6 +284,7 @@ class LocalMonitoringFrameResult:
     telemetry: ProcessedTelemetrySnapshot
     completed_calibration_profile: Optional[DriverBehaviourProfile] = None
     calibration_rejection_reason: Optional[str] = None
+    operational_state: OperationalState = OperationalState.MONITORING_ACTIVE
 
 
 class LocalMonitoringService:
@@ -680,8 +684,13 @@ class LocalMonitoringService:
                 calib_status_msg = f"CALIBRATION FAILED: {reason}"
                 self.calibration_session = None
 
-        # 6. Drowsiness intelligence evaluation
-        assessment = self.drowsiness_engine.evaluate(features=features, quality=quality)
+        # 6. Drowsiness intelligence evaluation with strict OperationalState calibration gate
+        assessment = self.drowsiness_engine.evaluate(
+            features=features,
+            quality=quality,
+            is_profile_calibrated=self.feature_extractor.is_profile_feasible,
+            is_calibrating=self.is_calibrating,
+        )
 
         # 7. Alert state manager & optional local dispatcher
         transition = self.alert_manager.update(assessment)
@@ -741,7 +750,9 @@ class LocalMonitoringService:
             optical_status=quality.status.value,
             inference_latency_ms=landmark.inference_latency_ms,
             calibrated_profile_id=active_profile_id,
+            operational_state=assessment.operational_state.value,
             shadow_status=shadow_obs.status_label if shadow_obs else "DISABLED",
+            shadow_is_authoritative=False,
             shadow_left_cnn=shadow_obs.left_eye.cnn_predicted_class if shadow_obs else None,
             shadow_right_cnn=shadow_obs.right_eye.cnn_predicted_class if shadow_obs else None,
             shadow_binoc_agreement=shadow_obs.binocular_agreement if shadow_obs else None,
@@ -765,6 +776,7 @@ class LocalMonitoringService:
             telemetry=telemetry,
             completed_calibration_profile=completed_calib_profile,
             calibration_rejection_reason=calib_rejection_reason,
+            operational_state=assessment.operational_state,
         )
 
     def close(self) -> None:
