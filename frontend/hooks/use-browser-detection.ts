@@ -29,7 +29,7 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
     initialProfile = null,
     isMirrored = true,
     targetInferenceFps = 12,
-    autoStartSession = true,
+    autoStartSession = false,
     onSafetyAlert,
     onCalibrationProgress,
     onError,
@@ -188,11 +188,19 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
     return null;
   }, []);
 
+  const setExplicitSessionCode = useCallback((code: string | null) => {
+    setSessionCode(code);
+    if (engineRef.current) {
+      engineRef.current.setSessionCode(code);
+    }
+  }, []);
+
   return {
     engineStatus,
     telemetry,
     calibration,
     sessionCode,
+    setSessionCode: setExplicitSessionCode,
     syncStatus,
     startMonitoring,
     pauseMonitoring,

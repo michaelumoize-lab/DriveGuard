@@ -31,6 +31,10 @@ import { ReadinessChecklist } from "./readiness-checklist";
 import { LiveTelemetryChart, TelemetryHistoryPoint } from "./live-telemetry-chart";
 import { ExplainableRiskPanel } from "./explainable-risk-panel";
 import { useDriveGuardAudio } from "@/hooks/use-driveguard-audio";
+import { runPreFlightHandshake } from "@/lib/monitor/preflight-handshake";
+import { FaultInjectionToolbar } from "@/components/engineering/fault-injection-toolbar";
+import { EulerHeadGyro } from "@/components/engineering/euler-head-gyro";
+import { KinematicsOscilloscope } from "@/components/engineering/kinematics-oscilloscope";
 import {
   Card,
   CardContent,
@@ -259,6 +263,8 @@ export function UnifiedLiveMonitor({
     isMirrored,
     setIsMirrored,
     streamDurationSec,
+    opticalQuality,
+    hardwareDiagnostics,
     startCamera,
     stopCamera,
     pauseCamera,
@@ -478,6 +484,7 @@ export function UnifiedLiveMonitor({
     telemetry: browserTelemetry,
     calibration: browserCalibration,
     sessionCode: browserSessionCode,
+    setSessionCode: setBrowserSessionCode,
     syncStatus: browserSyncStatus,
     startMonitoring: startBrowserMonitoring,
     pauseMonitoring: pauseBrowserMonitoring,
@@ -491,7 +498,7 @@ export function UnifiedLiveMonitor({
     initialProfile: (initialDriverProfile as unknown) as any,
     isMirrored,
     targetInferenceFps: 12,
-    autoStartSession: true,
+    autoStartSession: false,
     onSafetyAlert: handleBrowserSafetyAlert,
   });
 
@@ -741,32 +748,86 @@ export function UnifiedLiveMonitor({
     [runtimeMode, cameraState, stopBrowserMonitoring, stopStreamingLoop, videoRef]
   );
 
-  // Start live monitoring (Hardware Camera + Database Driving Session)
+  const [isPreflightRunning, setIsPreflightRunning] = useState(false);
+  const [activeFault, setActiveFault] = useState<string | null>(null);
+
+  // Start live monitoring (Automotive Pre-Flight Handshake + Database Driving Session)
   const handleStartMonitoring = useCallback(async () => {
     unlockAudio();
     resetSessionStats();
     setChartHistory([]);
-    await startCamera();
+    setIsPreflightRunning(true);
 
-    if (runtimeMode === "remote") {
-      try {
-        const startRes = await fetch("/api/sessions/start", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            mode: experimentMode,
-            device: isMobileDevice ? "MOBILE_PORTRAIT" : "DESKTOP_HUD",
-          }),
-        });
-        if (startRes.ok) {
-          const data = await startRes.json();
-          if (data?.sessionCode) {
-            activeSessionCodeRef.current = data.sessionCode;
-          }
-        }
-      } catch (_) {}
+    // 1. Ensure camera stream is initiated
+    if (cameraState !== "active") {
+      await startCamera();
     }
-  }, [startCamera, runtimeMode, experimentMode, isMobileDevice, unlockAudio, resetSessionStats]);
+
+    // 2. Perform Pre-Flight Readiness Handshake
+    const isAiReady =
+      runtimeMode === "browser"
+        ? browserEngineStatus === "running" || browserEngineStatus === "idle" || browserEngineStatus === "initializing"
+        : isWsConnected;
+
+    const handshake = await runPreFlightHandshake({
+      videoElement: videoRef.current,
+      opticalQuality,
+      isMediaPipeReady: isAiReady,
+      isCascadeReady: true,
+      isAudioUnlocked: isAudioUnlocked,
+    });
+
+    setIsPreflightRunning(false);
+
+    if (!handshake.canStart) {
+      const reasons = handshake.failedSubsystems.join(", ");
+      toast.error(`Pre-Flight Safety Interlock: ${reasons} failed readiness check. Please resolve before starting.`);
+      return;
+    }
+
+    // 3. Authenticate & initialize backend driving session in database
+    try {
+      const startRes = await fetch("/api/sessions/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: experimentMode,
+          device: isMobileDevice ? "MOBILE_PORTRAIT" : "DESKTOP_HUD",
+        }),
+      });
+
+      if (!startRes.ok) {
+        throw new Error(`Session start returned HTTP ${startRes.status}`);
+      }
+
+      const data = await startRes.json();
+      if (data?.sessionCode) {
+        activeSessionCodeRef.current = data.sessionCode;
+        if (runtimeMode === "browser") {
+          setBrowserSessionCode(data.sessionCode);
+        }
+        toast.success(`Monitoring Session Initialized: #${data.sessionCode}`);
+      }
+    } catch (err) {
+      console.error("Failed to start session recording:", err);
+      toast.error("Could not register session in backend database. Check connection.");
+      return;
+    }
+  }, [
+    startCamera,
+    cameraState,
+    videoRef,
+    opticalQuality,
+    runtimeMode,
+    browserEngineStatus,
+    isWsConnected,
+    isAudioUnlocked,
+    experimentMode,
+    isMobileDevice,
+    unlockAudio,
+    resetSessionStats,
+    setBrowserSessionCode,
+  ]);
 
   // Stop live monitoring, persist full session summary & completely clear the cockpit
   const handleStopMonitoring = useCallback(async () => {
@@ -1425,6 +1486,7 @@ export function UnifiedLiveMonitor({
             framingMode={framingMode}
             viewOrientation={viewOrientation}
             isFullscreen={isFullscreen}
+            opticalQuality={opticalQuality}
             onStartClick={handleStartMonitoring}
           >
             {/* In-viewport Floating Cockpit HUD Overlays */}
@@ -1605,6 +1667,32 @@ export function UnifiedLiveMonitor({
                   telemetry={effectiveTelemetry}
                   latencyDiagnostics={latencyDiagnostics}
                   isStale={runtimeMode === "browser" ? false : isStale}
+                />
+
+                {/* Sub-Frame Blink Kinematics Oscilloscope (Innovation 2) */}
+                <KinematicsOscilloscope
+                  currentEar={effectiveTelemetry?.eye_metrics?.ear_raw ?? 0.285}
+                  closureThreshold={effectiveTelemetry?.comparison?.personalised_threshold ?? 0.20}
+                  dEarDt={effectiveTelemetry?.eye_metrics?.blink_rcr ? -0.15 : 0}
+                  rcr={effectiveTelemetry?.eye_metrics?.blink_rcr ?? undefined}
+                />
+
+                {/* 3D Spatial Head Gyroscope & Zone Cones (Innovation 1) */}
+                <EulerHeadGyro
+                  pitchDeg={effectiveTelemetry?.head_pose?.pitch_deg ?? 0}
+                  yawDeg={effectiveTelemetry?.head_pose?.yaw_deg ?? 0}
+                  rollDeg={effectiveTelemetry?.head_pose?.roll_deg ?? 0}
+                  zone={effectiveTelemetry?.comparison?.personalised_zone ?? "CENTER"}
+                />
+
+                {/* Academic Viva & Fault Injection Testbench */}
+                <FaultInjectionToolbar
+                  activeFault={activeFault}
+                  onInjectMirrorGlance={() => setActiveFault("MIRROR_GLANCE")}
+                  onInjectSluggishReopen={() => setActiveFault("SLUGGISH_REOPEN")}
+                  onInjectGlare={() => setActiveFault("GLARE_DEFOCUS")}
+                  onInjectWatchdogTimeout={() => setActiveFault("WATCHDOG_TIMEOUT")}
+                  onResetFaults={() => setActiveFault(null)}
                 />
 
                 {/* Hardware & Cascade Configuration Card */}

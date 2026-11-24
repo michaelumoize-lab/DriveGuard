@@ -24,6 +24,8 @@ import {
   ChevronRight,
   Cpu,
   Sparkles,
+  BarChart3,
+  Brain,
   Sun,
   Moon,
   Monitor,
@@ -121,6 +123,21 @@ const mainNavItems: NavItem[] = [
     title: "System Specs",
     href: "/dashboard/project-overview",
     icon: Sparkles,
+  },
+  {
+    title: "Ablation Benchmarks",
+    href: "/dashboard/benchmarks",
+    icon: BarChart3,
+  },
+  {
+    title: "Hardware Co-Processor",
+    href: "/dashboard/hardware",
+    icon: Cpu,
+  },
+  {
+    title: "Defense Companion",
+    href: "/dashboard/defense-guide",
+    icon: Brain,
   },
 ];
 

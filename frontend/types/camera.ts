@@ -84,3 +84,43 @@ export interface FrameConsumer {
   name: string;
   onFrame: (frame: CapturedFrame) => Promise<void> | void;
 }
+
+export type LightingCondition = "UNDEREXPOSED" | "OPTIMAL" | "OVEREXPOSED";
+export type BlurCondition = "BLURRY" | "SHARP";
+export type OpticalQualityStatus = "EXCELLENT" | "ACCEPTABLE" | "POOR" | "SEVERELY_DEGRADED";
+
+export interface OpticalFrameQuality {
+  meanLuminance: number; // 0 - 255
+  blurVarianceScore: number; // Laplacian variance
+  lightingCondition: LightingCondition;
+  blurCondition: BlurCondition;
+  overallQuality: OpticalQualityStatus;
+  reasonCodes: string[];
+}
+
+export interface CameraHardwareDiagnostics {
+  measuredFps: number;
+  negotiatedWidth: number;
+  negotiatedHeight: number;
+  negotiatedFps?: number;
+  frameDropCount: number;
+  jitterMs: number;
+  deviceLabel: string;
+  facingMode: CameraFacingMode;
+  opticalQuality?: OpticalFrameQuality;
+}
+
+export interface PositioningGuidance {
+  isOptimal: boolean;
+  hasFace: boolean;
+  distanceStatus: "PERFECT" | "TOO_FAR" | "TOO_CLOSE" | "UNKNOWN";
+  distanceFeedback: string;
+  faceHeightRatio: number;
+  centeringStatus: "CENTERED" | "TOO_LEFT" | "TOO_RIGHT" | "TOO_HIGH" | "TOO_LOW" | "UNKNOWN";
+  centeringFeedback: string;
+  angleStatus: "OPTIMAL" | "TOO_OBLIQUE" | "TOO_STEEP" | "TILTED" | "UNKNOWN";
+  angleFeedback: string;
+  yawDeg: number;
+  pitchDeg: number;
+  rollDeg: number;
+}
