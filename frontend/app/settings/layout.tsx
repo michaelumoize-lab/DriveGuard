@@ -1,11 +1,13 @@
 import React from "react";
 import { redirect } from "next/navigation";
 import { getServerSession } from "@/lib/get-session";
+import { prisma } from "@/lib/prisma";
 import { Sidebar } from "@/components/sidebar";
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { NavbarSystemHealthBadge } from "@/components/dashboard/navbar-health-badge";
-import { ThemeToggle } from "@/components/theme-toggle";
+import { DashboardHeaderActions } from "@/components/dashboard/dashboard-header-actions";
+import { WorkspaceBreadcrumb } from "@/components/dashboard/workspace-breadcrumb";
 import { CommandPalette } from "@/components/command-palette";
 
 export default async function SettingsLayout({
@@ -18,6 +20,13 @@ export default async function SettingsLayout({
   if (!session) {
     redirect("/auth/sign-in?redirectTo=/settings/account");
   }
+
+  const criticalAlertsCount = await prisma.drowsinessAlert.count({
+    where: {
+      severity: "CRITICAL",
+      session: { userId: session.user.id },
+    },
+  });
 
   const user = {
     id: session.user.id,
@@ -38,20 +47,14 @@ export default async function SettingsLayout({
             <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-background/80 px-2 sm:px-4 md:px-6 backdrop-blur-md">
               <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
                 <SidebarTrigger className="text-muted-foreground hover:text-foreground cursor-pointer h-9 w-9 shrink-0" aria-label="Toggle Navigation Sidebar" />
-                <div className="hidden sm:flex items-center gap-2 text-xs font-mono text-muted-foreground truncate">
-                  <span className="text-muted-foreground/70">DriveGuard</span>
-                  <span className="text-border">/</span>
-                  <span className="text-foreground font-medium">Settings</span>
-                </div>
+                <WorkspaceBreadcrumb />
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
                 <NavbarSystemHealthBadge />
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
-                <ThemeToggle />
-              </div>
+              <DashboardHeaderActions criticalAlertsCount={criticalAlertsCount} />
             </header>
 
             <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto outline-none">

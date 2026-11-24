@@ -92,10 +92,14 @@ export function UnifiedLiveMonitor({
 }: UnifiedLiveMonitorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { setOpen: setSidebarOpen } = useSidebar();
+  const hasAutoCollapsedRef = useRef(false);
 
-  // Auto-collapse the left navigation sidebar when entering the Live Monitoring Console
-  // so the two-column cockpit has maximum horizontal breathing room (+256px).
+  // Auto-collapse the left navigation sidebar once on mount when entering Live Monitoring
+  // so the cockpit has maximum horizontal breathing room, while still allowing the user
+  // to expand it freely via the sidebar toggle.
   useEffect(() => {
+    if (hasAutoCollapsedRef.current) return;
+    hasAutoCollapsedRef.current = true;
     setSidebarOpen(false);
   }, [setSidebarOpen]);
 
