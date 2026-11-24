@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { DM_Sans, Geist, Geist_Mono, Manrope } from "next/font/google";
 import "./globals.css";
 import type { ReactNode } from "react";
 
@@ -9,6 +9,8 @@ import { cn } from "@/lib/utils";
 
 const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
 const geistMono = Geist_Mono({ subsets: ["latin"], variable: "--font-geist-mono" });
+const manrope = Manrope({ subsets: ["latin"], variable: "--font-manrope" });
+const dmSans = DM_Sans({ subsets: ["latin"], variable: "--font-dm-sans" });
 
 export const viewport: Viewport = {
   width: "device-width",
@@ -52,7 +54,13 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={cn("font-sans", geist.variable, geistMono.variable)}
+      className={cn(
+        "font-sans",
+        geist.variable,
+        geistMono.variable,
+        manrope.variable,
+        dmSans.variable
+      )}
     >
       <body className="antialiased min-h-svh flex flex-col">
         <a

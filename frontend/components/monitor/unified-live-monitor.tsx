@@ -1493,8 +1493,8 @@ export function UnifiedLiveMonitor({
             {cameraState === "active" && (
               <>
                 {/* Top Floating Status Strip */}
-                <div className="absolute top-3 left-3 right-3 flex items-center justify-between pointer-events-none z-10">
-                  <div className="flex items-center gap-1.5 flex-wrap">
+                <div className="absolute top-3 left-3 right-3 flex items-start justify-between pointer-events-none z-10 gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap pointer-events-auto">
                     {renderOverlayStateBadge()}
 
                     {effectiveTelemetry && (
@@ -1507,8 +1507,25 @@ export function UnifiedLiveMonitor({
                     )}
                   </div>
 
-                  {/* Latency & Resolution */}
-                  <div className="flex items-center gap-1.5">
+                  {/* Right side: Optical Quality & Latency */}
+                  <div className="flex items-center gap-1.5 pointer-events-auto flex-wrap justify-end">
+                    {opticalQuality && (
+                      <div className="flex items-center gap-1.5 bg-black/75 backdrop-blur-md px-2.5 py-1 rounded-md border border-white/15 text-[10px] font-mono text-zinc-300 shadow-md">
+                        <span
+                          className={`size-1.5 rounded-full ${
+                            opticalQuality.overallQuality === "EXCELLENT" || opticalQuality.overallQuality === "ACCEPTABLE"
+                              ? "bg-emerald-400"
+                              : "bg-amber-400"
+                          }`}
+                        />
+                        <span>LUM: {Math.round(opticalQuality.meanLuminance)}</span>
+                        <span className="text-zinc-500">•</span>
+                        <span className={opticalQuality.blurCondition === "BLURRY" ? "text-rose-400" : "text-zinc-300"}>
+                          {opticalQuality.blurCondition} ({Math.round(opticalQuality.blurVarianceScore)})
+                        </span>
+                      </div>
+                    )}
+
                     {roundtripLatencyMs > 0 && runtimeMode === "remote" && (
                       <Badge
                         variant="outline"

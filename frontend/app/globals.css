@@ -169,3 +169,31 @@
     }
   }
 }
+
+/* Scoped DriveGuard Landing Page Design System (Automotive + AI Hybrid) */
+.driveguard-landing {
+  --dg-bg-main: #101211;
+  --dg-bg-elevated: #191d1a;
+  --dg-bg-panel: #141715;
+  --dg-text-primary: #f5f3ec;
+  --dg-text-muted: #9ea39b;
+  --dg-text-subtle: #6e746c;
+  --dg-accent: #e58b43;
+  --dg-safe: #79b99a;
+  --dg-warning: #e8a04b;
+  --dg-critical: #e45e52;
+  --dg-border: rgba(245, 243, 236, 0.09);
+  --dg-border-strong: rgba(245, 243, 236, 0.16);
+
+  background-color: var(--dg-bg-main);
+  color: var(--dg-text-primary);
+  font-family: var(--font-dm-sans), var(--font-sans), sans-serif;
+  color-scheme: dark;
+}
+
+.driveguard-landing h1,
+.driveguard-landing h2,
+.driveguard-landing h3,
+.driveguard-landing .font-display {
+  font-family: var(--font-manrope), var(--font-dm-sans), sans-serif;
+}

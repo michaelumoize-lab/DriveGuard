@@ -115,9 +115,13 @@ export function CameraView({
             </div>
           )}
 
-          {/* Optical Environment Telemetry Tag */}
-          {opticalQuality && (
-            <div className="absolute top-4 left-14 pointer-events-auto flex items-center gap-1.5 bg-black/70 backdrop-blur-xs px-2.5 py-1 rounded-md border border-white/10 text-[10px] font-mono text-zinc-300">
+          {/* Optical Environment Telemetry Tag (Default bottom-left positioning if no children overlay is provided) */}
+          {opticalQuality && !children && (
+            <div
+              className={`absolute ${
+                isFullscreen ? "bottom-16 left-4" : "bottom-3 left-4"
+              } pointer-events-auto flex items-center gap-1.5 bg-black/75 backdrop-blur-md px-2.5 py-1 rounded-md border border-white/15 text-[10px] font-mono text-zinc-300 shadow-md`}
+            >
               <span
                 className={`size-1.5 rounded-full ${
                   opticalQuality.overallQuality === "EXCELLENT" || opticalQuality.overallQuality === "ACCEPTABLE"
