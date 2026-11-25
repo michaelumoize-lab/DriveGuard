@@ -2,7 +2,8 @@ import React from "react";
 import { getServerSession } from "@/lib/get-session";
 import { getOrCreateUserProfile } from "@/lib/user-profile";
 import { prisma } from "@/lib/prisma";
-import { UnifiedLiveMonitor, InitialDriverProfileData, InitialUserPreferencesData } from "@/components/monitor/unified-live-monitor";
+import { mapDriverProfileData } from "@/lib/api/driver-profile-mapper";
+import { UnifiedLiveMonitor, InitialUserPreferencesData } from "@/components/monitor/unified-live-monitor";
 
 export const metadata = {
   title: "Live Driver Telemetry Monitor | DriveGuard",
@@ -71,35 +72,10 @@ export default async function LiveMonitorPage({ searchParams }: LiveMonitorPageP
       : [],
   ]);
 
-  const mapProfile = (
-    p: (typeof driverProfiles)[number] | undefined
-  ): InitialDriverProfileData | null =>
-    p
-      ? {
-          engineType: p.engineType,
-          isCalibrated: p.isCalibrated,
-          calibrationMode: p.calibrationMode,
-          centerEarMedian: p.centerEarMedian,
-          centerEarMadScaled: p.centerEarMadScaled,
-          blinkDurationMedianMs: p.blinkDurationMedianMs,
-          blinkDurationMadMs: p.blinkDurationMadMs,
-          blinkRcrMedian: p.blinkRcrMedian,
-          blinkRcrMad: p.blinkRcrMad,
-          neutralPitchDeg: p.neutralPitchDeg,
-          neutralYawDeg: p.neutralYawDeg,
-          neutralRotMat: (p.neutralRotMat as number[][] | null) ?? null,
-          calibrationIsMirrored: p.calibrationIsMirrored ?? null,
-          calibrationReliability: p.calibrationReliability,
-          profileVersion: p.profileVersion,
-          profileHash: p.contentHash ?? null,
-          zoneBaselines: (p.zoneBaselines as Record<string, unknown> | null) ?? null,
-        }
-      : null;
-
-  const browserProfile = mapProfile(
+  const browserProfile = mapDriverProfileData(
     driverProfiles.find((p) => p.engineType === "BROWSER")
   );
-  const pythonProfile = mapProfile(
+  const pythonProfile = mapDriverProfileData(
     driverProfiles.find((p) => p.engineType === "PYTHON")
   );
   const initialDriverProfile =

@@ -13,6 +13,7 @@ const ROUTE_SEGMENTS: Record<string, string[]> = {
   "/dashboard/benchmarks": ["Research & System", "Ablation Benchmarks"],
   "/dashboard/hardware": ["Research & System", "Hardware Co-Processor"],
   "/dashboard/camera-simulation": ["Research & System", "Camera Simulation"],
+  "/dashboard/synthetic-testbench": ["Research & System", "Synthetic Testbench"],
   "/dashboard/defense-guide": ["Research & System", "Defense Companion"],
   "/dashboard/help": ["Help"],
 };

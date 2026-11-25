@@ -33,32 +33,32 @@ export function LandingHeaderAuth({ user }: LandingHeaderAuthProps) {
   const isAuthenticated = !!effectiveUser;
 
   return (
-    <div className="flex items-center gap-2 sm:gap-2.5">
+    <div className="flex items-center gap-1.5 sm:gap-2.5">
       <ThemeToggle />
 
       {isAuthenticated ? (
         <>
           <Link
             href="/dashboard"
-            className="px-3.5 py-2 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold text-xs rounded-xl transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="min-h-11 md:min-h-9 px-3 sm:px-3.5 py-2 bg-primary hover:bg-primary/90 text-primary-foreground font-semibold text-xs rounded-xl transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <LayoutDashboard className="w-3.5 h-3.5" />
+            <LayoutDashboard className="size-3.5" aria-hidden="true" />
             <span className="hidden xs:inline">Command Center</span>
             <span className="xs:hidden">Dashboard</span>
-            <ArrowRight className="w-3.5 h-3.5" />
+            <ArrowRight className="size-3.5" aria-hidden="true" />
           </Link>
-          <UserButton size="icon" user={effectiveUser as User} />
+          <UserButton size="icon" className="size-11 md:size-8" user={effectiveUser as User} />
         </>
       ) : (
         <>
           <Link
             href="/auth/sign-in"
-            className="px-3.5 py-2 text-xs font-semibold text-foreground hover:bg-accent border border-border rounded-xl transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="min-h-11 md:min-h-9 px-3 sm:px-3.5 py-2 text-xs font-semibold text-foreground hover:bg-accent border border-border rounded-xl transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <LogIn className="w-3.5 h-3.5" />
+            <LogIn className="size-3.5" aria-hidden="true" />
             <span>Sign In</span>
           </Link>
-          <UserButton size="icon" user={null} />
+          <UserButton size="icon" className="size-11 md:size-8" user={null} />
         </>
       )}
     </div>

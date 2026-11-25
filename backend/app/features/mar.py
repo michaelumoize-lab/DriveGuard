@@ -75,7 +75,7 @@ DEFAULT_MAX_YAWN_DURATION_MS: float = 8000.0    # Maximum realistic single yawn 
 
 # Tracking Gap & Dropout Thresholds
 DEFAULT_DROPOUT_GRACE_MS: float = 200.0         # Maximum tolerance for transient landmark loss
-DEFAULT_MAX_SAMPLING_GAP_MS: float = 250.0      # Inter-frame gap threshold triggering event reset (aligned with Blink/PERCLOS/Temporal)
+DEFAULT_MAX_SAMPLING_GAP_MS: float = 400.0      # Inter-frame gap threshold triggering yawn reset (tolerates ~10 FPS browser jitter)
 
 # Baseline Parameters
 DEFAULT_CLOSED_BASELINE_THRESHOLD: float = 0.28  # Maximum MAR to qualify as closed for baseline update

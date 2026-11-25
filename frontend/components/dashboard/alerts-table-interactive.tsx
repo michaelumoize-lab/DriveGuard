@@ -64,19 +64,19 @@ export function AlertsTableInteractive({
               variant={severityFilter === tab.id ? "default" : "outline"}
               size="sm"
               onClick={() => setSeverityFilter(tab.id)}
-              className="h-7 text-[11px] px-2.5"
+              className="min-h-11 sm:h-7 sm:min-h-0 text-[11px] px-3 sm:px-2.5"
             >
               {tab.label}
             </Button>
           ))}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2">
           <select
             aria-label="Filter alerts by cabin gaze zone"
             value={zoneFilter}
             onChange={(e) => setZoneFilter(e.target.value)}
-            className="h-8 rounded-md border border-input bg-background text-foreground px-2.5 text-xs font-mono focus-visible:ring-2 focus-visible:ring-primary outline-none"
+            className="min-h-11 sm:h-8 sm:min-h-0 w-full sm:w-auto rounded-md border border-input bg-background text-foreground px-2.5 text-xs font-mono focus-visible:ring-2 focus-visible:ring-ring outline-none"
           >
             <option value="ALL">All Gaze Zones</option>
             <option value="CENTER">CENTER (Road Ahead)</option>
@@ -85,15 +85,15 @@ export function AlertsTableInteractive({
             <option value="DASHBOARD">DASHBOARD (Instrument Cluster)</option>
           </select>
 
-          <div className="relative w-56">
-            <Search className="size-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <div className="relative w-full sm:w-56">
+            <Search className="size-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" aria-hidden="true" />
             <Input
               type="search"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Filter reason or authority…"
               aria-label="Filter alerts by reason code or cascade authority"
-              className="pl-8 h-8 text-xs"
+              className="pl-8 min-h-11 sm:h-8 sm:min-h-0 text-xs"
             />
           </div>
         </div>

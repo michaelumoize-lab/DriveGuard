@@ -77,23 +77,23 @@ export function LandingNavbar({ user }: LandingNavbarProps) {
       className={cn(
         "fixed inset-x-0 top-0 z-50 transition-[padding,background-color,border-color,backdrop-filter] duration-300",
         isScrolled
-          ? "py-0 bg-background/85 backdrop-blur-xl border-b border-border/80 shadow-xs"
-          : "pt-2.5 sm:pt-3.5 bg-transparent border-b border-transparent"
+          ? "pt-safe bg-background/85 backdrop-blur-xl border-b border-border/80 shadow-xs"
+          : "pt-[max(0.625rem,env(safe-area-inset-top,0px))] sm:pt-[max(0.875rem,env(safe-area-inset-top,0px))] bg-transparent border-b border-transparent"
       )}
     >
       <div
         className={cn(
-          "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-4 transition-[height] duration-300",
+          "max-w-7xl mx-auto pl-[max(1rem,env(safe-area-inset-left,0px))] pr-[max(1rem,env(safe-area-inset-right,0px))] sm:pl-[max(1.5rem,env(safe-area-inset-left,0px))] sm:pr-[max(1.5rem,env(safe-area-inset-right,0px))] lg:pl-[max(2rem,env(safe-area-inset-left,0px))] lg:pr-[max(2rem,env(safe-area-inset-right,0px))] flex items-center justify-between gap-2 sm:gap-4 transition-[height] duration-300",
           isScrolled ? "h-16" : "h-16"
         )}
       >
         {/* Brand Identity */}
         <Link
           href="/"
-          className="group flex items-center gap-3 rounded-xl py-1 pr-2 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="group flex items-center gap-3 rounded-xl py-1 pr-2 outline-none focus-visible:ring-2 focus-visible:ring-ring min-w-0"
         >
-          <Logo className="size-9 rounded-xl border border-border/80 transition-transform duration-200 group-hover:scale-[1.03]" />
-          <div className="leading-tight">
+          <Logo className="size-9 rounded-xl border border-border/80 transition-transform duration-200 group-hover:scale-[1.03] shrink-0" />
+          <div className="leading-tight min-w-0">
             <span className="font-display font-bold tracking-tight text-base block text-foreground whitespace-nowrap">
               DriveGuard
             </span>
@@ -107,7 +107,7 @@ export function LandingNavbar({ user }: LandingNavbarProps) {
         <nav
           aria-label="Primary Navigation"
           className={cn(
-            "hidden md:flex items-center gap-1 rounded-full p-1 transition-all duration-300",
+            "hidden md:flex items-center gap-1 rounded-full p-1 transition-[background-color,border-color,box-shadow] duration-300",
             isScrolled
               ? "bg-muted/70 border border-border/80"
               : "bg-card/80 border border-border/80 backdrop-blur-xl shadow-sm"
@@ -163,16 +163,16 @@ export function LandingNavbar({ user }: LandingNavbarProps) {
         </nav>
 
         {/* Right Actions + Mobile Trigger */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           <LandingHeaderAuth user={user} />
           <button
             type="button"
             onClick={() => setMobileMenuOpen((prev) => !prev)}
             aria-expanded={mobileMenuOpen}
             aria-label={mobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
-            className="md:hidden inline-flex items-center justify-center size-9 rounded-xl border border-border bg-card/80 text-foreground hover:bg-accent transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="md:hidden inline-flex items-center justify-center size-11 rounded-xl border border-border bg-card/80 text-foreground hover:bg-accent transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            {mobileMenuOpen ? <X className="size-4" /> : <Menu className="size-4" />}
+            {mobileMenuOpen ? <X className="size-4" aria-hidden="true" /> : <Menu className="size-4" aria-hidden="true" />}
           </button>
         </div>
       </div>
@@ -186,7 +186,7 @@ export function LandingNavbar({ user }: LandingNavbarProps) {
             animate={{ opacity: 1, y: 0 }}
             exit={prefersReducedMotion ? undefined : { opacity: 0, y: -8 }}
             transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-            className="md:hidden mt-1 border-y border-border bg-card/95 backdrop-blur-xl px-4 py-3 space-y-1 shadow-lg"
+            className="md:hidden mt-1 border-y border-border bg-card/95 backdrop-blur-xl pl-[max(1rem,env(safe-area-inset-left,0px))] pr-[max(1rem,env(safe-area-inset-right,0px))] py-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] flex flex-col gap-1 shadow-lg overscroll-contain"
           >
             {SECTION_LINKS.map((item) => {
               const isActive = activeSection === item.id;
@@ -196,24 +196,24 @@ export function LandingNavbar({ user }: LandingNavbarProps) {
                   href={item.href}
                   onClick={(e) => handleAnchorClick(e, item.href, item.id, true)}
                   className={cn(
-                    "flex items-center justify-between rounded-xl px-3.5 py-2.5 text-sm font-medium transition-colors",
+                    "flex items-center justify-between rounded-xl px-3.5 min-h-11 py-2.5 text-sm font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     isActive
                       ? "bg-muted text-foreground"
                       : "text-muted-foreground hover:bg-accent hover:text-foreground"
                   )}
                 >
                   <span>{item.label}</span>
-                  {isActive && <span className="size-1.5 rounded-full bg-primary" />}
+                  {isActive && <span className="size-1.5 rounded-full bg-primary" aria-hidden="true" />}
                 </a>
               );
             })}
             <Link
               href="/help"
               onClick={() => setMobileMenuOpen(false)}
-              className="flex items-center justify-between rounded-xl px-3.5 py-2.5 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+              className="flex items-center justify-between rounded-xl px-3.5 min-h-11 py-2.5 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <span>Documentation</span>
-              <ArrowUpRight className="size-4 opacity-70" />
+              <ArrowUpRight className="size-4 opacity-70" aria-hidden="true" />
             </Link>
           </motion.nav>
         )}

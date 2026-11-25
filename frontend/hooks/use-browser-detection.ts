@@ -23,6 +23,8 @@ import {
 export interface UseBrowserDetectionOptions {
   driverId?: string;
   initialProfile?: DriverBehaviourProfileData | unknown | null;
+  profileStore?: typeof browserProfileStore;
+  offlineOnly?: boolean;
   isMirrored?: boolean;
   sensitivityLevel?: string | null;
   mirrorSuppression?: boolean;
@@ -45,6 +47,8 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
   const {
     driverId = "driver_default",
     initialProfile = null,
+    profileStore = browserProfileStore,
+    offlineOnly = false,
     isMirrored = false,
     sensitivityLevel = "STANDARD",
     mirrorSuppression = true,
@@ -64,7 +68,7 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
   const [profileSyncStatus, setProfileSyncStatus] =
     useState<BrowserProfileSyncState>("LOCAL_ONLY");
   const [storageMode, setStorageMode] = useState<BrowserProfileStorageMode>(
-    browserProfileStore.storageMode
+    profileStore.storageMode
   );
   const [activeProfile, setActiveProfile] = useState<DriverBehaviourProfileData | null>(null);
   const [isCalibrated, setIsCalibrated] = useState<boolean>(false);
@@ -106,6 +110,7 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
     const engine = new BrowserDetectionEngine({
       driverId,
       profile: initialProfileRef.current,
+      profileStore,
       isMirrored: false,
       sensitivityLevel: sensitivityLevelRef.current,
       mirrorSuppression: mirrorSuppressionRef.current,
@@ -153,25 +158,25 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
     setIsCalibrated(engine.isCalibrated);
     setActiveProfile(engine.activeProfile);
 
-    // Hydrate immediately from IndexedDB (offline-ready) then reconcile asynchronously with Neon
+    // Hydrate immediately from IndexedDB (offline-ready) then reconcile asynchronously when allowed
     let cancelled = false;
     void (async () => {
-      const localRecord = await browserProfileStore.getLocalProfile(driverId);
+      const localRecord = await profileStore.getLocalProfile(driverId);
       if (cancelled || engineRef.current !== engine) return;
-      setStorageMode(browserProfileStore.storageMode);
+      setStorageMode(profileStore.storageMode);
 
       if (localRecord?.profile) {
         engine.setProfile(localRecord.profile);
         setActiveProfile(engine.activeProfile);
         setIsCalibrated(engine.isCalibrated);
         setProfileSyncStatus(localRecord.syncState);
-      } else if (initialProfileRef.current) {
+      } else if (!offlineOnly && initialProfileRef.current) {
         const norm = normalizeDriverProfile(initialProfileRef.current);
         if (norm.isCalibrated && norm.profile && norm.profile.engineType === "BROWSER") {
           engine.setProfile(norm.profile);
           setActiveProfile(norm.profile);
           setIsCalibrated(true);
-          await browserProfileStore.saveLocalProfile(driverId, norm.profile, {
+          await profileStore.saveLocalProfile(driverId, norm.profile, {
             profileUuid: norm.profile.profileUuid,
             profileVersion: norm.profile.profileVersion ?? 1,
             baseServerVersion: norm.profile.profileVersion ?? 1,
@@ -182,8 +187,12 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
         }
       }
 
+      if (offlineOnly) {
+        return;
+      }
+
       // Non-blocking background reconciliation with PostgreSQL BROWSER profile
-      const reconciled = await browserProfileStore.reconcileWithServer(driverId);
+      const reconciled = await profileStore.reconcileWithServer(driverId);
       if (cancelled || engineRef.current !== engine) return;
       if (reconciled.record?.profile) {
         engine.setProfile(reconciled.record.profile);
@@ -198,7 +207,7 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
       engine.dispose();
       engineRef.current = null;
     };
-  }, [driverId, targetInferenceFps]);
+  }, [driverId, targetInferenceFps, profileStore, offlineOnly]);
 
   // Apply explicit profile updates without recreating engine
   useEffect(() => {

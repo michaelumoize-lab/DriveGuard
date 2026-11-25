@@ -916,7 +916,7 @@ export function GuidedCalibrationWizard({
       ref={containerRef}
       className={`space-y-5 transition-colors ${
         isFullscreen
-          ? "fixed inset-0 z-50 bg-black p-4 flex flex-col justify-between overflow-hidden"
+          ? "fixed inset-0 z-50 bg-black pt-[max(1rem,env(safe-area-inset-top,0px))] pb-[max(1rem,env(safe-area-inset-bottom,0px))] pl-[max(1rem,env(safe-area-inset-left,0px))] pr-[max(1rem,env(safe-area-inset-right,0px))] flex flex-col justify-between overflow-hidden"
           : ""
       }`}
     >

@@ -217,6 +217,14 @@ export function LiveTelemetryHUD({
   const blinkDur = eye_metrics?.blink_duration_ms;
   const blinkRcr = eye_metrics?.blink_rcr;
   const blinkRate = eye_metrics?.blink_rate_per_min ?? 0;
+  const totalBlinkCount = eye_metrics?.total_blink_count ?? 0;
+  const totalYawnCount = eye_metrics?.total_yawn_count ?? 0;
+  const isYawning =
+    Boolean(eye_metrics?.is_yawning) ||
+    Boolean(reason_codes?.includes("AUTHENTIC_YAWN")) ||
+    Boolean(reason_codes?.includes("FREQUENT_YAWNING"));
+  const eyeClosureDurationMs = Math.round(eye_metrics?.eye_closure_duration_ms ?? 0);
+  const frameIndex = telemetry.frame_index ?? 0;
 
   const effectiveState = resolveEffectiveDisplayState(telemetry, {
     isConnected: isCameraActive,
@@ -699,26 +707,44 @@ export function LiveTelemetryHUD({
           </div>
         </div>
 
-        {/* Instrument 3: Blink Rate */}
+        {/* Instrument 3: Blink Count & Frequency */}
         <div className="p-2.5 rounded-xl bg-card border border-border shadow-2xs space-y-1">
-          <div className="text-[10px] text-muted-foreground uppercase flex items-center gap-1">
-            <Eye className="size-3 text-primary shrink-0" />
-            <span className="truncate">Blink Frequency</span>
+          <div className="text-[10px] text-muted-foreground uppercase flex items-center justify-between gap-1">
+            <span className="flex items-center gap-1 truncate">
+              <Eye className="size-3 text-primary shrink-0" />
+              <span className="truncate">Blinks</span>
+            </span>
+            <span className="text-[10px] font-bold text-primary">
+              {totalBlinkCount}
+            </span>
           </div>
           <div className="font-bold text-foreground text-xs truncate">
-            {blinkRate > 0 ? `${blinkRate.toFixed(1)} /min` : "--"}
+            {blinkRate > 0 ? `${blinkRate.toFixed(1)} /min` : `${totalBlinkCount} total`}
           </div>
           <div className="text-[10px] text-muted-foreground font-sans truncate">
             {blinkDur ? `Last: ${Math.round(blinkDur)}ms` : "Normal cadence"}
           </div>
         </div>
 
-        {/* Instrument 4: Yawn MAR & Kinematics */}
-        <div className="p-2.5 rounded-xl bg-card border border-border shadow-2xs space-y-1">
-          <div className="text-[10px] text-muted-foreground uppercase flex items-center justify-between">
+        {/* Instrument 4: Yawn Count, MAR & RCR */}
+        <div
+          className={`p-2.5 rounded-xl border shadow-2xs space-y-1 ${
+            isYawning
+              ? "bg-amber-500/10 border-amber-500/40"
+              : "bg-card border-border"
+          }`}
+        >
+          <div className="text-[10px] text-muted-foreground uppercase flex items-center justify-between gap-1">
             <span className="flex items-center gap-1 truncate">
               <Timer className="size-3 text-primary shrink-0" />
-              <span>Yawn MAR / RCR</span>
+              <span>Yawns / MAR</span>
+            </span>
+            <span
+              className={`text-[10px] font-bold ${
+                isYawning ? "text-amber-500" : "text-primary"
+              }`}
+            >
+              {totalYawnCount}
             </span>
           </div>
           <div className="font-bold text-foreground text-xs truncate">
@@ -726,11 +752,68 @@ export function LiveTelemetryHUD({
               ? `MAR: ${marYawn.toFixed(2)}${blinkRcr ? ` · RCR ${blinkRcr.toFixed(2)}` : ""}`
               : "Unavailable"}
           </div>
-          <div className="text-[10px] text-muted-foreground font-sans truncate">
-            {reason_codes?.includes("AUTHENTIC_YAWN") || reason_codes?.includes("FREQUENT_YAWNING")
-              ? "Active yawn detected"
-              : "Mouth aperture nominal"}
+          <div
+            className={`text-[10px] font-sans truncate ${
+              isYawning ? "text-amber-500 font-semibold" : "text-muted-foreground"
+            }`}
+          >
+            {isYawning ? "Active yawn detected" : "Mouth aperture nominal"}
           </div>
+        </div>
+      </div>
+
+      {/* 4b. Real-Time Session Counters Strip */}
+      <div className="grid grid-cols-4 gap-2 text-xs font-mono tabular-nums">
+        <div className="px-2.5 py-2 rounded-xl bg-muted/30 border border-border/70 flex flex-col">
+          <span className="text-[9px] uppercase text-muted-foreground">Total Blinks</span>
+          <span className="text-sm font-bold text-foreground mt-0.5">{totalBlinkCount}</span>
+        </div>
+        <div
+          className={`px-2.5 py-2 rounded-xl border flex flex-col ${
+            isYawning
+              ? "bg-amber-500/15 border-amber-500/40"
+              : "bg-muted/30 border-border/70"
+          }`}
+        >
+          <span className="text-[9px] uppercase text-muted-foreground flex items-center justify-between">
+            <span>Yawns</span>
+            {isYawning && (
+              <span className="text-[8px] font-bold text-amber-500 uppercase">Live</span>
+            )}
+          </span>
+          <span
+            className={`text-sm font-bold mt-0.5 ${
+              isYawning ? "text-amber-500" : "text-foreground"
+            }`}
+          >
+            {totalYawnCount}
+          </span>
+        </div>
+        <div
+          className={`px-2.5 py-2 rounded-xl border flex flex-col ${
+            isEyeClosed && eyeClosureDurationMs >= 500
+              ? "bg-rose-500/15 border-rose-500/40"
+              : "bg-muted/30 border-border/70"
+          }`}
+        >
+          <span className="text-[9px] uppercase text-muted-foreground">Eye Closure</span>
+          <span
+            className={`text-sm font-bold mt-0.5 ${
+              isEyeClosed && eyeClosureDurationMs >= 500
+                ? "text-rose-500"
+                : isEyeClosed
+                  ? "text-amber-500"
+                  : "text-foreground"
+            }`}
+          >
+            {eyeClosureDurationMs}ms
+          </span>
+        </div>
+        <div className="px-2.5 py-2 rounded-xl bg-muted/30 border border-border/70 flex flex-col">
+          <span className="text-[9px] uppercase text-muted-foreground">Frames</span>
+          <span className="text-sm font-bold text-foreground mt-0.5">
+            #{frameIndex.toLocaleString()}
+          </span>
         </div>
       </div>
 

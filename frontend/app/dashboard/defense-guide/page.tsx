@@ -1,5 +1,3 @@
-"use client";
-
 import React from "react";
 import {
   Card,
@@ -8,20 +6,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import {
-  Sparkles,
-  ShieldAlert,
-  Brain,
-  Compass,
-  Zap,
-  Activity,
-  Layers,
-  CheckCircle2,
-  AlertTriangle,
-  HelpCircle,
-} from "lucide-react";
+import { Sparkles, Brain, Layers } from "lucide-react";
 
 export default function DefenseGuidePage() {
   return (

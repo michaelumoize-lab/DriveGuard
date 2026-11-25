@@ -146,13 +146,13 @@ export function CalibrationViewport({
           <div
             role="group"
             aria-label="Calibration AI engine"
-            className="inline-flex items-center bg-muted/60 rounded-lg p-0.5 text-[11px] font-medium border border-border"
+            className="flex flex-wrap items-center bg-muted/60 rounded-lg p-0.5 text-[11px] font-medium border border-border max-w-full"
           >
             <button
               type="button"
               aria-pressed={calibrationEngine === "browser"}
               onClick={() => onSelectEngine("browser")}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              className={`inline-flex items-center gap-1 px-2.5 min-h-10 sm:min-h-7 py-1 rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                 calibrationEngine === "browser"
                   ? "bg-primary text-primary-foreground font-semibold shadow-xs"
                   : "text-muted-foreground hover:text-foreground"
@@ -166,7 +166,7 @@ export function CalibrationViewport({
               type="button"
               aria-pressed={calibrationEngine === "python" && backendType === "local"}
               onClick={() => onSelectEngine("python", "local")}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              className={`inline-flex items-center gap-1 px-2.5 min-h-10 sm:min-h-7 py-1 rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                 calibrationEngine === "python" && backendType === "local"
                   ? "bg-primary text-primary-foreground font-semibold shadow-xs"
                   : "text-muted-foreground hover:text-foreground"
@@ -180,7 +180,7 @@ export function CalibrationViewport({
               type="button"
               aria-pressed={calibrationEngine === "python" && backendType === "cloud"}
               onClick={() => onSelectEngine("python", "cloud")}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              className={`inline-flex items-center gap-1 px-2.5 min-h-10 sm:min-h-7 py-1 rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                 calibrationEngine === "python" && backendType === "cloud"
                   ? "bg-primary text-primary-foreground font-semibold shadow-xs"
                   : "text-muted-foreground hover:text-foreground"
@@ -232,7 +232,7 @@ export function CalibrationViewport({
               size="sm"
               variant="ghost"
               onClick={onToggleFullscreen}
-              className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+              className="size-11 sm:size-8 p-0 text-muted-foreground hover:text-foreground"
               title={isFullscreen ? "Exit fullscreen" : "Fullscreen view"}
               aria-label={isFullscreen ? "Exit fullscreen view" : "Enter fullscreen view"}
             >
@@ -247,7 +247,7 @@ export function CalibrationViewport({
       </CardHeader>
 
       {/* Camera Video Stage */}
-      <div className="relative bg-black flex-1 flex items-center justify-center overflow-hidden min-h-[320px]">
+      <div className="relative bg-black flex-1 flex items-center justify-center overflow-hidden min-h-[240px] sm:min-h-[320px]">
         {isCameraErrorState && cameraError ? (
           <div className="w-full p-4 sm:p-6">
             <CameraErrorDisplay error={cameraError} onRetry={onRetryCamera} />
@@ -351,7 +351,7 @@ export function CalibrationViewport({
 
             {/* Fullscreen Calibration Companion Bar (keeps instructions & controls usable in fullscreen) */}
             {isFullscreen && (
-              <div className="absolute inset-x-4 bottom-4 z-30 rounded-2xl bg-black/85 backdrop-blur-md border border-white/15 p-3.5 text-white space-y-2.5">
+              <div className="absolute left-[max(1rem,env(safe-area-inset-left,0px))] right-[max(1rem,env(safe-area-inset-right,0px))] bottom-[max(1rem,env(safe-area-inset-bottom,0px))] z-30 rounded-2xl bg-black/85 backdrop-blur-md border border-white/15 p-3.5 text-white space-y-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="min-w-0">
                     <p className="text-sm font-semibold truncate">
@@ -367,7 +367,7 @@ export function CalibrationViewport({
                       </p>
                     )}
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
                     {isCalibrating && (
                       <>
                         <Button
@@ -376,7 +376,7 @@ export function CalibrationViewport({
                           variant="outline"
                           onClick={onSkipZone}
                           disabled={isSavingProfile}
-                          className="h-8 text-xs border-white/25 bg-white/10 text-white hover:bg-white/20"
+                          className="min-h-11 sm:h-8 sm:min-h-0 text-xs border-white/25 bg-white/10 text-white hover:bg-white/20"
                         >
                           <FastForward className="size-3.5 mr-1" aria-hidden="true" />
                           Skip Zone
@@ -386,7 +386,7 @@ export function CalibrationViewport({
                           size="sm"
                           variant="destructive"
                           onClick={onStopCalibration}
-                          className="h-8 text-xs"
+                          className="min-h-11 sm:h-8 sm:min-h-0 text-xs"
                         >
                           <Square className="size-3.5 mr-1" aria-hidden="true" />
                           Cancel
@@ -398,7 +398,7 @@ export function CalibrationViewport({
                       size="sm"
                       variant="secondary"
                       onClick={onToggleFullscreen}
-                      className="h-8 text-xs"
+                      className="min-h-11 sm:h-8 sm:min-h-0 text-xs"
                     >
                       <Minimize2 className="size-3.5 mr-1" aria-hidden="true" />
                       Exit Fullscreen
@@ -468,6 +468,7 @@ export function CalibrationViewport({
                 onClick={onStopCamera}
                 className="min-h-[44px] rounded-xl border-border text-xs gap-1.5 px-3"
                 title="Turn off camera preview"
+                aria-label="Turn off camera preview"
               >
                 <PowerOff className="size-3.5" aria-hidden="true" />
                 <span className="hidden sm:inline">Turn Off Camera</span>

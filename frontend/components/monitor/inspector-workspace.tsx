@@ -22,6 +22,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Slider } from "@/components/ui/slider";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -152,31 +153,31 @@ export function InspectorWorkspace({
         onValueChange={(v) => onTabChange(v as InspectorTab)}
         className="w-full space-y-3"
       >
-        <TabsList className="grid grid-cols-4 w-full h-10 p-1 rounded-xl bg-muted/60 border border-border/80">
+        <TabsList className="grid grid-cols-2 xs:grid-cols-4 w-full h-auto gap-1 p-1 rounded-xl bg-muted/60 border border-border/80">
           <TabsTrigger
             value="overview"
-            className="text-xs font-medium rounded-lg gap-1.5 cursor-pointer"
+            className="min-h-11 sm:min-h-8 text-xs font-medium rounded-lg gap-1.5 cursor-pointer"
           >
             <LayoutGrid className="size-3.5 shrink-0" aria-hidden="true" />
             <span>Overview</span>
           </TabsTrigger>
           <TabsTrigger
             value="signals"
-            className="text-xs font-medium rounded-lg gap-1.5 cursor-pointer"
+            className="min-h-11 sm:min-h-8 text-xs font-medium rounded-lg gap-1.5 cursor-pointer"
           >
             <Activity className="size-3.5 shrink-0" aria-hidden="true" />
             <span>Signals</span>
           </TabsTrigger>
           <TabsTrigger
             value="testbench"
-            className="text-xs font-medium rounded-lg gap-1.5 cursor-pointer"
+            className="min-h-11 sm:min-h-8 text-xs font-medium rounded-lg gap-1.5 cursor-pointer"
           >
             <FlaskConical className="size-3.5 shrink-0" aria-hidden="true" />
             <span>Testbench</span>
           </TabsTrigger>
           <TabsTrigger
             value="setup"
-            className="text-xs font-medium rounded-lg gap-1.5 cursor-pointer"
+            className="min-h-11 sm:min-h-8 text-xs font-medium rounded-lg gap-1.5 cursor-pointer"
           >
             <SlidersHorizontal className="size-3.5 shrink-0" aria-hidden="true" />
             <span>Setup</span>
@@ -184,17 +185,17 @@ export function InspectorWorkspace({
         </TabsList>
 
         {/* Tab 1: Overview (Operational State, Drowsiness Severity, Core Metrics, Explainable Reasons) */}
-        <TabsContent value="overview" className="mt-0 space-y-3.5 focus-visible:outline-none">
-          <div className="grid grid-cols-2 gap-2.5 text-xs">
-            <div className="p-2.5 rounded-xl border border-border/80 bg-card flex items-center justify-between gap-2">
-              <span className="text-muted-foreground">Operational State</span>
-              <Badge variant="outline" className="font-mono text-[10px]">
+        <TabsContent value="overview" className="mt-0 flex flex-col gap-3.5 focus-visible:outline-none">
+          <div className="grid grid-cols-1 xs:grid-cols-2 gap-2.5 text-xs">
+            <div className="p-2.5 rounded-xl border border-border/80 bg-card flex items-center justify-between gap-2 min-w-0">
+              <span className="text-muted-foreground truncate">Operational State</span>
+              <Badge variant="outline" className="font-mono text-[10px] shrink-0">
                 {telemetry?.operational_state ?? (cameraState === "active" ? "CALIBRATION_REQUIRED" : "IDLE")}
               </Badge>
             </div>
-            <div className="p-2.5 rounded-xl border border-border/80 bg-card flex items-center justify-between gap-2">
-              <span className="text-muted-foreground">Drowsiness State</span>
-              <Badge variant="outline" className="font-mono text-[10px]">
+            <div className="p-2.5 rounded-xl border border-border/80 bg-card flex items-center justify-between gap-2 min-w-0">
+              <span className="text-muted-foreground truncate">Drowsiness State</span>
+              <Badge variant="outline" className="font-mono text-[10px] shrink-0">
                 {telemetry?.state ?? "INSUFFICIENT_DATA"}
               </Badge>
             </div>
@@ -273,7 +274,7 @@ export function InspectorWorkspace({
                   variant="outline"
                   onClick={onExportBrowserTelemetry}
                   disabled={browserRecordedFrames === 0}
-                  className="h-8 text-xs gap-1.5 shrink-0"
+                  className="min-h-11 sm:h-8 sm:min-h-0 text-xs gap-1.5 shrink-0"
                 >
                   <Download className="size-3.5" aria-hidden="true" />
                   Export .jsonl
@@ -284,7 +285,7 @@ export function InspectorWorkspace({
         </TabsContent>
 
         {/* Tab 3: Testbench (Live PDBP Comparison, Audio Tier Test & Link to Isolated Synthetic Testbench) */}
-        <TabsContent value="testbench" className="mt-0 space-y-3.5 focus-visible:outline-none">
+        <TabsContent value="testbench" className="mt-0 flex flex-col gap-3.5 focus-visible:outline-none">
           <Card className="border-border/80 bg-muted/20">
             <CardContent className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
               <div className="space-y-0.5">
@@ -296,7 +297,7 @@ export function InspectorWorkspace({
                   To keep production live monitoring 100% authentic, synthetic fault scenarios run in an isolated simulation workspace.
                 </p>
               </div>
-              <Button asChild size="sm" variant="outline" className="h-8 text-xs shrink-0">
+              <Button asChild size="sm" variant="outline" className="min-h-11 sm:h-8 sm:min-h-0 text-xs shrink-0">
                 <Link href="/dashboard/synthetic-testbench">
                   Open Synthetic Testbench <ArrowRight className="size-3.5 ml-1" aria-hidden="true" />
                 </Link>
@@ -307,7 +308,7 @@ export function InspectorWorkspace({
           {/* PDBP vs Fixed 0.22 Rule Benchmark */}
           <Card className="border-border/80">
             <CardHeader className="p-3.5 pb-2 border-b border-border/60">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <CardTitle className="text-xs font-semibold text-foreground flex items-center gap-2">
                   <ShieldCheck className="size-4 text-emerald-500" aria-hidden="true" />
                   <span>Personalised 4-Zone vs Fixed 0.22 Rule</span>
@@ -325,7 +326,7 @@ export function InspectorWorkspace({
             </CardHeader>
             <CardContent className="p-3.5 text-xs">
               {telemetry?.comparison ? (
-                <div className="grid grid-cols-3 gap-2 font-mono tabular-nums">
+                <div className="grid grid-cols-1 xs:grid-cols-3 gap-2 font-mono tabular-nums">
                   <div className="p-2.5 rounded-xl bg-muted/40 border border-border/60">
                     <div className="text-[11px] font-sans text-muted-foreground">Zone threshold</div>
                     <div className="font-bold text-foreground mt-0.5">
@@ -356,28 +357,27 @@ export function InspectorWorkspace({
           {/* 4-Tier Audio Alert Synthesizer Tester */}
           <Card className="border-border/80">
             <CardHeader className="p-3.5 pb-2 border-b border-border/60">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <CardTitle className="text-xs font-semibold text-foreground flex items-center gap-2">
                   <Volume2 className="size-4 text-primary" aria-hidden="true" />
                   <span>Audio Alert Synthesizer Test</span>
                 </CardTitle>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2.5 min-h-11 sm:min-h-0">
                   <label
                     htmlFor="testbench-alert-volume"
                     className="text-[11px] font-mono tabular-nums text-muted-foreground"
                   >
                     Vol {Math.round(volume * 100)}%
                   </label>
-                  <input
+                  <Slider
                     id="testbench-alert-volume"
-                    type="range"
                     min={0}
                     max={1}
                     step={0.05}
-                    value={volume}
+                    value={[volume]}
                     aria-label="Alert volume"
-                    onChange={(e) => onSetVolume(parseFloat(e.target.value))}
-                    className="w-20 accent-primary cursor-pointer"
+                    onValueChange={(vals) => onSetVolume(vals[0] ?? volume)}
+                    className="w-24 sm:w-20 cursor-pointer py-2"
                   />
                 </div>
               </div>
@@ -387,28 +387,28 @@ export function InspectorWorkspace({
                 <button
                   type="button"
                   onClick={() => onTestAudioTier("WARNING")}
-                  className="py-2 px-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium hover:bg-amber-500/20 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="min-h-11 sm:min-h-9 py-2 px-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium hover:bg-amber-500/20 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   Warn Beep
                 </button>
                 <button
                   type="button"
                   onClick={() => onTestAudioTier("DROWSY")}
-                  className="py-2 px-2.5 rounded-xl border border-orange-500/40 bg-orange-500/10 text-orange-600 dark:text-orange-400 font-medium hover:bg-orange-500/20 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="min-h-11 sm:min-h-9 py-2 px-2.5 rounded-xl border border-orange-500/40 bg-orange-500/10 text-orange-600 dark:text-orange-400 font-medium hover:bg-orange-500/20 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   Drowsy Pulse
                 </button>
                 <button
                   type="button"
                   onClick={() => onTestAudioTier("CRITICAL")}
-                  className="py-2 px-2.5 rounded-xl border border-rose-500/40 bg-rose-500/10 text-rose-600 dark:text-rose-400 font-medium hover:bg-rose-500/20 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="min-h-11 sm:min-h-9 py-2 px-2.5 rounded-xl border border-rose-500/40 bg-rose-500/10 text-rose-600 dark:text-rose-400 font-medium hover:bg-rose-500/20 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   Critical Siren
                 </button>
                 <button
                   type="button"
                   onClick={() => onTestAudioTier("RECOVERY")}
-                  className="py-2 px-2.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-medium hover:bg-emerald-500/20 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="min-h-11 sm:min-h-9 py-2 px-2.5 rounded-xl border border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-medium hover:bg-emerald-500/20 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   Recovery Tone
                 </button>
@@ -492,7 +492,7 @@ export function InspectorWorkspace({
                       size="sm"
                       variant={backendType === "cloud" ? "default" : "outline"}
                       onClick={() => requestBackendSwitch("cloud")}
-                      className="text-xs h-9 rounded-xl"
+                      className="text-xs min-h-11 sm:h-9 sm:min-h-0 rounded-xl"
                     >
                       LiveKit Cloud
                     </Button>
@@ -501,7 +501,7 @@ export function InspectorWorkspace({
                       size="sm"
                       variant={backendType === "local" ? "default" : "outline"}
                       onClick={() => requestBackendSwitch("local")}
-                      className="text-xs h-9 rounded-xl"
+                      className="text-xs min-h-11 sm:h-9 sm:min-h-0 rounded-xl"
                     >
                       Localhost (8000)
                     </Button>
@@ -558,7 +558,7 @@ export function InspectorWorkspace({
                 onRefreshDevices={onRefreshDevices}
               />
 
-              <div className="flex items-center justify-between gap-2 pt-2 border-t border-border/60">
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border/60">
                 <span className="text-xs text-muted-foreground">Preview aspect ratio</span>
                 <div
                   className="inline-flex items-center rounded-xl bg-muted/60 p-1 border border-border/80"
@@ -569,7 +569,7 @@ export function InspectorWorkspace({
                     type="button"
                     onClick={() => onOrientationChange("landscape")}
                     aria-pressed={viewOrientation === "landscape"}
-                    className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                    className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 min-h-10 sm:min-h-7 py-1 text-xs font-medium transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                       viewOrientation === "landscape"
                         ? "bg-background text-foreground shadow-xs"
                         : "text-muted-foreground hover:text-foreground"
@@ -582,7 +582,7 @@ export function InspectorWorkspace({
                     type="button"
                     onClick={() => onOrientationChange("portrait")}
                     aria-pressed={viewOrientation === "portrait"}
-                    className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                    className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 min-h-10 sm:min-h-7 py-1 text-xs font-medium transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                       viewOrientation === "portrait"
                         ? "bg-background text-foreground shadow-xs"
                         : "text-muted-foreground hover:text-foreground"

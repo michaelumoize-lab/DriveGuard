@@ -70,10 +70,10 @@ export function CameraView({
     <div
       className={`relative bg-black rounded-2xl overflow-hidden border border-border/80 shadow-xl transition-colors duration-200 flex items-center justify-center ${
         isFullscreen
-          ? "fixed inset-0 z-50 rounded-none border-0 w-screen h-[100dvh]"
+          ? "fixed inset-0 z-50 rounded-none border-0 w-dvw h-dvh pt-safe pb-safe px-safe"
           : isPortrait
-          ? "w-full max-w-[420px] mx-auto aspect-[9/16] min-h-[480px] sm:min-h-[540px]"
-          : "w-full aspect-video min-h-[360px]"
+            ? "w-full max-w-[420px] mx-auto aspect-[3/4] sm:aspect-[4/5] md:aspect-[9/16] max-h-[50dvh] md:max-h-[580px] [@media(min-height:640px)]:md:min-h-[500px]"
+            : "w-full aspect-[4/3] sm:aspect-video max-h-[50dvh] lg:max-h-none lg:min-h-[360px]"
       }`}
     >
       {/* Native HTML5 Video Element (Browser / LiveKit WebRTC) OR Loopback MJPEG Feed (Python Local) */}
@@ -180,9 +180,9 @@ export function CameraView({
 
       {/* Loading & Requesting Permission Overlay */}
       {isLoading && (
-        <div className="absolute inset-0 bg-background/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center z-20 space-y-3">
+        <div className="absolute inset-0 bg-background/90 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center z-20 gap-3">
           <div className="relative">
-            <div className="size-12 rounded-full border-2 border-primary/30 border-t-primary animate-spin" />
+            <div className="size-12 rounded-full border-2 border-primary/30 border-t-primary animate-spin motion-reduce:animate-none" />
             <Camera className="size-5 text-primary absolute inset-0 m-auto" aria-hidden="true" />
           </div>
           <div>

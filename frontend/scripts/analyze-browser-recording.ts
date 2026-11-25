@@ -535,9 +535,15 @@ export function replayThroughFrontendEngine(rows: TelemetryRecord[]): ReplayPari
       Boolean(isGeomValid)
     );
 
-    // 3. PERCLOS 60s
-    const isClosedForPerclos = hasFace && isGeomValid ? earL < thr && earR < thr : false;
-    const perclosRes = perclosCalc.update(ts, isClosedForPerclos, hasFace, Boolean(isGeomValid));
+    // 3. PERCLOS 60s (matches DriverFeatureExtractor: hystereticClosed = ear.isClosed || blink.isEyeClosed)
+    const earBinocularClosed = hasFace && isGeomValid ? earL < thr && earR < thr : false;
+    const isClosedForPerclos = hasFace && isGeomValid ? earBinocularClosed || blinkSnap.isEyeClosed : false;
+    const perclosRes = perclosCalc.update(
+      ts,
+      hasFace && isGeomValid ? isClosedForPerclos : null,
+      hasFace,
+      Boolean(isGeomValid)
+    );
 
     // 4. MAR / Yawn Detector
     const marVal = r.mar ?? 0;
@@ -562,7 +568,7 @@ export function replayThroughFrontendEngine(rows: TelemetryRecord[]): ReplayPari
         closureThreshold: thr,
         isLeftClosed: earL < thr,
         isRightClosed: earR < thr,
-        isClosed: isClosedForPerclos,
+        isClosed: earBinocularClosed,
         isValid: Boolean(isGeomValid),
         rawEar: (earL + earR) / 2,
         isLeftValid: Boolean(isGeomValid),
@@ -581,10 +587,7 @@ export function replayThroughFrontendEngine(rows: TelemetryRecord[]): ReplayPari
         isValid: hasFace,
         rotMat: null,
       },
-      blink: {
-        ...blinkSnap,
-        isEyeClosed: isClosedForPerclos,
-      },
+      blink: blinkSnap,
       perclos: perclosRes,
       mar: marRes,
       summaryText: "",

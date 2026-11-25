@@ -44,7 +44,7 @@ export interface MonitorHeaderBarProps {
   onUnlockAudio: () => void;
 }
 
-export function MonitorHeaderBar({
+export const MonitorHeaderBar = React.memo(function MonitorHeaderBar({
   consoleMode,
   onConsoleModeChange,
   runtimeMode,
@@ -106,7 +106,7 @@ export function MonitorHeaderBar({
               )}
             </span>
           </div>
-          <p className="text-xs text-muted-foreground truncate mt-0.5">
+          <p className="text-xs text-muted-foreground text-pretty mt-0.5">
             {consoleMode === "cockpit"
               ? "Calm road-ready view with real-time fatigue alerts and mirror-glance protection."
               : "Engineering inspector with live physiological metrics, waveforms, and testbench."}
@@ -126,7 +126,7 @@ export function MonitorHeaderBar({
             type="button"
             onClick={() => onConsoleModeChange("cockpit")}
             aria-pressed={consoleMode === "cockpit"}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+            className={`inline-flex items-center gap-1.5 rounded-lg px-3 min-h-10 sm:min-h-7 py-1.5 text-xs font-semibold transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
               consoleMode === "cockpit"
                 ? "bg-background text-foreground shadow-xs"
                 : "text-muted-foreground hover:text-foreground"
@@ -139,7 +139,7 @@ export function MonitorHeaderBar({
             type="button"
             onClick={() => onConsoleModeChange("diagnostics")}
             aria-pressed={consoleMode === "diagnostics"}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+            className={`inline-flex items-center gap-1.5 rounded-lg px-3 min-h-10 sm:min-h-7 py-1.5 text-xs font-semibold transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
               consoleMode === "diagnostics"
                 ? "bg-background text-foreground shadow-xs"
                 : "text-muted-foreground hover:text-foreground"
@@ -157,7 +157,7 @@ export function MonitorHeaderBar({
               type="button"
               variant="outline"
               size="sm"
-              className={`h-8 rounded-xl gap-1.5 text-xs font-medium tabular-nums ${
+              className={`min-h-11 sm:h-8 sm:min-h-0 rounded-xl gap-1.5 text-xs font-medium tabular-nums ${
                 readyCount === 5
                   ? "border-emerald-500/35 bg-emerald-500/5 text-foreground"
                   : hasAttention
@@ -179,7 +179,7 @@ export function MonitorHeaderBar({
               <ChevronDown className="size-3 text-muted-foreground" aria-hidden="true" />
             </Button>
           </PopoverTrigger>
-          <PopoverContent align="end" className="w-80 sm:w-96 p-3.5 space-y-3">
+          <PopoverContent align="end" className="w-[min(22rem,calc(100vw-1.5rem))] sm:w-96 p-3.5 flex flex-col gap-3 overscroll-contain">
             <PopoverHeader>
               <PopoverTitle className="text-sm font-semibold">
                 Pre-drive system checklist
@@ -207,16 +207,16 @@ export function MonitorHeaderBar({
               onCalibrateClick={onToggleCalibration}
             />
 
-            <div className="pt-2 border-t border-border/60 flex items-center justify-between text-xs">
+            <div className="pt-2 border-t border-border/60 flex items-center justify-between gap-2 text-xs">
               <Link
                 href="/dashboard/calibration"
-                className="font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+                className="min-h-11 sm:min-h-0 inline-flex items-center font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
               >
                 Open full calibration wizard
               </Link>
               <Link
                 href="/dashboard/sessions"
-                className="text-muted-foreground hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+                className="min-h-11 sm:min-h-0 inline-flex items-center text-muted-foreground hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
               >
                 Drive history
               </Link>
@@ -230,7 +230,7 @@ export function MonitorHeaderBar({
           size="sm"
           variant={showInlineCalibration ? "default" : !isCalibrated ? "secondary" : "outline"}
           onClick={onToggleCalibration}
-          className="h-8 rounded-xl gap-1.5 text-xs font-medium"
+          className="min-h-11 sm:h-8 sm:min-h-0 rounded-xl gap-1.5 text-xs font-medium"
         >
           <Compass className="size-3.5" aria-hidden="true" />
           <span>{showInlineCalibration ? "Hide Calibration" : isCalibrated ? "Recalibrate" : "Calibrate"}</span>
@@ -238,4 +238,4 @@ export function MonitorHeaderBar({
       </div>
     </header>
   );
-}
+});

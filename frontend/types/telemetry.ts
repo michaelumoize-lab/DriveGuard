@@ -81,6 +81,8 @@ export interface EyeMetrics {
   blink_rate_per_min: number;
   total_blink_count?: number;
   mar_yawn: number;
+  total_yawn_count?: number;
+  is_yawning?: boolean;
   blink_state?: string;
   blink_classification?: string;
   perclos_coverage_pct?: number;

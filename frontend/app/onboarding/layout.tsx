@@ -24,21 +24,21 @@ export default async function OnboardingLayout({
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col">
+    <div className="min-h-svh bg-background text-foreground flex flex-col">
       {/* Onboarding Top Navigation */}
-      <header className="border-b border-border/60 bg-background/80 backdrop-blur-md sticky top-0 z-40">
-        <div className="max-w-4xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Logo className="size-9 rounded-xl" />
-            <div>
-              <span className="font-bold tracking-tight text-base block text-foreground">DriveGuard</span>
-              <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider block">
+      <header className="border-b border-border/60 bg-background/80 backdrop-blur-md sticky top-0 z-40 pt-safe">
+        <div className="max-w-4xl mx-auto pl-[max(1rem,env(safe-area-inset-left,0px))] pr-[max(1rem,env(safe-area-inset-right,0px))] sm:pl-[max(1.5rem,env(safe-area-inset-left,0px))] sm:pr-[max(1.5rem,env(safe-area-inset-right,0px))] min-h-16 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <Logo className="size-9 rounded-xl shrink-0" />
+            <div className="min-w-0">
+              <span className="font-bold tracking-tight text-base block text-foreground truncate">DriveGuard</span>
+              <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider block truncate">
                 Driver Onboarding
               </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 shrink-0">
             <span className="text-xs text-muted-foreground hidden sm:inline-block">
               Signed in as <strong className="text-foreground">{session.user.email}</strong>
             </span>
@@ -48,7 +48,7 @@ export default async function OnboardingLayout({
       </header>
 
       {/* Main Form Content */}
-      <main className="flex-1 flex items-center justify-center p-4 sm:p-6 md:p-8">
+      <main id="main-content" tabIndex={-1} className="flex-1 flex items-center justify-center p-4 sm:p-6 md:p-8 pb-[max(1rem,env(safe-area-inset-bottom,0px))] px-safe outline-none">
         <div className="w-full max-w-5xl">
           {children}
         </div>

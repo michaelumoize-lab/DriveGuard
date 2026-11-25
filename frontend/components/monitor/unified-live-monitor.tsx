@@ -1346,6 +1346,45 @@ export function UnifiedLiveMonitor({
     }
   }, [cameraState, captureSnapshot, viewOrientation]);
 
+  const handleToggleCalibration = useCallback(() => {
+    setShowInlineCalibration((prev) => !prev);
+  }, []);
+
+  const handleOpenInlineCalibration = useCallback(() => {
+    setShowInlineCalibration(true);
+  }, []);
+
+  const handleSwitchToDiagnostics = useCallback(() => {
+    handleConsoleModeChange("diagnostics");
+  }, [handleConsoleModeChange]);
+
+  const handleSwitchToCockpit = useCallback(() => {
+    handleConsoleModeChange("cockpit");
+  }, [handleConsoleModeChange]);
+
+  const handlePauseCamera = useCallback(() => {
+    isMonitoringAudioAllowedRef.current = false;
+    audioEngine?.resetSilent();
+    pauseCamera();
+  }, [audioEngine, pauseCamera]);
+
+  const handleResumeCamera = useCallback(() => {
+    isMonitoringAudioAllowedRef.current = true;
+    resumeCamera();
+  }, [resumeCamera]);
+
+  const handleToggleFraming = useCallback(() => {
+    setFramingMode((prev) => (prev === "cover" ? "fit" : "cover"));
+  }, []);
+
+  const handleToggleMirror = useCallback(() => {
+    setIsMirrored((prev) => !prev);
+  }, [setIsMirrored]);
+
+  const handleCloseSnapshot = useCallback(() => {
+    setIsSnapshotOpen(false);
+  }, []);
+
   const isPortrait = viewOrientation === "portrait";
 
   // Helper for distinct video overlay badge per authoritative safety & operational state
@@ -1438,7 +1477,7 @@ export function UnifiedLiveMonitor({
           variant="outline"
           className="text-xs uppercase font-bold shadow-lg px-2.5 py-1 bg-sky-950/90 text-sky-200 border-sky-400/80 gap-1.5"
         >
-          <Compass className="size-3.5 text-sky-400 animate-spin" />
+          <Compass className="size-3.5 text-sky-400 animate-spin motion-reduce:animate-none" aria-hidden="true" />
           <span>CALIBRATING…</span>
         </Badge>
       );
@@ -1450,7 +1489,7 @@ export function UnifiedLiveMonitor({
           variant="outline"
           className="text-xs uppercase font-bold shadow-lg px-2.5 py-1 bg-slate-900/90 text-amber-300 border-amber-400/80 border-dashed gap-1.5"
         >
-          <EyeOff className="size-3.5 text-amber-400" />
+          <EyeOff className="size-3.5 text-amber-400" aria-hidden="true" />
           <span>DEGRADED / NO FACE</span>
         </Badge>
       );
@@ -1473,7 +1512,7 @@ export function UnifiedLiveMonitor({
           variant="outline"
           className="bg-black/75 backdrop-blur-md border-amber-400/50 text-amber-300 text-[10px] font-mono px-2.5 py-1"
         >
-          <span className="size-1.5 rounded-full bg-amber-400 animate-pulse mr-1.5" />
+          <span className="size-1.5 rounded-full bg-amber-400 animate-pulse motion-reduce:animate-none mr-1.5" aria-hidden="true" />
           AWAITING BACKEND TELEMETRY
         </Badge>
       );
@@ -1481,8 +1520,8 @@ export function UnifiedLiveMonitor({
 
     if (effectiveState === "CRITICAL") {
       return (
-        <Badge className="text-xs uppercase font-extrabold shadow-lg px-2.5 py-1 bg-rose-600 text-white border border-rose-300 animate-pulse gap-1.5">
-          <Flame className="size-3.5" />
+        <Badge className="text-xs uppercase font-extrabold shadow-lg px-2.5 py-1 bg-rose-600 text-white border border-rose-300 animate-pulse motion-reduce:animate-none gap-1.5">
+          <Flame className="size-3.5" aria-hidden="true" />
           <span>CRITICAL FATIGUE</span>
         </Badge>
       );
@@ -1560,7 +1599,7 @@ export function UnifiedLiveMonitor({
           audioMuted={audioMuted}
           browserSyncStatus={browserSyncStatus}
           showInlineCalibration={showInlineCalibration}
-          onToggleCalibration={() => setShowInlineCalibration((prev) => !prev)}
+          onToggleCalibration={handleToggleCalibration}
           onUnlockAudio={unlockAudio}
         />
       )}
@@ -1589,22 +1628,22 @@ export function UnifiedLiveMonitor({
                   : "Ensure the local FastAPI worker is running on http://127.0.0.1:8000, or switch to LiveKit Cloud."}
             </p>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
             <Button
               size="sm"
               variant="outline"
               onClick={() => {
                 if (videoRef.current) reconnectWs(videoRef.current);
               }}
-              className="h-8 text-xs gap-1.5"
+              className="min-h-11 sm:h-8 sm:min-h-0 text-xs gap-1.5"
             >
-              <RefreshCw className="size-3.5" /> Retry Worker
+              <RefreshCw className="size-3.5" aria-hidden="true" /> Retry Worker
             </Button>
             <Button
               size="sm"
               variant="secondary"
               onClick={() => handleSwitchBackend(backendType === "cloud" ? "local" : "cloud")}
-              className="h-8 text-xs"
+              className="min-h-11 sm:h-8 sm:min-h-0 text-xs"
             >
               Switch to {backendType === "cloud" ? "Localhost" : "Cloud"}
             </Button>
@@ -1621,7 +1660,7 @@ export function UnifiedLiveMonitor({
         >
           <div className="space-y-0.5">
             <div className="font-bold text-foreground flex items-center gap-1.5">
-              <AlertTriangle className="size-4 text-amber-500 shrink-0" />
+              <AlertTriangle className="size-4 text-amber-500 shrink-0" aria-hidden="true" />
               <span>Local Python Telemetry Stream Issue</span>
             </div>
             <p className="text-muted-foreground">{pythonLocal.error}</p>
@@ -1631,9 +1670,9 @@ export function UnifiedLiveMonitor({
               size="sm"
               variant="outline"
               onClick={() => pythonLocal.reconnectWebSocket()}
-              className="h-8 text-xs gap-1.5 shrink-0"
+              className="min-h-11 sm:h-8 sm:min-h-0 text-xs gap-1.5 shrink-0"
             >
-              <RefreshCw className="size-3.5" /> Retry Telemetry WS
+              <RefreshCw className="size-3.5" aria-hidden="true" /> Retry Telemetry WS
             </Button>
           )}
         </div>
@@ -1755,12 +1794,12 @@ export function UnifiedLiveMonitor({
                     </Badge>
                   )}
                 </div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
                   <Button
                     type="button"
                     size="sm"
                     onClick={triggerFullCalibration}
-                    className="h-7 px-2.5 text-xs"
+                    className="min-h-11 sm:h-7 sm:min-h-0 px-3 sm:px-2.5 text-xs"
                   >
                     Start All 4 Zones
                   </Button>
@@ -1771,7 +1810,7 @@ export function UnifiedLiveMonitor({
                         size="sm"
                         variant="outline"
                         onClick={triggerSkip}
-                        className="h-7 px-2 text-xs"
+                        className="min-h-11 sm:h-7 sm:min-h-0 px-3 sm:px-2 text-xs"
                       >
                         Skip Zone
                       </Button>
@@ -1780,13 +1819,13 @@ export function UnifiedLiveMonitor({
                         size="sm"
                         variant="ghost"
                         onClick={triggerCancel}
-                        className="h-7 px-2 text-xs text-rose-500"
+                        className="min-h-11 sm:h-7 sm:min-h-0 px-3 sm:px-2 text-xs text-rose-500"
                       >
                         Cancel
                       </Button>
                     </>
                   )}
-                  <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-xs">
+                  <Button asChild size="sm" variant="ghost" className="min-h-11 sm:h-7 sm:min-h-0 px-3 sm:px-2 text-xs">
                     <Link href="/dashboard/calibration">Full Wizard</Link>
                   </Button>
                 </div>
@@ -1795,7 +1834,7 @@ export function UnifiedLiveMonitor({
               {activeCal && !activeCal.is_completed && (
                 <div
                   aria-live="polite"
-                  className="text-xs text-foreground font-medium bg-background/80 px-3 py-1.5 rounded-lg border border-border/60 flex items-center justify-between gap-2"
+                  className="text-xs text-foreground font-medium bg-background/80 px-3 py-1.5 rounded-lg border border-border/60 flex flex-wrap items-center justify-between gap-2"
                 >
                   <span>{activeCal.instruction}</span>
                   <span className="font-mono tabular-nums text-[11px] text-muted-foreground shrink-0">
@@ -1812,7 +1851,7 @@ export function UnifiedLiveMonitor({
                     key={z}
                     type="button"
                     onClick={() => triggerSingleZone(z)}
-                    className="px-2 py-0.5 rounded-md border border-border bg-card hover:bg-muted text-foreground font-mono transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="min-h-11 sm:min-h-7 px-2.5 sm:px-2 py-1 sm:py-0.5 rounded-md border border-border bg-card hover:bg-muted text-foreground font-mono transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {z.replace("_", " ")}
                   </button>
@@ -1841,7 +1880,13 @@ export function UnifiedLiveMonitor({
             {effectiveCameraState === "active" && (
               <>
                 {/* Top Floating Status Strip */}
-                <div className="absolute top-3 left-3 right-3 flex items-start justify-between pointer-events-none z-10 gap-2">
+                <div
+                  className={`absolute flex items-start justify-between pointer-events-none z-10 gap-2 ${
+                    isFullscreen
+                      ? "top-[max(0.75rem,env(safe-area-inset-top,0px))] left-[max(0.75rem,env(safe-area-inset-left,0px))] right-[max(0.75rem,env(safe-area-inset-right,0px))]"
+                      : "top-3 left-3 right-3"
+                  }`}
+                >
                   <div className="flex items-center gap-1.5 flex-wrap pointer-events-auto">
                     {renderOverlayStateBadge()}
 
@@ -1890,12 +1935,12 @@ export function UnifiedLiveMonitor({
 
                 {/* Minimal Bottom Overlay in Fullscreen */}
                 {isFullscreen && (
-                  <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between z-30 pointer-events-auto">
+                  <div className="absolute bottom-[max(1rem,env(safe-area-inset-bottom,0px))] left-[max(1rem,env(safe-area-inset-left,0px))] right-[max(1rem,env(safe-area-inset-right,0px))] flex flex-wrap items-center justify-between gap-2 z-30 pointer-events-auto">
                     <Button
                       size="sm"
                       variant="destructive"
                       onClick={handleStopMonitoring}
-                      className="rounded-xl h-10 px-4 text-xs font-semibold shadow-xl"
+                      className="rounded-xl min-h-11 px-4 text-xs font-semibold shadow-xl"
                     >
                       Stop Stream
                     </Button>
@@ -1906,20 +1951,26 @@ export function UnifiedLiveMonitor({
                           size="icon"
                           variant="secondary"
                           onClick={() => unlockAudio()}
-                          className="h-10 w-10 rounded-xl bg-amber-500/80 backdrop-blur-md border border-amber-400 text-white animate-pulse"
+                          className="size-11 rounded-xl bg-amber-500/80 backdrop-blur-md border border-amber-400 text-white animate-pulse motion-reduce:animate-none"
                           title="Browser blocked audio. Click to Enable Sound Alerts"
+                          aria-label="Enable sound alerts"
                         >
-                          <VolumeX className="size-4" />
+                          <VolumeX className="size-4" aria-hidden="true" />
                         </Button>
                       ) : (
                         <Button
                           size="icon"
                           variant="secondary"
                           onClick={toggleMute}
-                          className="h-10 w-10 rounded-xl bg-black/80 backdrop-blur-md border border-white/20 text-white"
+                          className="size-11 rounded-xl bg-black/80 backdrop-blur-md border border-white/20 text-white"
                           title={audioMuted ? "Unmute Audio Alerts" : "Mute Audio Alerts"}
+                          aria-label={audioMuted ? "Unmute audio alerts" : "Mute audio alerts"}
                         >
-                          {audioMuted ? <VolumeX className="size-4" /> : <Volume2 className="size-4 text-primary" />}
+                          {audioMuted ? (
+                            <VolumeX className="size-4" aria-hidden="true" />
+                          ) : (
+                            <Volume2 className="size-4 text-primary" aria-hidden="true" />
+                          )}
                         </Button>
                       )}
 
@@ -1927,20 +1978,22 @@ export function UnifiedLiveMonitor({
                         size="icon"
                         variant="secondary"
                         onClick={() => setFramingMode((prev) => (prev === "cover" ? "fit" : "cover"))}
-                        className="h-10 w-10 rounded-xl bg-black/80 backdrop-blur-md border border-white/20 text-white"
-                        title="Toggle Framing"
+                        className="size-11 rounded-xl bg-black/80 backdrop-blur-md border border-white/20 text-white"
+                        title={framingMode === "cover" ? "Switch to uncropped fit" : "Switch to viewport cover"}
+                        aria-label={framingMode === "cover" ? "Switch to uncropped fit view" : "Switch to viewport cover view"}
                       >
-                        <Flame className="size-4 text-primary" />
+                        <Flame className="size-4 text-primary" aria-hidden="true" />
                       </Button>
 
                       <Button
                         size="icon"
                         variant="secondary"
                         onClick={toggleFullscreen}
-                        className="h-10 w-10 rounded-xl bg-black/80 backdrop-blur-md border border-white/20 text-white"
+                        className="size-11 rounded-xl bg-black/80 backdrop-blur-md border border-white/20 text-white"
                         title="Exit Fullscreen"
+                        aria-label="Exit fullscreen monitor"
                       >
-                        <Minimize2 className="size-4" />
+                        <Minimize2 className="size-4" aria-hidden="true" />
                       </Button>
                     </div>
                   </div>
@@ -1959,22 +2012,13 @@ export function UnifiedLiveMonitor({
                 isFullscreen={isFullscreen}
                 onStart={handleStartMonitoring}
                 onStop={handleStopMonitoring}
-                onPause={() => {
-                  isMonitoringAudioAllowedRef.current = false;
-                  audioEngine?.resetSilent();
-                  pauseCamera();
-                }}
-                onResume={() => {
-                  isMonitoringAudioAllowedRef.current = true;
-                  resumeCamera();
-                }}
+                onPause={handlePauseCamera}
+                onResume={handleResumeCamera}
                 onSwitchFacing={switchFacingMode}
                 onCaptureSnapshot={handleCaptureSnapshot}
-                onToggleFraming={() =>
-                  setFramingMode((prev) => (prev === "cover" ? "fit" : "cover"))
-                }
+                onToggleFraming={handleToggleFraming}
                 onToggleFullscreen={toggleFullscreen}
-                onToggleMirror={() => setIsMirrored((prev) => !prev)}
+                onToggleMirror={handleToggleMirror}
                 isCapturing={isCapturing}
                 audioStatus={audioStatus}
                 isMuted={audioMuted}
@@ -2019,11 +2063,11 @@ export function UnifiedLiveMonitor({
                 volume={audioVolume}
                 audioStatus={audioStatus}
                 onStartMonitoring={handleStartMonitoring}
-                onCalibrateClick={() => setShowInlineCalibration(true)}
+                onCalibrateClick={handleOpenInlineCalibration}
                 onToggleMute={toggleMute}
                 onSetVolume={setAudioVolume}
                 onUnlockAudio={unlockAudio}
-                onSwitchToDiagnostics={() => handleConsoleModeChange("diagnostics")}
+                onSwitchToDiagnostics={handleSwitchToDiagnostics}
               />
             ) : (
               <InspectorWorkspace
@@ -2046,7 +2090,7 @@ export function UnifiedLiveMonitor({
                 onSetVolume={setAudioVolume}
                 onUnlockAudio={unlockAudio}
                 onTestAudioTier={testAlert}
-                onSwitchToCockpit={() => handleConsoleModeChange("cockpit")}
+                onSwitchToCockpit={handleSwitchToCockpit}
                 chartHistory={chartHistory}
                 devices={devices}
                 selectedDeviceId={selectedDeviceId}
@@ -2067,7 +2111,7 @@ export function UnifiedLiveMonitor({
       <CameraSnapshotPreview
         frame={capturedSnapshot}
         isOpen={isSnapshotOpen}
-        onClose={() => setIsSnapshotOpen(false)}
+        onClose={handleCloseSnapshot}
       />
     </div>
   );
