@@ -209,6 +209,8 @@ class LocalMonitoringConfig:
     calibration_step_duration_sec: float = 6.0
     cnn_shadow_enabled: bool = False
     cnn_shadow_hz: float = 15.0
+    sensitivity_level: str = "STANDARD"
+    mirror_suppression_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -346,8 +348,15 @@ class LocalMonitoringService:
             is_mirrored=self.config.is_mirrored,
             profile=profile_loaded,
         )
+        resolved_sensitivity = (
+            getattr(profile_loaded, "sensitivity_level", None)
+            if profile_loaded is not None
+            else None
+        ) or self.config.sensitivity_level
         self.drowsiness_engine = DrowsinessEngine(
             face_loss_grace_ms=float(face_loss_grace_ms),
+            sensitivity_level=resolved_sensitivity,
+            mirror_suppression_enabled=self.config.mirror_suppression_enabled,
         )
         self.alert_manager = AlertStateManager()
 
@@ -451,7 +460,12 @@ class LocalMonitoringService:
             self.feature_extractor.set_profile(None)
             return False
         snapshot = create_immutable_profile_snapshot(profile)
-        return self.feature_extractor.set_profile(snapshot)
+        ok = self.feature_extractor.set_profile(snapshot)
+        if ok:
+            prof_sens = getattr(snapshot, "sensitivity_level", None)
+            if prof_sens:
+                self.drowsiness_engine.apply_sensitivity_preset(prof_sens)
+        return ok
 
     def start_calibration(
         self,

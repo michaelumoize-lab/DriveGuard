@@ -7,7 +7,7 @@ import { UnifiedLiveMonitor, InitialDriverProfileData, InitialUserPreferencesDat
 export const metadata = {
   title: "Live Driver Telemetry Monitor | DriveGuard",
   description:
-    "Real-time WebRTC computer vision telemetry streaming via LiveKit to the DriveGuard Edge AI Cascade.",
+    "Real-time geometric-authoritative driver drowsiness monitoring powered by independent Browser WASM and Local/Remote Python MediaPipe + 4-Zone PDBP engines.",
 };
 
 export const dynamic = "force-dynamic";

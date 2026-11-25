@@ -24,6 +24,8 @@ export interface UseBrowserDetectionOptions {
   driverId?: string;
   initialProfile?: DriverBehaviourProfileData | unknown | null;
   isMirrored?: boolean;
+  sensitivityLevel?: string | null;
+  mirrorSuppression?: boolean;
   targetInferenceFps?: number;
   autoStartSession?: boolean;
   onSafetyAlert?: (
@@ -44,6 +46,8 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
     driverId = "driver_default",
     initialProfile = null,
     isMirrored = false,
+    sensitivityLevel = "STANDARD",
+    mirrorSuppression = true,
     targetInferenceFps = 12,
     autoStartSession = false,
     onSafetyAlert,
@@ -76,6 +80,8 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
   const onCalibrationCompletedRef = useRef(onCalibrationCompleted);
   const onErrorRef = useRef(onError);
   const initialProfileRef = useRef(initialProfile);
+  const sensitivityLevelRef = useRef(sensitivityLevel);
+  const mirrorSuppressionRef = useRef(mirrorSuppression);
 
   useEffect(() => {
     onSafetyAlertRef.current = onSafetyAlert;
@@ -84,12 +90,24 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
     onErrorRef.current = onError;
   }, [onSafetyAlert, onCalibrationProgress, onCalibrationCompleted, onError]);
 
+  useEffect(() => {
+    sensitivityLevelRef.current = sensitivityLevel;
+    engineRef.current?.setSensitivityLevel(sensitivityLevel);
+  }, [sensitivityLevel]);
+
+  useEffect(() => {
+    mirrorSuppressionRef.current = mirrorSuppression;
+    engineRef.current?.setMirrorSuppression(Boolean(mirrorSuppression));
+  }, [mirrorSuppression]);
+
   // Instantiate engine strictly once per (driverId, targetInferenceFps)
   useEffect(() => {
     const engine = new BrowserDetectionEngine({
       driverId,
       profile: initialProfileRef.current,
       isMirrored: false,
+      sensitivityLevel: sensitivityLevelRef.current,
+      mirrorSuppression: mirrorSuppressionRef.current,
       targetInferenceFps,
       onTelemetry: (t) => {
         if (engineRef.current?.status !== "running") return;

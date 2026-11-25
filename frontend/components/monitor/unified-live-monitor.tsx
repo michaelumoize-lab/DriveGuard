@@ -569,6 +569,8 @@ export function UnifiedLiveMonitor({
     driverId,
     initialProfile: (initialBrowserProfile as unknown) as DriverBehaviourProfileData | null,
     isMirrored: false,
+    sensitivityLevel: initialPreferences?.sensitivityLevel ?? "STANDARD",
+    mirrorSuppression: initialPreferences?.mirrorSuppression ?? true,
     targetInferenceFps: 12,
     autoStartSession: false,
     onSafetyAlert: handleBrowserSafetyAlert,
