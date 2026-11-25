@@ -229,6 +229,7 @@ export function UnifiedLiveMonitor({
 
   // Comprehensive Session & Database Persistence Refs
   const activeSessionCodeRef = useRef<string | null>(null);
+  const isMonitoringAudioAllowedRef = useRef<boolean>(false);
   const [hasActiveSession, setHasActiveSession] = useState(false);
   const sessionStartWallMsRef = useRef<number>(0);
   const lastAlertTimeRef = useRef<number>(0);
@@ -346,8 +347,10 @@ export function UnifiedLiveMonitor({
           ? Math.round(event.timestamp * 1000)
           : Date.now();
 
-      // Fast-path Web Audio alert dispatch
-      audioEngine?.setRiskState(event.new_state, event.event_id, eventTsMs);
+      // Fast-path Web Audio alert dispatch (strictly gated on active monitoring)
+      if (isMonitoringAudioAllowedRef.current) {
+        audioEngine?.setRiskState(event.new_state, event.event_id, eventTsMs);
+      }
 
       // Update screen-reader assertive live region on significant state change
       if (event.new_state !== lastAnnouncedStateRef.current) {
@@ -516,7 +519,9 @@ export function UnifiedLiveMonitor({
         `evt_browser_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       const eventTsMs = t.timestampMs || Date.now();
 
-      audioEngine?.setRiskState(alertState, eventId, eventTsMs);
+      if (isMonitoringAudioAllowedRef.current) {
+        audioEngine?.setRiskState(alertState, eventId, eventTsMs);
+      }
 
       if (alertState !== lastAnnouncedStateRef.current) {
         lastAnnouncedStateRef.current = alertState;
@@ -780,8 +785,12 @@ export function UnifiedLiveMonitor({
       });
     }
 
-    // Synchronize audio subsystem with continuous telemetry state
-    if (effectiveTelemetry.state) {
+    // Synchronize audio subsystem with continuous telemetry state ONLY while actively monitoring
+    if (
+      effectiveTelemetry.state &&
+      isMonitoringAudioAllowedRef.current &&
+      effectiveCameraState === "active"
+    ) {
       audioEngine?.setRiskState(effectiveTelemetry.state, undefined, effectiveTelemetry.timestamp_ms);
     }
 
@@ -817,17 +826,44 @@ export function UnifiedLiveMonitor({
     }
   }, [effectiveTelemetry, audioEngine, runtimeMode]);
 
-  // Flush active session on pagehide / tab close / component unmount so no session is left with 0s duration
+  // Refs so the unmount/pagehide cleanup NEVER re-runs when streamDurationSec ticks every 1s
+  const runtimeModeRef = useRef(runtimeMode);
+  const streamDurationSecRef = useRef(streamDurationSec);
+  const buildSessionEndPayloadRef = useRef(buildSessionEndPayload);
+  const queueBrowserSessionEndRef = useRef(queueBrowserSessionEnd);
+  const audioEngineRef = useRef(audioEngine);
+
+  useEffect(() => {
+    runtimeModeRef.current = runtimeMode;
+  }, [runtimeMode]);
+  useEffect(() => {
+    streamDurationSecRef.current = streamDurationSec;
+  }, [streamDurationSec]);
+  useEffect(() => {
+    buildSessionEndPayloadRef.current = buildSessionEndPayload;
+  }, [buildSessionEndPayload]);
+  useEffect(() => {
+    queueBrowserSessionEndRef.current = queueBrowserSessionEnd;
+  }, [queueBrowserSessionEnd]);
+  useEffect(() => {
+    audioEngineRef.current = audioEngine;
+  }, [audioEngine]);
+
+  // Flush active session ONLY on true pagehide / tab close / component unmount
   useEffect(() => {
     const flushActiveSession = () => {
       const code = activeSessionCodeRef.current;
       if (!code) return;
       activeSessionCodeRef.current = null;
-      if (runtimeMode === "browser") {
-        queueBrowserSessionEnd(streamDurationSec);
+      const elapsedSec =
+        sessionStartWallMsRef.current > 0
+          ? Math.max(1, Math.round((Date.now() - sessionStartWallMsRef.current) / 1000))
+          : Math.max(1, streamDurationSecRef.current);
+      if (runtimeModeRef.current === "browser") {
+        queueBrowserSessionEndRef.current(elapsedSec);
         return;
       }
-      const payload = buildSessionEndPayload(code, 0);
+      const payload = buildSessionEndPayloadRef.current(code, elapsedSec);
       try {
         fetch("/api/sessions/end", {
           method: "POST",
@@ -841,9 +877,11 @@ export function UnifiedLiveMonitor({
     window.addEventListener("pagehide", flushActiveSession);
     return () => {
       window.removeEventListener("pagehide", flushActiveSession);
+      isMonitoringAudioAllowedRef.current = false;
+      audioEngineRef.current?.resetSilent();
       flushActiveSession();
     };
-  }, [buildSessionEndPayload, queueBrowserSessionEnd, runtimeMode, streamDurationSec]);
+  }, []);
 
   // Auto-detect mobile device on mount (respects explicit initialOrientation if provided)
   useEffect(() => {
@@ -939,8 +977,8 @@ export function UnifiedLiveMonitor({
         m === "browser" ? "BROWSER" : m === "python-local" ? "PYTHON_LOCAL" : "PYTHON_REMOTE";
 
       try {
-        audioEngine?.stopCurrentAlert();
-        audioEngine?.setRiskState("NORMAL");
+        isMonitoringAudioAllowedRef.current = false;
+        audioEngine?.resetSilent();
 
         const handoff = await executeTwoPhaseCameraHandoff(
           {
@@ -981,6 +1019,10 @@ export function UnifiedLiveMonitor({
           return;
         }
 
+        // Re-silence after async engine handoff completes
+        isMonitoringAudioAllowedRef.current = false;
+        audioEngine?.resetSilent();
+
         resetSessionStats();
         setChartHistory([]);
         setRuntimeMode(targetMode);
@@ -1020,6 +1062,10 @@ export function UnifiedLiveMonitor({
   const handleStartMonitoring = useCallback(async () => {
     if (isSwitchingEngine) return;
     unlockAudio();
+    // Ensure clean silent audio baseline before starting a new session
+    isMonitoringAudioAllowedRef.current = false;
+    audioEngine?.resetSilent();
+
     resetSessionStats();
     setChartHistory([]);
 
@@ -1032,6 +1078,7 @@ export function UnifiedLiveMonitor({
       });
       setIsPreflightRunning(false);
       if (started) {
+        isMonitoringAudioAllowedRef.current = true;
         setHasActiveSession(true);
         toast.success("Local Python AI started (direct OpenCV camera + SQLite persistence).");
       } else {
@@ -1079,6 +1126,7 @@ export function UnifiedLiveMonitor({
     if (runtimeMode === "browser" && handshake.persistenceMode === "OFFLINE_QUEUED") {
       const provisional = startOfflineSession();
       if (provisional) {
+        isMonitoringAudioAllowedRef.current = true;
         activeSessionCodeRef.current = provisional.sessionCode;
         setHasActiveSession(true);
         toast.info(
@@ -1105,6 +1153,7 @@ export function UnifiedLiveMonitor({
 
       const data = await startRes.json();
       if (data?.sessionCode) {
+        isMonitoringAudioAllowedRef.current = true;
         activeSessionCodeRef.current = data.sessionCode;
         setHasActiveSession(true);
         if (runtimeMode === "browser") {
@@ -1116,6 +1165,7 @@ export function UnifiedLiveMonitor({
       if (runtimeMode === "browser") {
         const provisional = startOfflineSession();
         if (provisional) {
+          isMonitoringAudioAllowedRef.current = true;
           activeSessionCodeRef.current = provisional.sessionCode;
           setHasActiveSession(true);
           toast.info(
@@ -1149,8 +1199,9 @@ export function UnifiedLiveMonitor({
 
   // Stop live monitoring, persist full session summary ONCE & completely clear the cockpit
   const handleStopMonitoring = useCallback(async () => {
-    audioEngine?.stopCurrentAlert();
-    audioEngine?.setRiskState("NORMAL");
+    // Disarm audio gate synchronously FIRST so no late frame/event can re-trigger alarms during teardown
+    isMonitoringAudioAllowedRef.current = false;
+    audioEngine?.resetSilent();
 
     const code = activeSessionCodeRef.current;
     if (code) {
@@ -1165,8 +1216,13 @@ export function UnifiedLiveMonitor({
     } else if (runtimeMode === "browser") {
       // Single idempotent session finalization via OfflineEventQueue BEFORE stopping/resetting engine stats
       if (code) {
-        queueBrowserSessionEnd(streamDurationSec);
-        toast.success(`Session ${code} ended & queued for persistence (${streamDurationSec}s).`);
+        const elapsedSec =
+          sessionStartWallMsRef.current > 0
+            ? Math.max(1, Math.round((Date.now() - sessionStartWallMsRef.current) / 1000))
+            : Math.max(1, streamDurationSec);
+        const resolvedDurationSec = Math.max(streamDurationSec, elapsedSec);
+        queueBrowserSessionEnd(resolvedDurationSec);
+        toast.success(`Session ${code} ended & queued for persistence (${resolvedDurationSec}s).`);
       }
       stopBrowserMonitoring();
       stopCamera();
@@ -1192,6 +1248,10 @@ export function UnifiedLiveMonitor({
       }
       stopCamera();
     }
+
+    // Re-silence after async teardown completes in case any in-flight callback arrived mid-stop
+    isMonitoringAudioAllowedRef.current = false;
+    audioEngine?.resetSilent();
 
     resetSessionStats();
     setChartHistory([]);
@@ -1528,6 +1588,33 @@ export function UnifiedLiveMonitor({
         </div>
       )}
 
+      {/* Local Python AI Connection Warning Banner */}
+      {!isFullscreen && runtimeMode === "python-local" && pythonLocal.error && (
+        <div
+          role="region"
+          aria-label="Local Python Telemetry Notice"
+          className="p-3.5 rounded-2xl border border-amber-500/40 bg-amber-500/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+        >
+          <div className="space-y-0.5">
+            <div className="font-bold text-foreground flex items-center gap-1.5">
+              <AlertTriangle className="size-4 text-amber-500 shrink-0" />
+              <span>Local Python Telemetry Stream Issue</span>
+            </div>
+            <p className="text-muted-foreground">{pythonLocal.error}</p>
+          </div>
+          {pythonLocal.isRunning && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => pythonLocal.reconnectWebSocket()}
+              className="h-8 text-xs gap-1.5 shrink-0"
+            >
+              <RefreshCw className="size-3.5" /> Retry Telemetry WS
+            </Button>
+          )}
+        </div>
+      )}
+
       {/* Error Display Card if hardware camera error occurs */}
       {cameraError && (
         <CameraErrorDisplay
@@ -1849,10 +1936,14 @@ export function UnifiedLiveMonitor({
                 onStart={handleStartMonitoring}
                 onStop={handleStopMonitoring}
                 onPause={() => {
-                  audioEngine?.stopCurrentAlert();
+                  isMonitoringAudioAllowedRef.current = false;
+                  audioEngine?.resetSilent();
                   pauseCamera();
                 }}
-                onResume={resumeCamera}
+                onResume={() => {
+                  isMonitoringAudioAllowedRef.current = true;
+                  resumeCamera();
+                }}
                 onSwitchFacing={switchFacingMode}
                 onCaptureSnapshot={handleCaptureSnapshot}
                 onToggleFraming={() =>
@@ -1922,7 +2013,7 @@ export function UnifiedLiveMonitor({
                 backendType={backendType}
                 onSwitchBackend={handleSwitchBackend}
                 latencyDiagnostics={effectiveLatencyDiagnostics}
-                isStale={isStale}
+                isStale={runtimeMode === "remote" ? isStale : false}
                 isAudioUnlocked={isAudioUnlocked}
                 isMuted={audioMuted}
                 volume={audioVolume}

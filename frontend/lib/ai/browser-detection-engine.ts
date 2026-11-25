@@ -220,6 +220,9 @@ export class BrowserDetectionEngine {
     }
     if (code) {
       this._finalizedSessionCodes.delete(code);
+      this._sessionStartWallMs = Date.now();
+    } else {
+      this._sessionStartWallMs = null;
     }
   }
 
@@ -335,6 +338,7 @@ export class BrowserDetectionEngine {
     this._lastLatencyMs = 0;
     this._droppedFrames = 0;
     this._totalFrames = 0;
+    this._sessionStartWallMs = null;
   }
 
   public startCalibration(options?: { targetZone?: PoseZone | null; minSamplesPerZone?: number }): void {

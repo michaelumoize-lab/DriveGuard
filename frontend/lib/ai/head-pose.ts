@@ -121,6 +121,20 @@ export function transpose3x3(A: number[][]): number[][] {
 }
 
 /**
+ * Convert a 3x3 rotation matrix from MediaPipe/OpenGL right-handed camera coordinates
+ * (+X right, +Y up, +Z toward camera) into OpenCV camera coordinates
+ * (+X right, +Y down, +Z into scene) via basis conjugation R_cv = C @ R_gl @ C
+ * where C = diag(1, -1, -1).
+ */
+export function convertOpenGLRotationToOpenCV(R: number[][]): number[][] {
+  return [
+    [R[0][0], -R[0][1], -R[0][2]],
+    [-R[1][0], R[1][1], R[1][2]],
+    [-R[2][0], R[2][1], R[2][2]],
+  ];
+}
+
+/**
  * Extract intrinsic Y-X-Z Cardan/Tait-Bryan Euler angles in degrees from 3x3 rotation matrix.
  *
  * R = R_y(yaw) @ R_x(pitch) @ R_z(roll)
@@ -591,7 +605,7 @@ export function estimateHeadPose(
       const colMajorTransNorm = Math.hypot(m[12], m[13], m[14]);
       const rowMajorTransNorm = Math.hypot(m[3], m[7], m[11]);
       const isColumnMajor = colMajorTransNorm > 1e-3 && rowMajorTransNorm < 1e-3;
-      rotMat = isColumnMajor
+      const rawRotMat = isColumnMajor
         ? [
             [m[0], m[4], m[8]],
             [m[1], m[5], m[9]],
@@ -602,6 +616,11 @@ export function estimateHeadPose(
             [m[4], m[5], m[6]],
             [m[8], m[9], m[10]],
           ];
+      // MediaPipe Tasks facialTransformationMatrixes are column-major OpenGL camera matrices
+      // (+Y up, +Z toward camera, translation tz = m[14] < 0 in front of camera).
+      // Convert OpenGL -> OpenCV (+Y down, +Z into scene) via C @ R @ C so yaw and roll signs match OpenCV solvePnP.
+      const isOpenGLMatrix = isColumnMajor && m[14] < 0;
+      rotMat = isOpenGLMatrix ? convertOpenGLRotationToOpenCV(rawRotMat) : rawRotMat;
     }
     if (rotMat && !isValidRotationMatrix(rotMat, 0.1)) {
       rotMat = null;

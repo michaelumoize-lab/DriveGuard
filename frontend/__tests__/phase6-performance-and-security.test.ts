@@ -209,6 +209,22 @@ test("5. SENSITIVITY_PRESETS monotonicity, bounds, and BrowserDetectionEngine fe
   assert.equal(r.isMirrorCheckContext, false);
 });
 
+test("6. UnifiedLiveMonitor unmount flush useEffect has empty deps (never ends session at 1s when streamDurationSec ticks)", () => {
+  const src = readFrontend("components/monitor/unified-live-monitor.tsx");
+  const idx = src.indexOf("window.addEventListener(\"pagehide\", flushActiveSession)");
+  assert.ok(idx !== -1, "Expected pagehide flushActiveSession listener in unified-live-monitor.tsx");
+  const snippet = src.slice(idx, idx + 350);
+  assert.ok(
+    snippet.includes("}, []);"),
+    "pagehide/unmount flushActiveSession useEffect must have an empty dependency array [] so ticking streamDurationSec does not end sessions at 1s"
+  );
+  assert.equal(
+    snippet.includes("streamDurationSec]"),
+    false,
+    "pagehide/unmount flushActiveSession useEffect must never depend on streamDurationSec"
+  );
+});
+
 let passed = 0;
 let failed = 0;
 for (const t of tests) {

@@ -95,6 +95,11 @@ export function usePythonLocalEngine(options: UsePythonLocalEngineOptions = {}) 
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const isRunningRef = useRef<boolean>(false);
+  const lastWsTelemetryMsRef = useRef<number>(0);
+  const wsReconnectAttemptsRef = useRef<number>(0);
+  const wsReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const statusPollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const onTelemetryRef = useRef(onTelemetry);
   const onSafetyEventRef = useRef(onSafetyEvent);
   const onCalibrationRef = useRef(onCalibration);
@@ -107,23 +112,34 @@ export function usePythonLocalEngine(options: UsePythonLocalEngineOptions = {}) 
     onErrorRef.current = onError;
   }, [onTelemetry, onSafetyEvent, onCalibration, onError]);
 
-  const closeWebSocket = useCallback(() => {
-    const ws = wsRef.current;
-    wsRef.current = null;
-    if (ws) {
-      try {
-        ws.onopen = null;
-        ws.onmessage = null;
-        ws.onerror = null;
-        ws.onclose = null;
-        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-          ws.close();
-        }
-      } catch {
-        // ignore close errors
+  const closeWebSocket = useCallback(
+    (clearStatusPoller = true) => {
+      if (wsReconnectTimerRef.current !== null) {
+        clearTimeout(wsReconnectTimerRef.current);
+        wsReconnectTimerRef.current = null;
       }
-    }
-  }, []);
+      if (clearStatusPoller && statusPollIntervalRef.current !== null) {
+        clearInterval(statusPollIntervalRef.current);
+        statusPollIntervalRef.current = null;
+      }
+      const ws = wsRef.current;
+      wsRef.current = null;
+      if (ws) {
+        try {
+          ws.onopen = null;
+          ws.onmessage = null;
+          ws.onerror = null;
+          ws.onclose = null;
+          if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+            ws.close();
+          }
+        } catch {
+          // ignore close errors
+        }
+      }
+    },
+    []
+  );
 
   const reconcileProfile = useCallback(async (): Promise<PythonReconcileOutcome> => {
     const outcome = await reconcilePythonProfileWithServer({
@@ -173,7 +189,7 @@ export function usePythonLocalEngine(options: UsePythonLocalEngineOptions = {}) 
   }, [baseHttp, driverId]);
 
   const connectWebSocket = useCallback(() => {
-    closeWebSocket();
+    closeWebSocket(false);
     setConnectionStatus("connecting");
     setBackendProcessingStatus("connecting");
 
@@ -183,6 +199,7 @@ export function usePythonLocalEngine(options: UsePythonLocalEngineOptions = {}) 
 
       ws.onopen = () => {
         if (wsRef.current !== ws) return;
+        wsReconnectAttemptsRef.current = 0;
         setConnectionStatus("connected");
         setBackendProcessingStatus("awaiting_telemetry");
         setError(null);
@@ -195,6 +212,7 @@ export function usePythonLocalEngine(options: UsePythonLocalEngineOptions = {}) 
           if (!msg || typeof msg !== "object") return;
 
           if (msg.type === "TELEMETRY") {
+            lastWsTelemetryMsRef.current = Date.now();
             const normalized = normalizeLocalTelemetryPayload(msg);
             setTelemetry(normalized);
             setBackendProcessingStatus("processing");
@@ -228,6 +246,7 @@ export function usePythonLocalEngine(options: UsePythonLocalEngineOptions = {}) 
             onCalibrationRef.current?.(cal);
           } else if (msg.type === "STATUS") {
             if (typeof msg.running === "boolean") {
+              isRunningRef.current = msg.running;
               setIsRunning(msg.running);
               if (!msg.running) {
                 setMjpegPreviewUrl(null);
@@ -240,6 +259,13 @@ export function usePythonLocalEngine(options: UsePythonLocalEngineOptions = {}) 
             if (msg.active_session !== undefined) {
               setActiveSession(msg.active_session ?? null);
             }
+            if (msg.latest_telemetry && typeof msg.latest_telemetry === "object") {
+              lastWsTelemetryMsRef.current = Date.now();
+              const normalized = normalizeLocalTelemetryPayload(msg.latest_telemetry);
+              setTelemetry(normalized);
+              setBackendProcessingStatus("processing");
+              onTelemetryRef.current?.(normalized);
+            }
           }
         } catch {
           // ignore malformed frames
@@ -249,9 +275,8 @@ export function usePythonLocalEngine(options: UsePythonLocalEngineOptions = {}) 
       ws.onerror = () => {
         if (wsRef.current !== ws) return;
         const msg =
-          "Could not connect to local Python telemetry WebSocket (ws://127.0.0.1:8000/ws/local/telemetry). Ensure local FastAPI is running with LOCAL_CAMERA_API_ENABLED=true.";
+          "Could not connect to local Python telemetry WebSocket (ws://127.0.0.1:8000/ws/local/telemetry). Ensure FastAPI is running with websockets installed and LOCAL_CAMERA_API_ENABLED=true.";
         setConnectionStatus("error");
-        setBackendProcessingStatus("error");
         setError(msg);
         onErrorRef.current?.(new Error(msg));
       };
@@ -259,7 +284,16 @@ export function usePythonLocalEngine(options: UsePythonLocalEngineOptions = {}) 
       ws.onclose = () => {
         if (wsRef.current === ws) {
           wsRef.current = null;
-          setConnectionStatus("disconnected");
+          setConnectionStatus(isRunningRef.current ? "reconnecting" : "disconnected");
+          if (isRunningRef.current && wsReconnectAttemptsRef.current < 5) {
+            wsReconnectAttemptsRef.current += 1;
+            const delay = Math.min(4000, 800 * wsReconnectAttemptsRef.current);
+            wsReconnectTimerRef.current = setTimeout(() => {
+              if (isRunningRef.current) {
+                connectWebSocket();
+              }
+            }, delay);
+          }
         }
       };
     } catch (err) {
@@ -311,7 +345,11 @@ export function usePythonLocalEngine(options: UsePythonLocalEngineOptions = {}) 
         }
 
         const data = await res.json();
-        setIsRunning(Boolean(data?.running));
+        const runningNow = Boolean(data?.running);
+        isRunningRef.current = runningNow;
+        lastWsTelemetryMsRef.current = 0;
+        wsReconnectAttemptsRef.current = 0;
+        setIsRunning(runningNow);
         setIsCalibrated(Boolean(data?.is_calibrated));
         setActiveSession(data?.active_session ?? null);
 
@@ -320,6 +358,36 @@ export function usePythonLocalEngine(options: UsePythonLocalEngineOptions = {}) 
           `${baseHttp}/api/v1/local/preview.mjpg?session=${encodeURIComponent(sessionNonce)}`
         );
         connectWebSocket();
+
+        // Fallback HTTP status poller: stays completely idle while WS is delivering frames;
+        // hydrates latest_telemetry from GET /api/v1/local/status if WS drops or fails upgrade.
+        if (statusPollIntervalRef.current !== null) {
+          clearInterval(statusPollIntervalRef.current);
+        }
+        statusPollIntervalRef.current = setInterval(async () => {
+          if (!isRunningRef.current) return;
+          if (Date.now() - lastWsTelemetryMsRef.current < 1500) return;
+          try {
+            const stRes = await fetch(`${baseHttp}/api/v1/local/status`, {
+              method: "GET",
+              headers: { Accept: "application/json" },
+            });
+            if (!stRes.ok || !isRunningRef.current) return;
+            const stData = await stRes.json();
+            if (typeof stData?.is_calibrated === "boolean") {
+              setIsCalibrated(stData.is_calibrated);
+            }
+            if (stData?.latest_telemetry && typeof stData.latest_telemetry === "object") {
+              const normalized = normalizeLocalTelemetryPayload(stData.latest_telemetry);
+              setTelemetry(normalized);
+              setBackendProcessingStatus("processing");
+              onTelemetryRef.current?.(normalized);
+            }
+          } catch {
+            // non-fatal fallback poll failure
+          }
+        }, 500);
+
         return true;
       } catch (err) {
         const msg =
@@ -343,6 +411,9 @@ export function usePythonLocalEngine(options: UsePythonLocalEngineOptions = {}) 
    * before resolving (guarantees clean exclusive camera handoff back to Browser AI).
    */
   const stop = useCallback(async (): Promise<boolean> => {
+    isRunningRef.current = false;
+    lastWsTelemetryMsRef.current = 0;
+    wsReconnectAttemptsRef.current = 0;
     setMjpegPreviewUrl(null);
     closeWebSocket();
     setTelemetry(null);
@@ -429,6 +500,12 @@ export function usePythonLocalEngine(options: UsePythonLocalEngineOptions = {}) 
     };
   }, [closeWebSocket]);
 
+  const reconnectWebSocket = useCallback(() => {
+    wsReconnectAttemptsRef.current = 0;
+    setError(null);
+    connectWebSocket();
+  }, [connectWebSocket]);
+
   return {
     isRunning,
     isStarting,
@@ -446,6 +523,7 @@ export function usePythonLocalEngine(options: UsePythonLocalEngineOptions = {}) 
     error,
     start,
     stop,
+    reconnectWebSocket,
     startCalibration,
     skipCalibrationStep,
     cancelCalibration,
