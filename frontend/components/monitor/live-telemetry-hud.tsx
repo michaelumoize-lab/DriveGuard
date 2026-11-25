@@ -34,6 +34,7 @@ import {
 interface LiveTelemetryHUDProps {
   telemetry: FrameTelemetry | null;
   cameraState?: CameraState;
+  runtimeMode?: "browser" | "python-local" | "remote";
   backendType?: "cloud" | "local";
   latencyDiagnostics?: LatencyDiagnostics | null;
   isStale?: boolean;
@@ -55,6 +56,7 @@ interface LiveTelemetryHUDProps {
 export function LiveTelemetryHUD({
   telemetry,
   cameraState = "not-initialized",
+  runtimeMode,
   backendType = "local",
   latencyDiagnostics = null,
   isStale = false,
@@ -144,7 +146,15 @@ export function LiveTelemetryHUD({
                 Synthesizing Facial Landmarks &amp; Gaze Vector…
               </p>
               <p className="text-[11px] text-muted-foreground max-w-xs mx-auto">
-                Connected to {backendType === "local" ? "Local AI Engine (127.0.0.1:8000)" : "DriveGuard LiveKit Engine"}. Awaiting first telemetry frame.
+                Connected to{" "}
+                {runtimeMode === "browser"
+                  ? "Browser AI (MediaPipe WASM)"
+                  : runtimeMode === "python-local"
+                    ? "Local Python AI (127.0.0.1:8000)"
+                    : backendType === "local"
+                      ? "Local AI Engine (127.0.0.1:8000)"
+                      : "DriveGuard LiveKit Engine"}
+                . Awaiting first telemetry frame.
               </p>
             </div>
           </div>

@@ -198,9 +198,10 @@ export function InspectorWorkspace({
           <LiveTelemetryHUD
             telemetry={telemetry}
             cameraState={cameraState}
+            runtimeMode={runtimeMode}
             backendType={backendType}
             latencyDiagnostics={latencyDiagnostics}
-            isStale={runtimeMode === "browser" ? false : isStale}
+            isStale={runtimeMode === "remote" ? isStale : false}
             isAudioUnlocked={isAudioUnlocked}
             isMuted={isMuted}
             volume={volume}
@@ -218,7 +219,7 @@ export function InspectorWorkspace({
           <ExplainableRiskPanel
             telemetry={telemetry}
             latencyDiagnostics={latencyDiagnostics}
-            isStale={runtimeMode === "browser" ? false : isStale}
+            isStale={runtimeMode === "remote" ? isStale : false}
           />
         </TabsContent>
 

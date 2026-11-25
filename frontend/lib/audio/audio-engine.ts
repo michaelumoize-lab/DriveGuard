@@ -379,6 +379,20 @@ export class DriveGuardAudioEngine {
     this.currentTier = null;
   }
 
+  /**
+   * Completely silence all active/scheduled alerts and reset risk/session state
+   * WITHOUT triggering a recovery chime. Must be called on session stop, pause,
+   * engine switch, or component unmount.
+   */
+  public resetSilent(): void {
+    this.stopCurrentAlert();
+    this.currentRiskState = "NORMAL";
+    this.currentTier = null;
+    this.lastStateTimestampMs = null;
+    this.handledEventIds.clear();
+    this.lastAlertTimestamps.clear();
+  }
+
   private stopCriticalLoop(): void {
     this.isCriticalLoopActive = false;
     if (this.criticalTimerId !== null) {
