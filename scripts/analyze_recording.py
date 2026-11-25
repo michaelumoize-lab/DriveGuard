@@ -157,11 +157,13 @@ class RecordingAnalyzer:
                 thr = r.get("ear_closure_threshold", 0.20)
                 if ear_l is not None and ear_r is not None and thr is not None:
                     max_ear = max(ear_l, ear_r)
-                    diff = abs(ear_l - ear_r)
-                    # If one eye is comfortably open above threshold while the far eye collapsed
-                    if max_ear >= thr + 0.03 or diff >= 0.06:
-                        near_eye = "RIGHT" if zone == "LEFT_MIRROR" else "LEFT"
-                        far_eye = "LEFT" if zone == "LEFT_MIRROR" else "RIGHT"
+                    min_ear = min(ear_l, ear_r)
+                    diff = max_ear - min_ear
+                    # Genuine asymmetric foreshortening false-closure requires one eye to stay
+                    # comfortably open above threshold while the other eye collapsed far below it.
+                    if max_ear >= thr + 0.03 and diff >= 0.06:
+                        open_eye = "LEFT_LANDMARK" if ear_l >= ear_r else "RIGHT_LANDMARK"
+                        closed_eye = "RIGHT_LANDMARK" if ear_l >= ear_r else "LEFT_LANDMARK"
                         self.anomalies.append(
                             AnomalyEvent(
                                 frame_id=r["frame_id"],
@@ -170,8 +172,8 @@ class RecordingAnalyzer:
                                 severity="HIGH",
                                 description=(
                                     f"False eye closure flagged during {zone}. "
-                                    f"Near eye ({near_eye}) is open (EAR={max_ear:.3f} > thr={thr:.3f}), "
-                                    f"but far eye ({far_eye}) narrowed (diff={diff:.3f})."
+                                    f"One eye ({open_eye}) remained open (EAR={max_ear:.3f} >= thr={thr:.3f} + 0.03), "
+                                    f"while the other ({closed_eye}) narrowed to {min_ear:.3f} (diff={diff:.3f})."
                                 ),
                                 observed_values={
                                     "zone": zone,

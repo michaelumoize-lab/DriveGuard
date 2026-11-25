@@ -563,6 +563,8 @@ export function UnifiedLiveMonitor({
     syncStatus: browserSyncStatus,
     startMonitoring: startBrowserMonitoring,
     stopMonitoring: stopBrowserMonitoring,
+    recordedFrameCount: browserRecordedFrames,
+    exportTelemetryJsonl: exportBrowserTelemetryJsonl,
     startCalibration: startBrowserCalibration,
     skipCalibrationStep: skipBrowserCalibrationStep,
     recalibrateZone: recalibrateBrowserZone,
@@ -1296,6 +1298,28 @@ export function UnifiedLiveMonitor({
   );
 
   // Snapshot capture handler
+  const handleExportBrowserTelemetry = useCallback(() => {
+    const jsonl = exportBrowserTelemetryJsonl();
+    if (!jsonl.trim()) {
+      toast.info("No Browser AI telemetry frames recorded yet. Start monitoring first.");
+      return;
+    }
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    const filename = `browser_session_${stamp}.jsonl`;
+    const blob = new Blob([jsonl], { type: "application/x-ndjson;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${browserRecordedFrames.toLocaleString()} frames to ${filename}`);
+  }, [exportBrowserTelemetryJsonl, browserRecordedFrames]);
+
   const handleCaptureSnapshot = useCallback(async () => {
     if (cameraState !== "active") {
       toast.error("Camera must be active to capture a frame snapshot.");
@@ -2031,6 +2055,8 @@ export function UnifiedLiveMonitor({
                 viewOrientation={viewOrientation}
                 onOrientationChange={setViewOrientation}
                 hasActiveSession={hasActiveSession}
+                browserRecordedFrames={browserRecordedFrames}
+                onExportBrowserTelemetry={handleExportBrowserTelemetry}
               />
             )}
           </div>

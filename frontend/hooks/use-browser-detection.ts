@@ -68,6 +68,7 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
   );
   const [activeProfile, setActiveProfile] = useState<DriverBehaviourProfileData | null>(null);
   const [isCalibrated, setIsCalibrated] = useState<boolean>(false);
+  const [recordedFrameCount, setRecordedFrameCount] = useState<number>(0);
 
   const engineRef = useRef<BrowserDetectionEngine | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -116,6 +117,7 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
           lastStateUpdateMsRef.current = now;
           setTelemetry({ ...t });
           setSyncStatus(t.persistenceSyncStatus);
+          setRecordedFrameCount(engine.getRecordedFrameCount());
         }
       },
       onSafetyAlert: (decision, t, transition) => {
@@ -362,6 +364,10 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
     return null;
   }, []);
 
+  const exportTelemetryJsonl = useCallback((): string => {
+    return engineRef.current?.exportRecordedTelemetryJsonl() ?? "";
+  }, []);
+
   const setExplicitSessionCode = useCallback(
     (code: string | null, clientSessionId?: string | null) => {
       setSessionCode(code);
@@ -407,6 +413,8 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
     setOpticalQuality,
     queueSessionEnd,
     getMetrics,
+    recordedFrameCount,
+    exportTelemetryJsonl,
     engine: engineRef.current,
   };
 }

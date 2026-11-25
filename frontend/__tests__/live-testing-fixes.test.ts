@@ -17,7 +17,15 @@ import {
   extractEulerYXZ,
   isValidRotationMatrix,
 } from "../lib/ai/head-pose";
-import { NormalizedLandmark, PoseZone } from "../lib/ai/types";
+import { DecisionEngine } from "../lib/ai/decision-engine";
+import { ConfidenceTier } from "../lib/ai/confidence";
+import {
+  DrowsinessState,
+  NormalizedLandmark,
+  PoseZone,
+  ReasonCode,
+  TemporalMetrics,
+} from "../lib/ai/types";
 import { DriveGuardAudioEngine } from "../lib/audio/audio-engine";
 
 type TestFn = () => void;
@@ -310,6 +318,104 @@ test("9. Local Python hook preserves status poller during WS reconnect and expos
   assert.ok(
     hudSrc.includes("Local Python AI (127.0.0.1:8000)"),
     "HUD waiting state must show runtime-accurate Local Python AI copy instead of LiveKit copy"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// ISSUE 4: DecisionEngine Cooldown primaryReason Consistency (Python & TS)
+// ---------------------------------------------------------------------------
+
+test("10. DecisionEngine cooldown retains elevated reason over DASHBOARD_CHECK_CONTEXT and prefers recent warning reason on step-down", () => {
+  const de = new DecisionEngine();
+  const baseMetrics = (tsMs: number, overrides: Partial<TemporalMetrics> = {}): TemporalMetrics => ({
+    timestampMs: tsMs,
+    activeClosureDurationMs: 0,
+    activeOffRoadDwellMs: 0,
+    isMirrorCheckContext: false,
+    isDashboardCheckContext: false,
+    isNoddingMicrosleep: false,
+    blinkCount60s: 4,
+    blinkCount30s: 2,
+    meanBlinkDurationMs60s: 180,
+    prolongedBlinkCount60s: 0,
+    severeBlinkCount60s: 0,
+    meanRcr60s: 1.0,
+    yawnCount60s: 0,
+    yawnCount30s: 0,
+    activeYawnDurationMs: 0,
+    perclosPct: 4.0,
+    effectivePerclosPct: 4.0,
+    perclosCoveragePct: 100.0,
+    perclosIsReliable: true,
+    hasFace: true,
+    faceLostDurationMs: 0,
+    isEyeClosed: false,
+    completedBlink: null,
+    downwardDwellMs: 0,
+    ...overrides,
+  });
+  const goodConf = {
+    overallConfidence: 1.0,
+    tier: ConfidenceTier.HIGH,
+    isReliable: true,
+    headPoseViable: true,
+    ocularViable: true,
+    yawnViable: true,
+    isHeadPoseAvailable: true,
+    isOcularAvailable: true,
+    isYawnAvailable: true,
+    degradedReasons: [],
+  };
+
+  // 1. Trigger CRITICAL via NODDING_MICROSLEEP at t=1000ms
+  const rCrit = de.evaluate(
+    baseMetrics(1000, { isNoddingMicrosleep: true, activeClosureDurationMs: 600, isEyeClosed: true }),
+    goodConf
+  );
+  assert.equal(rCrit.state, DrowsinessState.CRITICAL_WARNING);
+  assert.equal(rCrit.primaryReason?.code, ReasonCode.NODDING_MICROSLEEP);
+
+  // 2. Eyes reopen during dashboard glance at t=1500ms (still in 2000ms CRITICAL cooldown)
+  // Must NOT leak DASHBOARD_CHECK_CONTEXT as primaryReason while CRITICAL_WARNING is held!
+  const rHoldDash = de.evaluate(
+    baseMetrics(1500, { isDashboardCheckContext: true, activeOffRoadDwellMs: 500 }),
+    goodConf
+  );
+  assert.equal(rHoldDash.state, DrowsinessState.CRITICAL_WARNING);
+  assert.equal(
+    rHoldDash.primaryReason?.code,
+    ReasonCode.NODDING_MICROSLEEP,
+    "Cooldown-held CRITICAL_WARNING must retain elevated reason instead of DASHBOARD_CHECK_CONTEXT"
+  );
+
+  // 3. Step down to DROWSINESS_WARNING driven by PROLONGED_BLINK across continuous frames (>= 2000ms cooldown)
+  for (let ts = 1700; ts <= 3900; ts += 200) {
+    de.evaluate(
+      baseMetrics(ts, { prolongedBlinkCount60s: 3, meanBlinkDurationMs60s: 650 }),
+      goodConf
+    );
+  }
+  const rWarn = de.evaluate(
+    baseMetrics(4100, { prolongedBlinkCount60s: 3, meanBlinkDurationMs60s: 650 }),
+    goodConf
+  );
+  assert.equal(rWarn.state, DrowsinessState.DROWSINESS_WARNING);
+  assert.equal(rWarn.primaryReason?.code, ReasonCode.PROLONGED_BLINK);
+
+  // 4. Eyes normal during DROWSINESS_WARNING cooldown at t=4500ms:
+  // primaryReason must show PROLONGED_BLINK (most recent elevated reason), NOT stale NODDING_MICROSLEEP,
+  // while historicalReason still preserves NODDING_MICROSLEEP for AlertStateManager.
+  const rWarnHold = de.evaluate(baseMetrics(4500), goodConf);
+  assert.equal(rWarnHold.state, DrowsinessState.DROWSINESS_WARNING);
+  assert.equal(
+    rWarnHold.primaryReason?.code,
+    ReasonCode.PROLONGED_BLINK,
+    "Held DROWSINESS_WARNING should display most recent warning reason (PROLONGED_BLINK)"
+  );
+  assert.equal(
+    rWarnHold.historicalReason?.code,
+    ReasonCode.NODDING_MICROSLEEP,
+    "historicalReason must preserve highest unresolved alert reason for AlertStateManager"
   );
 });
 

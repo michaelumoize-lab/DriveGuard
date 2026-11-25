@@ -714,11 +714,16 @@ export class DecisionEngine {
     }
 
     let primaryReason = reasons[0] || null;
-    if (
-      DecisionEngine.SEVERITY_MAP[this.currentState] > candidateSev &&
-      (primaryReason === null || primaryReason.code === ReasonCode.ALERT_NORMAL)
-    ) {
-      const heldReason = this._historicalReason || this._lastElevatedReason;
+    const isNominalOrContext =
+      primaryReason === null ||
+      primaryReason.code === ReasonCode.ALERT_NORMAL ||
+      primaryReason.code === ReasonCode.MIRROR_CHECK_CONTEXT ||
+      primaryReason.code === ReasonCode.DASHBOARD_CHECK_CONTEXT;
+    if (DecisionEngine.SEVERITY_MAP[this.currentState] > candidateSev && isNominalOrContext) {
+      // During hysteresis cooldown hold, retain the most recent elevated reason
+      // (falling back to historical alert reason) rather than emitting a nominal or
+      // contextual glance reason for an elevated drowsiness state.
+      const heldReason = this._lastElevatedReason || this._historicalReason;
       if (heldReason !== null) {
         primaryReason = heldReason;
       }
