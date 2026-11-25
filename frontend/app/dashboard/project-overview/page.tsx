@@ -60,10 +60,11 @@ export default async function ProjectOverviewPage() {
     driverProfiles[0] ??
     null;
 
-  const calibratedZonesCount = driverProfile?.zoneBaselines
-    ? Object.keys(driverProfile.zoneBaselines as Record<string, unknown>).length
-    : driverProfile?.isCalibrated
-      ? 4
+  const VALID_SPATIAL_ZONES = ["CENTER", "LEFT_MIRROR", "RIGHT_MIRROR", "DASHBOARD"] as const;
+  const rawZones = (driverProfile?.zoneBaselines ?? null) as Record<string, unknown> | null;
+  const calibratedZonesCount =
+    driverProfile?.isCalibrated && rawZones
+      ? VALID_SPATIAL_ZONES.filter((z) => rawZones[z] && typeof rawZones[z] === "object").length
       : 0;
 
   return (
@@ -85,7 +86,7 @@ export default async function ProjectOverviewPage() {
           </h1>
 
           <p className="text-base sm:text-lg text-muted-foreground leading-relaxed">
-            A personalised automotive safety platform combining 4-zone pose-conditioned calibration, sub-frame blink velocity kinematics, rolling time-weighted PERCLOS, and a confidence-gated MobileNetV3-Small deep learning cascade to deliver reliable, explainable driver drowsiness detection.
+            A dual-engine personalised automotive safety platform combining 4-zone pose-conditioned calibration, sub-frame blink velocity kinematics, rolling time-weighted PERCLOS, and an authoritative geometric drowsiness decision engine (with a passive diagnostic MobileNetV3-Small shadow observer retained for offline research evaluation).
           </p>
 
           <div className="flex flex-wrap items-center gap-3 pt-2">
@@ -165,15 +166,15 @@ export default async function ProjectOverviewPage() {
               <div className="p-2.5 rounded-xl bg-primary/10 text-primary w-fit mb-2">
                 <Cpu className="size-5" />
               </div>
-              <CardTitle className="text-base font-semibold">2. Confidence-Gated Cascade</CardTitle>
-              <CardDescription className="text-xs">Edge Efficiency with Deep Verifier</CardDescription>
+              <CardTitle className="text-base font-semibold">2. Geometric Authoritative Engine</CardTitle>
+              <CardDescription className="text-xs">Dual-Engine Independence + Passive Shadow Observer</CardDescription>
             </CardHeader>
             <CardContent className="text-xs text-muted-foreground space-y-2">
               <p>
-                Runs fast geometric analysis on every frame (~2.5ms). Only invokes the MobileNetV3-Small ONNX classifier when geometric confidence is low or when near the closure boundary, reducing inference power by ~67%.
+                Production monitoring runs deterministic 478-landmark geometric analysis locally in Browser AI (MediaPipe WASM) or independently in Python AI, with strict operational calibration gating. MobileNetV3-Small is preserved strictly as a non-authoritative passive diagnostic shadow observer for research.
               </p>
               <div className="p-2 rounded bg-muted/40 font-mono text-[11px]">
-                Arbitration: Reliability-Weighted Consensus
+                Production: GEOMETRIC_AUTHORITATIVE (Shadow Disabled)
               </div>
             </CardContent>
           </Card>
@@ -213,7 +214,7 @@ export default async function ProjectOverviewPage() {
               <Server className="size-4 text-primary" /> Fast AI Backend
             </div>
             <p className="text-xs text-muted-foreground">
-              Python 3.11, FastAPI, MediaPipe Tasks 478 Mesh, ONNX Runtime MobileNetV3-Small, OpenCV Head Pose solvePnP.
+              Python 3.11, FastAPI, MediaPipe Tasks 478 Mesh, OpenCV Head Pose solvePnP, SQLite WAL local store (plus opt-in diagnostic ONNX shadow observer).
             </p>
           </div>
 

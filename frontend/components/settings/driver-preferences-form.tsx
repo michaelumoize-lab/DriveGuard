@@ -226,20 +226,20 @@ export function DriverPreferencesForm({
                 {
                   level: "RELAXED" as const,
                   title: "Relaxed",
-                  badge: "Fewer Alerts",
-                  desc: "Wider provisional alert margins to reduce false blink warnings during frequent mirror checks.",
+                  badge: "1.80s / 18% PERCLOS",
+                  desc: "Wider alert margins (≥ 1.80 s closure, 18% PERCLOS warning) to reduce false warnings on bright routes.",
                 },
                 {
                   level: "STANDARD" as const,
                   title: "Standard",
-                  badge: "Recommended",
-                  desc: "Balanced provisional thresholds for everyday driving with dual-confirmation closure and PERCLOS.",
+                  badge: "1.50s / 15% PERCLOS",
+                  desc: "Recommended balanced thresholds (≥ 1.50 s closure, 15% PERCLOS warning) for daily commuting.",
                 },
                 {
                   level: "HIGH" as const,
                   title: "High Sensitivity",
-                  badge: "Earlier Escalation",
-                  desc: "Tighter provisional eye-closure and PERCLOS thresholds for earlier fatigue escalation.",
+                  badge: "1.20s / 12% PERCLOS",
+                  desc: "Tighter thresholds (≥ 1.20 s closure, 12% PERCLOS warning) for earlier fatigue escalation.",
                 },
               ].map((s) => {
                 const selected = sensitivityLevel === s.level;
@@ -314,7 +314,7 @@ export function DriverPreferencesForm({
                   Eyewear / Glasses
                 </Label>
                 <p className="text-[11px] text-muted-foreground">
-                  Prioritize Stage-2 CNN arbitration for glare.
+                  Accounts for eyewear framing and lens reflection in ocular thresholds.
                 </p>
               </div>
               <Switch

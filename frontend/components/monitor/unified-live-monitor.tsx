@@ -1013,7 +1013,6 @@ export function UnifiedLiveMonitor({
   );
 
   const [isPreflightRunning, setIsPreflightRunning] = useState(false);
-  const [activeFault, setActiveFault] = useState<string | null>(null);
 
   // Start live monitoring (Browser AI / Local Python AI / Remote LiveKit AI)
   const handleStartMonitoring = useCallback(async () => {
@@ -1195,7 +1194,6 @@ export function UnifiedLiveMonitor({
     resetSessionStats();
     setChartHistory([]);
     lastChartSampleMsRef.current = 0;
-    setActiveFault(null);
     setCapturedSnapshot(null);
     setIsSnapshotOpen(false);
     setShowInlineCalibration(false);
@@ -1933,14 +1931,6 @@ export function UnifiedLiveMonitor({
                 onTestAudioTier={testAlert}
                 onSwitchToCockpit={() => handleConsoleModeChange("cockpit")}
                 chartHistory={chartHistory}
-                activeFault={activeFault}
-                onInjectMirrorGlance={() => setActiveFault("MIRROR_GLANCE")}
-                onInjectSluggishReopen={() => setActiveFault("SLUGGISH_REOPEN")}
-                onInjectGlare={() => setActiveFault("GLARE_DEFOCUS")}
-                onInjectWatchdogTimeout={() => setActiveFault("WATCHDOG_TIMEOUT")}
-                onResetFaults={() => setActiveFault(null)}
-                experimentMode={experimentMode}
-                onSelectExperimentMode={switchExperiment}
                 devices={devices}
                 selectedDeviceId={selectedDeviceId}
                 onSelectDevice={selectDevice}

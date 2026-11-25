@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import Link from "next/link";
 import {
   Camera,
   Cpu,
@@ -14,6 +15,7 @@ import {
   Activity,
   FlaskConical,
   LayoutGrid,
+  ArrowRight,
 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,13 +34,10 @@ import {
 import { LiveTelemetryHUD } from "./live-telemetry-hud";
 import { ExplainableRiskPanel } from "./explainable-risk-panel";
 import { LiveTelemetryChart, TelemetryHistoryPoint } from "./live-telemetry-chart";
-import { ExperimentSelector } from "./experiment-selector";
 import { CameraSelector } from "@/components/camera/camera-selector";
 import { KinematicsOscilloscope } from "@/components/engineering/kinematics-oscilloscope";
 import { EulerHeadGyro } from "@/components/engineering/euler-head-gyro";
-import { FaultInjectionToolbar } from "@/components/engineering/fault-injection-toolbar";
 import type {
-  ExperimentMode,
   FrameTelemetry,
   LatencyDiagnostics,
 } from "@/types/telemetry";
@@ -68,14 +67,6 @@ export interface InspectorWorkspaceProps {
   onTestAudioTier: (tier: "WARNING" | "DROWSY" | "CRITICAL" | "RECOVERY") => void;
   onSwitchToCockpit: () => void;
   chartHistory: TelemetryHistoryPoint[];
-  activeFault: string | null;
-  onInjectMirrorGlance: () => void;
-  onInjectSluggishReopen: () => void;
-  onInjectGlare: () => void;
-  onInjectWatchdogTimeout: () => void;
-  onResetFaults: () => void;
-  experimentMode: ExperimentMode;
-  onSelectExperimentMode: (mode: ExperimentMode) => void;
   devices: CameraDevice[];
   selectedDeviceId: string;
   onSelectDevice: (deviceId: string) => void;
@@ -107,14 +98,6 @@ export function InspectorWorkspace({
   onTestAudioTier,
   onSwitchToCockpit,
   chartHistory,
-  activeFault,
-  onInjectMirrorGlance,
-  onInjectSluggishReopen,
-  onInjectGlare,
-  onInjectWatchdogTimeout,
-  onResetFaults,
-  experimentMode,
-  onSelectExperimentMode,
   devices,
   selectedDeviceId,
   onSelectDevice,
@@ -195,8 +178,23 @@ export function InspectorWorkspace({
           </TabsTrigger>
         </TabsList>
 
-        {/* Tab 1: Overview (State, Risk, Core Metrics, Explainable Reasons) */}
+        {/* Tab 1: Overview (Operational State, Drowsiness Severity, Core Metrics, Explainable Reasons) */}
         <TabsContent value="overview" className="mt-0 space-y-3.5 focus-visible:outline-none">
+          <div className="grid grid-cols-2 gap-2.5 text-xs">
+            <div className="p-2.5 rounded-xl border border-border/80 bg-card flex items-center justify-between gap-2">
+              <span className="text-muted-foreground">Operational State</span>
+              <Badge variant="outline" className="font-mono text-[10px]">
+                {telemetry?.operational_state ?? (cameraState === "active" ? "CALIBRATION_REQUIRED" : "IDLE")}
+              </Badge>
+            </div>
+            <div className="p-2.5 rounded-xl border border-border/80 bg-card flex items-center justify-between gap-2">
+              <span className="text-muted-foreground">Drowsiness State</span>
+              <Badge variant="outline" className="font-mono text-[10px]">
+                {telemetry?.state ?? "INSUFFICIENT_DATA"}
+              </Badge>
+            </div>
+          </div>
+
           <LiveTelemetryHUD
             telemetry={telemetry}
             cameraState={cameraState}
@@ -249,16 +247,26 @@ export function InspectorWorkspace({
           />
         </TabsContent>
 
-        {/* Tab 3: Testbench (Simulated Faults, PDBP Comparison, Audio Tier Test) */}
+        {/* Tab 3: Testbench (Live PDBP Comparison, Audio Tier Test & Link to Isolated Synthetic Testbench) */}
         <TabsContent value="testbench" className="mt-0 space-y-3.5 focus-visible:outline-none">
-          <FaultInjectionToolbar
-            activeFault={activeFault}
-            onInjectMirrorGlance={onInjectMirrorGlance}
-            onInjectSluggishReopen={onInjectSluggishReopen}
-            onInjectGlare={onInjectGlare}
-            onInjectWatchdogTimeout={onInjectWatchdogTimeout}
-            onResetFaults={onResetFaults}
-          />
+          <Card className="border-border/80 bg-muted/20">
+            <CardContent className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div className="space-y-0.5">
+                <div className="font-semibold text-foreground flex items-center gap-1.5">
+                  <FlaskConical className="size-3.5 text-primary shrink-0" aria-hidden="true" />
+                  <span>Synthetic Fault Simulations Moved to Engineering Lab</span>
+                </div>
+                <p className="text-muted-foreground">
+                  To keep production live monitoring 100% authentic, synthetic fault scenarios run in an isolated simulation workspace.
+                </p>
+              </div>
+              <Button asChild size="sm" variant="outline" className="h-8 text-xs shrink-0">
+                <Link href="/dashboard/synthetic-testbench">
+                  Open Synthetic Testbench <ArrowRight className="size-3.5 ml-1" aria-hidden="true" />
+                </Link>
+              </Button>
+            </CardContent>
+          </Card>
 
           {/* PDBP vs Fixed 0.22 Rule Benchmark */}
           <Card className="border-border/80">
@@ -467,19 +475,34 @@ export function InspectorWorkspace({
             </CardContent>
           </Card>
 
-          {/* Cascade Strategy */}
+          {/* Authoritative Production Pipeline Mode */}
           <Card className="border-border/80">
             <CardHeader className="p-3.5 pb-2 border-b border-border/60">
               <CardTitle className="text-xs font-semibold text-foreground flex items-center gap-2">
                 <Cpu className="size-4 text-primary" aria-hidden="true" />
-                <span>Detection Cascade Mode</span>
+                <span>Authoritative Detection Pipeline</span>
               </CardTitle>
             </CardHeader>
-            <CardContent className="p-3.5">
-              <ExperimentSelector
-                currentMode={experimentMode}
-                onSelectMode={onSelectExperimentMode}
-              />
+            <CardContent className="p-3.5 space-y-2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Production Decision Engine</span>
+                <Badge variant="outline" className="font-mono text-[10px] border-emerald-500/40 text-emerald-500 bg-emerald-500/10">
+                  GEOMETRIC_AUTHORITATIVE
+                </Badge>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-muted-foreground">Passive Eye CNN Shadow Observer</span>
+                <Badge variant="outline" className="font-mono text-[10px]">
+                  SHADOW_DISABLED
+                </Badge>
+              </div>
+              <p className="text-[11px] text-muted-foreground leading-relaxed pt-1">
+                Production alerts are driven deterministically by 4-zone calibrated EAR, sub-frame blink kinematics, rolling PERCLOS, MAR yawns, and 6-DoF head pose. Offline historical ablation experiments live under{" "}
+                <Link href="/dashboard/benchmarks" className="text-primary hover:underline">
+                  Ablation Benchmarks
+                </Link>
+                .
+              </p>
             </CardContent>
           </Card>
 
