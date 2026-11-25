@@ -40,6 +40,14 @@ export default function DefenseGuidePage() {
         </p>
       </div>
 
+      {/* Production vs Research Architecture Clarification */}
+      <div className="rounded-xl border border-sky-500/30 bg-sky-500/5 p-3.5 flex items-start gap-3">
+        <Layers className="size-4 text-sky-500 shrink-0 mt-0.5" />
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          <strong className="text-foreground">Production Runtime vs. Research Deliverables:</strong> Live DriveGuard monitoring runs <span className="font-mono text-foreground">GEOMETRIC_AUTHORITATIVE</span> across independent Browser WASM and Local/Remote Python MediaPipe + 4-Zone PDBP engines (passive shadow disabled). The MobileNetV3-Small cascade metrics represent offline historical ablation research (with an optional diagnostic shadow observer), and the ESP32 HMI console is a simulated cyber-physical deliverable.
+        </p>
+      </div>
+
       {/* The Core Examiner Critique Banner */}
       <div className="p-4 sm:p-5 rounded-2xl border border-primary/30 bg-primary/5 space-y-3">
         <div className="flex items-center gap-2 text-primary font-bold text-sm uppercase tracking-wide">
@@ -55,7 +63,7 @@ export default function DefenseGuidePage() {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs font-mono pt-1">
           <div className="p-2.5 rounded-lg bg-card/60 border border-border/80">
             <span className="font-bold text-sky-400 block">1. Perspective Distortion</span>
-            <span className="text-[11px] text-muted-foreground">Looking at mirrors drops 2D EAR, causing false alarms. Solved via 4-Zone PDBP ($34 \to 0$ FAs).</span>
+            <span className="text-[11px] text-muted-foreground">Looking at mirrors drops 2D EAR, causing false alarms. Solved via 4-Zone PDBP (34 → 0 FAs).</span>
           </div>
           <div className="p-2.5 rounded-lg bg-card/60 border border-border/80">
             <span className="font-bold text-amber-400 block">2. Late Warning Problem</span>
@@ -63,11 +71,11 @@ export default function DefenseGuidePage() {
           </div>
           <div className="p-2.5 rounded-lg bg-card/60 border border-border/80">
             <span className="font-bold text-purple-400 block">3. Sensor Ambiguity &amp; Glare</span>
-            <span className="text-[11px] text-muted-foreground">Glasses reflections confuse mesh detectors. Solved via Confidence-Gated MobileNetV3 Cascade.</span>
+            <span className="text-[11px] text-muted-foreground">Optical confidence gating flags low-quality frames in production; MobileNetV3-Small cascade evaluated in offline ablation research.</span>
           </div>
           <div className="p-2.5 rounded-lg bg-card/60 border border-border/80">
             <span className="font-bold text-emerald-400 block">4. Cyber-Physical Determinism</span>
-            <span className="text-[11px] text-muted-foreground">OS delays can mute alarms. Solved via ESP32 UART safety co-processor and HITL chronometer.</span>
+            <span className="text-[11px] text-muted-foreground">OS delays can mute alarms. Modeled via simulated ESP32 UART safety co-processor protocol and HITL chronometer.</span>
           </div>
         </div>
       </div>
@@ -93,7 +101,7 @@ export default function DefenseGuidePage() {
                   <strong className="text-foreground">Defense Answer:</strong> End-to-end video models (such as Video Swin or SlowFast) require gigabytes of VRAM, consume 50–100W of electrical power, and introduce temporal sliding-window latencies that are unacceptable in automotive safety.
                 </p>
                 <p>
-                  Automotive ISO 26262 functional safety demands determinism, interpretability, and execution within a 33.3 ms frame budget. DriveGuard achieves this by separating 3D geometric tracking from selective neural verification, delivering explainable risk metrics in <strong>2.23 ms on standard edge CPUs</strong>.
+                  Automotive ISO 26262 functional safety demands determinism, interpretability, and execution within a 33.3 ms frame budget. DriveGuard achieves this in production via deterministic 3D geometric tracking and 4-zone PDBP kinematics, while our offline ablation benchmark evaluated selective MobileNetV3 verification at <strong>2.23 ms mean latency on standard edge CPUs</strong>.
                 </p>
               </AccordionContent>
             </AccordionItem>

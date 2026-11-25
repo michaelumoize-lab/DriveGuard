@@ -70,9 +70,10 @@ async function main() {
     };
 
     const savedProfile = await prisma.driverProfile.upsert({
-      where: { userId: user.id },
+      where: { userId_engineType: { userId: user.id, engineType: "PYTHON" } },
       create: {
         userId: user.id,
+        engineType: "PYTHON",
         calibrationMode: "4_ZONE",
         centerEarMedian: 0.285,
         centerEarMadScaled: 0.016,
@@ -115,7 +116,7 @@ async function main() {
     );
 
     const fetchedProfile = await prisma.driverProfile.findUnique({
-      where: { userId: user.id },
+      where: { userId_engineType: { userId: user.id, engineType: "PYTHON" } },
     });
     assert(
       !!fetchedProfile && fetchedProfile.calibrationMode === "4_ZONE",

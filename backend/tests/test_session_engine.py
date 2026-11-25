@@ -8,6 +8,8 @@ import unittest
 import cv2
 import numpy as np
 
+from backend.app.ai.geometry import PoseZone
+from backend.app.ai.pdbp_calibration import DriverBehaviourProfile, ZoneBaseline
 from backend.app.ai.pipeline import SessionAIEngine
 from backend.app.schemas.calibration import CalibrationPhaseDTO
 from backend.app.schemas.profile import DriverProfileDTO
@@ -52,6 +54,42 @@ class DummyMockLandmarker:
         pass
 
 
+def _make_calibrated_test_profile(driver_id: str = "driver_alice") -> DriverBehaviourProfile:
+    return DriverBehaviourProfile(
+        driver_id=driver_id,
+        calibration_mode="4_ZONE",
+        center_ear_median=0.28,
+        center_ear_mad_scaled=0.016,
+        blink_duration_median_ms=200.0,
+        blink_duration_mad_ms=25.0,
+        blink_rcr_median=1.0,
+        blink_rcr_mad=0.15,
+        blink_freq_median_per_min=15.0,
+        blink_freq_mad_per_min=4.0,
+        neutral_pitch_deg=0.0,
+        neutral_yaw_deg=0.0,
+        calibration_reliability=0.95,
+        zone_baselines={
+            PoseZone.CENTER: ZoneBaseline(
+                zone=PoseZone.CENTER,
+                ear_median=0.28,
+                ear_mad_scaled=0.016,
+                pitch_median_deg=0.0,
+                yaw_median_deg=0.0,
+                sample_count=60,
+            ),
+            PoseZone.LEFT_MIRROR: ZoneBaseline(
+                zone=PoseZone.LEFT_MIRROR,
+                ear_median=0.26,
+                ear_mad_scaled=0.018,
+                pitch_median_deg=0.0,
+                yaw_median_deg=20.0,
+                sample_count=55,
+            ),
+        },
+    )
+
+
 class TestSessionAIEngine(unittest.TestCase):
     """Verify state management, byte decoding, calibration, and Pydantic contract compliance."""
 
@@ -60,6 +98,7 @@ class TestSessionAIEngine(unittest.TestCase):
             session_id="test_sess_001",
             driver_id="driver_alice",
             landmarker=DummyMockLandmarker(ear=0.28, pitch=0.0, yaw=0.0),
+            is_mirrored=True,
         )
 
     def tearDown(self) -> None:
@@ -74,6 +113,7 @@ class TestSessionAIEngine(unittest.TestCase):
 
     def test_process_frame_with_numpy_and_raw_bytes(self) -> None:
         """Engine must process both NumPy frames and raw encoded image bytes into valid DTOs."""
+        self.engine.set_profile(_make_calibrated_test_profile("driver_alice"))
         # 1. NumPy frame (16:9 matching canonical synthetic landmarks)
         synthetic_frame = _make_sharp_frame(width=1280, height=720)
         dto_numpy = self.engine.process_frame(synthetic_frame, timestamp_ms=1000.0)
@@ -152,7 +192,11 @@ class TestSessionAIEngine(unittest.TestCase):
     def test_side_by_side_comparison_mirror_check(self) -> None:
         """Lateral mirror turn should trigger mirror-check suppression without false alert."""
         mirror_landmarker = DummyMockLandmarker(ear=0.20, pitch=0.0, yaw=20.0)
-        engine = SessionAIEngine(landmarker=mirror_landmarker)
+        engine = SessionAIEngine(
+            landmarker=mirror_landmarker,
+            profile=_make_calibrated_test_profile("driver_mirror"),
+            is_mirrored=True,
+        )
         try:
             frame = _make_sharp_frame(width=1280, height=720)
             ts = 5000.0
@@ -172,7 +216,7 @@ class TestSessionAIEngine(unittest.TestCase):
     def test_target_acquisition_spatial_gating_calibration(self) -> None:
         """Calibration progress must ONLY fill when driver is actively looking in target zone."""
         mock_lm = DummyMockLandmarker(ear=0.28, pitch=0.0, yaw=0.0)
-        engine = SessionAIEngine(landmarker=mock_lm)
+        engine = SessionAIEngine(landmarker=mock_lm, is_mirrored=True)
         try:
             cal_dto = engine.start_calibration(
                 four_zone_mode=True, zone_duration_sec=5.0, timestamp_ms=3000.0

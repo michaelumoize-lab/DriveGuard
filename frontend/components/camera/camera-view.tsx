@@ -8,6 +8,8 @@ import { Camera, Eye, Pause, ShieldCheck, Crosshair } from "lucide-react";
 interface CameraViewProps {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   cameraState: CameraState;
+  previewMode?: "video" | "mjpeg";
+  mjpegUrl?: string | null;
   alertState?: AlertState;
   isStale?: boolean;
   isMirrored: boolean;
@@ -23,6 +25,8 @@ interface CameraViewProps {
 export function CameraView({
   videoRef,
   cameraState,
+  previewMode = "video",
+  mjpegUrl = null,
   alertState = "NORMAL",
   isStale = false,
   isMirrored,
@@ -72,20 +76,37 @@ export function CameraView({
           : "w-full aspect-video min-h-[360px]"
       }`}
     >
-      {/* Native HTML5 Video Element */}
-      <video
-        ref={videoRef}
-        playsInline
-        autoPlay
-        muted
-        className={`w-full h-full transition-transform duration-200 select-none ${
-          isMirrored ? "scale-x-[-1]" : ""
-        } ${
-          framingMode === "cover"
-            ? "object-cover object-[center_35%]"
-            : "object-contain"
-        }`}
-      />
+      {/* Native HTML5 Video Element (Browser / LiveKit WebRTC) OR Loopback MJPEG Feed (Python Local) */}
+      {previewMode === "mjpeg" ? (
+        mjpegUrl && isActive ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={mjpegUrl}
+            alt="Python Local AI live camera stream"
+            className={`w-full h-full select-none ${
+              framingMode === "cover"
+                ? "object-cover object-[center_35%]"
+                : "object-contain"
+            }`}
+          />
+        ) : (
+          <div className="w-full h-full bg-black" aria-hidden="true" />
+        )
+      ) : (
+        <video
+          ref={videoRef}
+          playsInline
+          autoPlay
+          muted
+          className={`w-full h-full transition-transform duration-200 select-none ${
+            isMirrored ? "scale-x-[-1]" : ""
+          } ${
+            framingMode === "cover"
+              ? "object-cover object-[center_35%]"
+              : "object-contain"
+          }`}
+        />
+      )}
 
       {/* Cockpit HUD Target Reticle & Corner Accents (Active Feed) */}
       {isActive && (
@@ -166,12 +187,16 @@ export function CameraView({
           </div>
           <div>
             <p className="text-sm font-semibold text-foreground">
-              {cameraState === "requesting-permission"
-                ? "Requesting camera permission…"
-                : "Starting video stream…"}
+              {previewMode === "mjpeg"
+                ? "Connecting to local Python OpenCV camera…"
+                : cameraState === "requesting-permission"
+                  ? "Requesting camera permission…"
+                  : "Starting video stream…"}
             </p>
             <p className="text-xs text-muted-foreground mt-1 max-w-xs">
-              Click “Allow” in your browser prompt to grant webcam access.
+              {previewMode === "mjpeg"
+                ? "Python AI is acquiring the local webcam directly via http://127.0.0.1:8000."
+                : "Click “Allow” in your browser prompt to grant webcam access."}
             </p>
           </div>
         </div>

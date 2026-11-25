@@ -65,7 +65,14 @@ export function verifyBackendAccessToken(token: string): BackendTokenPayload | n
       .update(data)
       .digest("base64url");
 
-    if (expectedSig !== signature) return null;
+    const expectedBuf = Buffer.from(expectedSig, "utf8");
+    const providedBuf = Buffer.from(signature, "utf8");
+    if (
+      expectedBuf.length !== providedBuf.length ||
+      !crypto.timingSafeEqual(expectedBuf, providedBuf)
+    ) {
+      return null;
+    }
 
     const claims = JSON.parse(
       Buffer.from(b64Payload, "base64url").toString("utf8")

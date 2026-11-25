@@ -25,10 +25,15 @@ from fastapi.responses import JSONResponse
 
 from backend.app.api.routes.calibration import router as calibration_router
 from backend.app.api.routes.livekit_token import router as livekit_router
+from backend.app.api.routes.local_monitor import (
+    local_ws_router,
+    router as local_monitor_router,
+)
 from backend.app.api.routes.profiles import router as profiles_router
 from backend.app.api.routes.sessions import router as sessions_router
 from backend.app.api.ws_telemetry import ws_router
 from backend.app.core.config import settings
+from backend.app.services.local_camera_controller import local_camera_controller
 from backend.app.services.session_manager import session_manager
 
 logger = logging.getLogger("driveguard.app")
@@ -45,7 +50,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:
         print(f"[Lifespan WARNING] Lazy model initialization will be used: {exc}")
     yield
-    print("[Lifespan] Shutting down DriveGuard AI Service.")
+    print("[Lifespan] Shutting down DriveGuard AI Service (releasing local camera if active)...")
+    try:
+        await asyncio.to_thread(local_camera_controller.stop)
+    except Exception as exc:
+        logger.warning("Error stopping local_camera_controller during shutdown: %s", exc)
 
 
 app = FastAPI(
@@ -150,8 +159,9 @@ def readiness_check() -> JSONResponse:
                 "path": str(task_model_path),
             },
             "eye_verifier": {
-                "mode": "MOBILENET_ONNX" if has_onnx_model else "ANALYTICAL_FALLBACK",
-                "onnx_present": has_onnx_model,
+                "production_mode": "GEOMETRIC_AUTHORITATIVE",
+                "shadow_observer_enabled": False,
+                "shadow_weights_present": has_onnx_model,
             },
             "desktop_audio": {
                 "optional": True,
@@ -161,6 +171,9 @@ def readiness_check() -> JSONResponse:
             },
             "livekit": {
                 "configured": bool(settings.LIVEKIT_URL and settings.LIVEKIT_API_KEY and settings.LIVEKIT_API_SECRET),
+            },
+            "local_camera_api": {
+                "enabled": bool(settings.LOCAL_CAMERA_API_ENABLED),
             },
         },
     }
@@ -194,8 +207,10 @@ api_v1_router.include_router(sessions_router)
 api_v1_router.include_router(profiles_router)
 api_v1_router.include_router(calibration_router)
 api_v1_router.include_router(livekit_router)
+api_v1_router.include_router(local_monitor_router)
 
 app.include_router(api_v1_router)
 
-# Mount Binary WebSocket Endpoint
+# Mount Binary WebSocket Endpoint & Loopback Local Telemetry WebSocket
 app.include_router(ws_router)
+app.include_router(local_ws_router)

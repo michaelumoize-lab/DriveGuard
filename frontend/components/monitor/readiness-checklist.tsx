@@ -27,7 +27,7 @@ export interface ReadinessChecklistProps {
   rttMs?: number;
   audioStatus: string;
   audioMuted: boolean;
-  runtimeMode?: "browser" | "remote";
+  runtimeMode?: "browser" | "python-local" | "remote";
   layout?: "grid" | "list";
   onUnlockAudio?: () => void;
   onCalibrateClick?: () => void;

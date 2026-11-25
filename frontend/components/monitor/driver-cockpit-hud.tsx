@@ -32,7 +32,7 @@ interface DriverCockpitHUDProps {
   cameraState?: CameraState;
   isStale?: boolean;
   isCalibrated?: boolean;
-  runtimeMode?: "browser" | "remote";
+  runtimeMode?: "browser" | "python-local" | "remote";
   sessionDurationSec?: number;
   className?: string;
   isAudioUnlocked?: boolean;

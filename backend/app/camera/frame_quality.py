@@ -123,12 +123,13 @@ class FrameQualityAnalyzer:
         self.blur_threshold = blur_threshold
         self.severe_blur_threshold = severe_blur_threshold
 
-    def analyze(self, frame: np.ndarray) -> FrameQualityResult:
+    def analyze(self, frame: np.ndarray, *, color_format: str = "BGR") -> FrameQualityResult:
         """
-        Evaluate optical luminance and edge sharpness on a BGR image frame.
+        Evaluate optical luminance and edge sharpness on a BGR or RGB image frame.
         
         Args:
-            frame: OpenCV BGR NumPy image array (uint8).
+            frame: OpenCV BGR or RGB NumPy image array (uint8).
+            color_format: Input channel order ('BGR' or 'RGB').
             
         Returns:
             FrameQualityResult detailing exposure, blur, and viability.
@@ -146,7 +147,8 @@ class FrameQualityAnalyzer:
 
         # Convert to single-channel 8-bit grayscale for photometric calculations
         if len(frame.shape) == 3:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            code = cv2.COLOR_RGB2GRAY if color_format.upper() == "RGB" else cv2.COLOR_BGR2GRAY
+            gray = cv2.cvtColor(frame, code)
         else:
             gray = frame
 

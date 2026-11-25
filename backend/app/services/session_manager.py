@@ -32,6 +32,7 @@ class SessionManager:
         experiment_mode: Optional[str] = None,
         profile_dto: Optional[DriverProfileDTO] = None,
         owner_id: Optional[str] = None,
+        is_mirrored: bool = False,
     ) -> SessionAIEngine:
         """Retrieve an existing session or instantiate a new SessionAIEngine with its own isolated landmarker."""
         effective_owner = owner_id or driver_id
@@ -65,6 +66,7 @@ class SessionManager:
                         driver_id=driver_id,
                         experiment_mode=exp_mode,
                         owner_id=effective_owner,
+                        is_mirrored=is_mirrored,
                     )
                 )
                 try:

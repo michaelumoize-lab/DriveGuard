@@ -32,7 +32,7 @@ export default async function DashboardPage() {
 
   const [
     profile,
-    driverProfile,
+    driverProfiles,
     totalSessions,
     sessionAggregates,
     sessionsList,
@@ -41,7 +41,7 @@ export default async function DashboardPage() {
     recentAlerts,
   ] = await Promise.all([
     userId ? getOrCreateUserProfile(userId) : null,
-    userId ? prisma.driverProfile.findUnique({ where: { userId } }) : null,
+    userId ? prisma.driverProfile.findMany({ where: { userId } }) : [],
     userId ? prisma.drivingSession.count({ where: { userId } }) : 0,
     userId
       ? prisma.drivingSession.aggregate({
@@ -75,6 +75,31 @@ export default async function DashboardPage() {
         })
       : [],
   ]);
+
+  const browserProfile =
+    driverProfiles.find((p) => p.engineType === "BROWSER") ?? null;
+  const pythonProfile =
+    driverProfiles.find((p) => p.engineType === "PYTHON") ?? null;
+  const driverProfile =
+    (browserProfile?.isCalibrated ? browserProfile : null) ??
+    (pythonProfile?.isCalibrated ? pythonProfile : null) ??
+    browserProfile ??
+    pythonProfile ??
+    null;
+
+  const normalizedSensitivity: "RELAXED" | "STANDARD" | "HIGH" =
+    profile?.sensitivityLevel === "RELAXED" ||
+    profile?.sensitivityLevel === "HIGH" ||
+    profile?.sensitivityLevel === "STANDARD"
+      ? profile.sensitivityLevel
+      : "STANDARD";
+
+  const microsleepThresholdSec =
+    normalizedSensitivity === "HIGH"
+      ? "1.20"
+      : normalizedSensitivity === "RELAXED"
+        ? "1.80"
+        : "1.50";
 
   const totalDurationSec = sessionAggregates._sum.durationSeconds ?? 0;
   const totalHours = Math.floor(totalDurationSec / 3600);
@@ -125,17 +150,26 @@ export default async function DashboardPage() {
               </span>
               <span>•</span>
               <span>
-                Sensitivity: <strong className="text-foreground">{profile?.sensitivityLevel || "MEDIUM"}</strong>
+                Sensitivity: <strong className="text-foreground">{normalizedSensitivity}</strong>
               </span>
               <span>•</span>
-              <span>
-                Baseline:{" "}
-                {driverProfile?.isCalibrated ? (
+              <span className="inline-flex items-center gap-1.5 flex-wrap">
+                <span>Browser AI:</span>
+                {browserProfile?.isCalibrated ? (
                   <strong className="text-emerald-500 font-mono tabular-nums">
-                    4-Zone Calibrated (Center EAR: {driverProfile.centerEarMedian.toFixed(3)})
+                    Calibrated ({browserProfile.centerEarMedian.toFixed(3)})
                   </strong>
                 ) : (
-                  <span className="text-amber-500 font-medium">Uncalibrated (Using Fallback Defaults)</span>
+                  <span className="text-amber-500 font-medium">Calibration Required</span>
+                )}
+                <span>·</span>
+                <span>Python AI:</span>
+                {pythonProfile?.isCalibrated ? (
+                  <strong className="text-emerald-500 font-mono tabular-nums">
+                    Calibrated ({pythonProfile.centerEarMedian.toFixed(3)})
+                  </strong>
+                ) : (
+                  <span className="text-amber-500 font-medium">Calibration Required</span>
                 )}
               </span>
             </p>
@@ -205,24 +239,37 @@ export default async function DashboardPage() {
                   Personal Eye Aspect Ratio (EAR) medians and closure thresholds across cabin gaze zones.
                 </CardDescription>
               </div>
-              {driverProfile?.isCalibrated ? (
-                <Badge variant="outline" className="border-emerald-500/40 text-emerald-500 bg-emerald-500/10 font-mono">
-                  CALIBRATED ({driverProfile.calibrationMode})
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge
+                  variant="outline"
+                  className={
+                    browserProfile?.isCalibrated
+                      ? "border-emerald-500/40 text-emerald-500 bg-emerald-500/10 font-mono text-[11px]"
+                      : "border-amber-500/40 text-amber-500 bg-amber-500/10 font-mono text-[11px]"
+                  }
+                >
+                  BROWSER AI: {browserProfile?.isCalibrated ? "CALIBRATED" : "CALIBRATION REQUIRED"}
                 </Badge>
-              ) : (
-                <Badge variant="outline" className="border-amber-500/40 text-amber-500 bg-amber-500/10 font-mono">
-                  UNCALIBRATED
+                <Badge
+                  variant="outline"
+                  className={
+                    pythonProfile?.isCalibrated
+                      ? "border-emerald-500/40 text-emerald-500 bg-emerald-500/10 font-mono text-[11px]"
+                      : "border-amber-500/40 text-amber-500 bg-amber-500/10 font-mono text-[11px]"
+                  }
+                >
+                  PYTHON AI: {pythonProfile?.isCalibrated ? "CALIBRATED" : "CALIBRATION REQUIRED"}
                 </Badge>
-              )}
+              </div>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
             {!driverProfile?.isCalibrated ? (
               <div className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div className="space-y-1">
-                  <div className="font-semibold text-sm text-foreground">Personal 4-Zone Calibration Recommended</div>
+                  <div className="font-semibold text-sm text-foreground">Personal 4-Zone Calibration Required</div>
                   <p className="text-xs text-muted-foreground">
-                    You have not completed the 4-zone calibration wizard yet. The AI engine will use generic uncalibrated defaults until you capture your personal CENTER, LEFT_MIRROR, RIGHT_MIRROR, and DASHBOARD baselines.
+                    Live drowsiness monitoring remains gated in CALIBRATION_REQUIRED until you capture your personal CENTER, LEFT_MIRROR, RIGHT_MIRROR, and DASHBOARD baselines.
                   </p>
                 </div>
                 <Button asChild size="sm" className="shrink-0">
@@ -310,9 +357,9 @@ export default async function DashboardPage() {
               </span>
             </div>
             <div className="flex items-center justify-between p-2.5 rounded-lg border border-border text-xs">
-              <span className="text-muted-foreground">Micro-Sleep Override:</span>
+              <span className="text-muted-foreground">Micro-Sleep Override ({normalizedSensitivity}):</span>
               <span className="font-semibold font-mono tabular-nums text-rose-500">
-                &ge; {driverProfile?.isCalibrated ? Math.max(1.1, (driverProfile.blinkDurationMedianMs * 3.5) / 1000).toFixed(2) : "1.10"}s Closure
+                &ge; {microsleepThresholdSec}s Closure
               </span>
             </div>
             <div className="flex items-center justify-between p-2.5 rounded-lg border border-border text-xs">

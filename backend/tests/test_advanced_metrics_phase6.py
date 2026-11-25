@@ -344,8 +344,36 @@ class TestAdvancedMetricsPhase6(unittest.TestCase):
             def close(self) -> None:
                 pass
 
+        from backend.app.ai.geometry import PoseZone as GeomPoseZone
+        from backend.app.ai.pdbp_calibration import DriverBehaviourProfile, ZoneBaseline
+
         mock_lm = AuthoritativeMockLM()
-        engine = SessionAIEngine(landmarker=mock_lm)
+        cal_profile = DriverBehaviourProfile(
+            driver_id="driver_adv",
+            calibration_mode="4_ZONE",
+            center_ear_median=0.28,
+            center_ear_mad_scaled=0.016,
+            blink_duration_median_ms=200.0,
+            blink_duration_mad_ms=25.0,
+            blink_rcr_median=1.0,
+            blink_rcr_mad=0.15,
+            blink_freq_median_per_min=15.0,
+            blink_freq_mad_per_min=4.0,
+            neutral_pitch_deg=0.0,
+            neutral_yaw_deg=0.0,
+            calibration_reliability=0.95,
+            zone_baselines={
+                GeomPoseZone.CENTER: ZoneBaseline(
+                    zone=GeomPoseZone.CENTER,
+                    ear_median=0.28,
+                    ear_mad_scaled=0.016,
+                    pitch_median_deg=0.0,
+                    yaw_median_deg=0.0,
+                    sample_count=60,
+                )
+            },
+        )
+        engine = SessionAIEngine(landmarker=mock_lm, profile=cal_profile, is_mirrored=True)
         try:
             frame = _make_sharp_frame(width=640, height=480)
             mock_lm.yaw = 20.0

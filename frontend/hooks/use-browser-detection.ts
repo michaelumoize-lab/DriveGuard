@@ -1,25 +1,43 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { OpticalFrameQuality } from "@/types/camera";
 import {
+  AlertTransition,
   BrowserDetectionEngine,
+  browserProfileStore,
+  BrowserProfileStorageMode,
+  BrowserProfileSyncState,
   CalibrationProgress,
   DecisionResult,
-  DetectionEngineConfig,
   DetectionTelemetry,
   DriverBehaviourProfileData,
   EngineStatus,
+  normalizeDriverProfile,
+  OperationalState,
   PersistenceSyncStatus,
+  PoseZone,
+  ProfileSyncOutcome,
 } from "@/lib/ai";
 
 export interface UseBrowserDetectionOptions {
   driverId?: string;
-  initialProfile?: DriverBehaviourProfileData | null;
+  initialProfile?: DriverBehaviourProfileData | unknown | null;
   isMirrored?: boolean;
+  sensitivityLevel?: string | null;
+  mirrorSuppression?: boolean;
   targetInferenceFps?: number;
   autoStartSession?: boolean;
-  onSafetyAlert?: (decision: DecisionResult, telemetry: DetectionTelemetry) => void;
+  onSafetyAlert?: (
+    decision: DecisionResult,
+    telemetry: DetectionTelemetry,
+    transition?: AlertTransition
+  ) => void;
   onCalibrationProgress?: (progress: CalibrationProgress) => void;
+  onCalibrationCompleted?: (
+    profile: DriverBehaviourProfileData,
+    syncOutcome?: ProfileSyncOutcome
+  ) => void;
   onError?: (err: Error) => void;
 }
 
@@ -27,11 +45,14 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
   const {
     driverId = "driver_default",
     initialProfile = null,
-    isMirrored = true,
+    isMirrored = false,
+    sensitivityLevel = "STANDARD",
+    mirrorSuppression = true,
     targetInferenceFps = 12,
     autoStartSession = false,
     onSafetyAlert,
     onCalibrationProgress,
+    onCalibrationCompleted,
     onError,
   } = options;
 
@@ -40,20 +61,56 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
   const [calibration, setCalibration] = useState<CalibrationProgress | null>(null);
   const [sessionCode, setSessionCode] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<PersistenceSyncStatus>("synced");
+  const [profileSyncStatus, setProfileSyncStatus] =
+    useState<BrowserProfileSyncState>("LOCAL_ONLY");
+  const [storageMode, setStorageMode] = useState<BrowserProfileStorageMode>(
+    browserProfileStore.storageMode
+  );
+  const [activeProfile, setActiveProfile] = useState<DriverBehaviourProfileData | null>(null);
+  const [isCalibrated, setIsCalibrated] = useState<boolean>(false);
 
   const engineRef = useRef<BrowserDetectionEngine | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const lastStateUpdateMsRef = useRef<number>(0);
+  const runIdRef = useRef<number>(0);
 
-  // Initialize engine instance
+  // Stabilize all callbacks via refs so changing props/callbacks NEVER disposes the running engine!
+  const onSafetyAlertRef = useRef(onSafetyAlert);
+  const onCalibrationProgressRef = useRef(onCalibrationProgress);
+  const onCalibrationCompletedRef = useRef(onCalibrationCompleted);
+  const onErrorRef = useRef(onError);
+  const initialProfileRef = useRef(initialProfile);
+  const sensitivityLevelRef = useRef(sensitivityLevel);
+  const mirrorSuppressionRef = useRef(mirrorSuppression);
+
+  useEffect(() => {
+    onSafetyAlertRef.current = onSafetyAlert;
+    onCalibrationProgressRef.current = onCalibrationProgress;
+    onCalibrationCompletedRef.current = onCalibrationCompleted;
+    onErrorRef.current = onError;
+  }, [onSafetyAlert, onCalibrationProgress, onCalibrationCompleted, onError]);
+
+  useEffect(() => {
+    sensitivityLevelRef.current = sensitivityLevel;
+    engineRef.current?.setSensitivityLevel(sensitivityLevel);
+  }, [sensitivityLevel]);
+
+  useEffect(() => {
+    mirrorSuppressionRef.current = mirrorSuppression;
+    engineRef.current?.setMirrorSuppression(Boolean(mirrorSuppression));
+  }, [mirrorSuppression]);
+
+  // Instantiate engine strictly once per (driverId, targetInferenceFps)
   useEffect(() => {
     const engine = new BrowserDetectionEngine({
       driverId,
-      profile: initialProfile,
-      isMirrored,
+      profile: initialProfileRef.current,
+      isMirrored: false,
+      sensitivityLevel: sensitivityLevelRef.current,
+      mirrorSuppression: mirrorSuppressionRef.current,
       targetInferenceFps,
       onTelemetry: (t) => {
-        // Throttle React state updates to ~10 Hz to prevent React re-render churn
+        if (engineRef.current?.status !== "running") return;
         const now = performance.now();
         if (now - lastStateUpdateMsRef.current >= 90) {
           lastStateUpdateMsRef.current = now;
@@ -61,40 +118,99 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
           setSyncStatus(t.persistenceSyncStatus);
         }
       },
-      onSafetyAlert: (decision, t) => {
-        // Immediate unthrottled alert dispatch
-        if (onSafetyAlert) {
-          onSafetyAlert(decision, t);
-        }
+      onSafetyAlert: (decision, t, transition) => {
+        if (engineRef.current?.status !== "running") return;
+        onSafetyAlertRef.current?.(decision, t, transition);
       },
       onCalibrationProgress: (p) => {
+        if (engineRef.current?.status !== "running") return;
         setCalibration(p);
-        if (onCalibrationProgress) {
-          onCalibrationProgress(p);
+        onCalibrationProgressRef.current?.(p);
+      },
+      onCalibrationCompleted: (profile, syncOutcome) => {
+        setActiveProfile(profile);
+        setIsCalibrated(true);
+        if (syncOutcome?.record) {
+          setProfileSyncStatus(syncOutcome.record.syncState);
+        } else if (syncOutcome?.status === "SYNCED" || syncOutcome?.status === "UNCHANGED") {
+          setProfileSyncStatus("SYNCED");
+        } else if (syncOutcome?.status === "CONFLICT_SERVER_AUTHORITATIVE") {
+          setProfileSyncStatus("CONFLICT_PENDING_REVIEW");
+        } else {
+          setProfileSyncStatus("PENDING_UPLOAD");
         }
+        onCalibrationCompletedRef.current?.(profile, syncOutcome);
       },
       onError: (err) => {
         setEngineStatus("error");
-        if (onError) onError(err);
+        onErrorRef.current?.(err);
       },
     });
 
     engineRef.current = engine;
+    setIsCalibrated(engine.isCalibrated);
+    setActiveProfile(engine.activeProfile);
+
+    // Hydrate immediately from IndexedDB (offline-ready) then reconcile asynchronously with Neon
+    let cancelled = false;
+    void (async () => {
+      const localRecord = await browserProfileStore.getLocalProfile(driverId);
+      if (cancelled || engineRef.current !== engine) return;
+      setStorageMode(browserProfileStore.storageMode);
+
+      if (localRecord?.profile) {
+        engine.setProfile(localRecord.profile);
+        setActiveProfile(engine.activeProfile);
+        setIsCalibrated(engine.isCalibrated);
+        setProfileSyncStatus(localRecord.syncState);
+      } else if (initialProfileRef.current) {
+        const norm = normalizeDriverProfile(initialProfileRef.current);
+        if (norm.isCalibrated && norm.profile && norm.profile.engineType === "BROWSER") {
+          engine.setProfile(norm.profile);
+          setActiveProfile(norm.profile);
+          setIsCalibrated(true);
+          await browserProfileStore.saveLocalProfile(driverId, norm.profile, {
+            profileUuid: norm.profile.profileUuid,
+            profileVersion: norm.profile.profileVersion ?? 1,
+            baseServerVersion: norm.profile.profileVersion ?? 1,
+            contentHash: norm.profile.contentHash ?? null,
+            syncState: "SYNCED",
+          });
+          setProfileSyncStatus("SYNCED");
+        }
+      }
+
+      // Non-blocking background reconciliation with PostgreSQL BROWSER profile
+      const reconciled = await browserProfileStore.reconcileWithServer(driverId);
+      if (cancelled || engineRef.current !== engine) return;
+      if (reconciled.record?.profile) {
+        engine.setProfile(reconciled.record.profile);
+        setActiveProfile(engine.activeProfile);
+        setIsCalibrated(engine.isCalibrated);
+        setProfileSyncStatus(reconciled.record.syncState);
+      }
+    })();
 
     return () => {
+      cancelled = true;
       engine.dispose();
       engineRef.current = null;
     };
-  }, [driverId, initialProfile, isMirrored, targetInferenceFps, onSafetyAlert, onCalibrationProgress, onError]);
+  }, [driverId, targetInferenceFps]);
 
-  // Sync profile updates to active engine
+  // Apply explicit profile updates without recreating engine
   useEffect(() => {
-    if (engineRef.current && initialProfile) {
-      engineRef.current.setProfile(initialProfile);
+    initialProfileRef.current = initialProfile;
+    if (!engineRef.current || !initialProfile) return;
+    const norm = normalizeDriverProfile(initialProfile);
+    if (norm.isCalibrated && norm.profile && norm.profile.engineType !== "PYTHON") {
+      engineRef.current.setProfile(norm.profile);
+      setActiveProfile(engineRef.current.activeProfile);
+      setIsCalibrated(engineRef.current.isCalibrated);
     }
   }, [initialProfile]);
 
-  // Sync mirroring updates to active engine
+  // Apply mirror flag updates without recreating engine
   useEffect(() => {
     if (engineRef.current) {
       engineRef.current.setIsMirrored(isMirrored);
@@ -104,40 +220,64 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
   const startMonitoring = useCallback(
     async (videoElement: HTMLVideoElement) => {
       if (!engineRef.current) return;
+      const currentRunId = ++runIdRef.current;
       videoRef.current = videoElement;
+      setTelemetry(null);
+      setCalibration(null);
+      lastStateUpdateMsRef.current = 0;
 
       try {
         setEngineStatus("initializing");
         await engineRef.current.initialize();
 
-        // If autoStartSession is enabled, request session code from Next.js API
-        let activeCode: string | null = null;
+        if (currentRunId !== runIdRef.current || !engineRef.current) {
+          return;
+        }
+
         if (autoStartSession) {
+          let startedOnline = false;
           try {
             const res = await fetch("/api/sessions/start", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({}),
+              body: JSON.stringify({ engineType: "BROWSER" }),
+              signal: AbortSignal.timeout(4000),
             });
+            if (currentRunId !== runIdRef.current || !engineRef.current) {
+              return;
+            }
             if (res.ok) {
               const data = await res.json();
-              activeCode = data.sessionCode;
+              const activeCode = data.sessionCode;
               setSessionCode(activeCode);
-              engineRef.current.setSessionCode(activeCode);
+              engineRef.current.setSessionCode(activeCode, data.clientSessionId ?? null);
+              startedOnline = true;
             }
-          } catch (sessionErr) {
-            console.warn("[useBrowserDetection] Failed to start backend session:", sessionErr);
+          } catch {
+            // Offline fallback below
           }
+
+          if (!startedOnline && engineRef.current) {
+            const provisional = engineRef.current.startOfflineSession();
+            setSessionCode(provisional.sessionCode);
+          }
+        }
+
+        if (currentRunId !== runIdRef.current || !engineRef.current) {
+          return;
         }
 
         engineRef.current.start(videoElement);
         setEngineStatus("running");
       } catch (err) {
+        if (currentRunId !== runIdRef.current) {
+          return;
+        }
         setEngineStatus("error");
-        if (onError) onError(err instanceof Error ? err : new Error(String(err)));
+        onErrorRef.current?.(err instanceof Error ? err : new Error(String(err)));
       }
     },
-    [autoStartSession, onError]
+    [autoStartSession]
   );
 
   const pauseMonitoring = useCallback(() => {
@@ -155,16 +295,36 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
   }, []);
 
   const stopMonitoring = useCallback(() => {
+    runIdRef.current++;
     if (engineRef.current) {
       engineRef.current.stop();
-      setEngineStatus("stopped");
-      setSessionCode(null);
     }
+    setEngineStatus("stopped");
+    setTelemetry(null);
+    setCalibration(null);
+    setSessionCode(null);
+    lastStateUpdateMsRef.current = 0;
   }, []);
 
-  const startCalibration = useCallback(() => {
+  const startCalibration = useCallback(
+    (calOpts?: { targetZone?: PoseZone | null; minSamplesPerZone?: number }) => {
+      if (engineRef.current) {
+        engineRef.current.startCalibration(calOpts);
+      }
+    },
+    []
+  );
+
+  const skipCalibrationStep = useCallback(() => {
     if (engineRef.current) {
-      engineRef.current.startCalibration();
+      return engineRef.current.skipCalibrationStep();
+    }
+    return null;
+  }, []);
+
+  const recalibrateZone = useCallback((zone: PoseZone) => {
+    if (engineRef.current) {
+      engineRef.current.recalibrateZone(zone);
     }
   }, []);
 
@@ -175,10 +335,24 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
     }
   }, []);
 
+  const setOpticalQuality = useCallback((quality: OpticalFrameQuality | null) => {
+    if (engineRef.current) {
+      engineRef.current.setOpticalQuality(quality);
+    }
+  }, []);
+
+  const startOfflineSession = useCallback(() => {
+    if (!engineRef.current) return null;
+    const provisional = engineRef.current.startOfflineSession();
+    setSessionCode(provisional.sessionCode);
+    return provisional;
+  }, []);
+
   const queueSessionEnd = useCallback((durationSec: number) => {
     if (engineRef.current) {
-      engineRef.current.queueSessionEnd(durationSec);
+      return engineRef.current.queueSessionEnd(durationSec);
     }
+    return false;
   }, []);
 
   const getMetrics = useCallback(() => {
@@ -188,26 +362,49 @@ export function useBrowserDetection(options: UseBrowserDetectionOptions = {}) {
     return null;
   }, []);
 
-  const setExplicitSessionCode = useCallback((code: string | null) => {
-    setSessionCode(code);
-    if (engineRef.current) {
-      engineRef.current.setSessionCode(code);
-    }
-  }, []);
+  const setExplicitSessionCode = useCallback(
+    (code: string | null, clientSessionId?: string | null) => {
+      setSessionCode(code);
+      if (engineRef.current) {
+        engineRef.current.setSessionCode(code, clientSessionId);
+      }
+    },
+    []
+  );
+
+  const operationalState: OperationalState =
+    engineStatus === "error"
+      ? OperationalState.ERROR
+      : telemetry?.operationalState ??
+        (calibration && !calibration.isCompleted
+          ? OperationalState.CALIBRATING
+          : isCalibrated
+            ? OperationalState.MONITORING_ACTIVE
+            : OperationalState.CALIBRATION_REQUIRED);
 
   return {
     engineStatus,
+    operationalState,
     telemetry,
     calibration,
+    calibrationPhase: calibration,
+    isCalibrated,
+    activeProfile,
     sessionCode,
     setSessionCode: setExplicitSessionCode,
+    startOfflineSession,
     syncStatus,
+    profileSyncStatus,
+    storageMode,
     startMonitoring,
     pauseMonitoring,
     resumeMonitoring,
     stopMonitoring,
     startCalibration,
+    skipCalibrationStep,
+    recalibrateZone,
     cancelCalibration,
+    setOpticalQuality,
     queueSessionEnd,
     getMetrics,
     engine: engineRef.current,

@@ -24,6 +24,7 @@ import {
   Play,
   RotateCcw,
   Sparkles,
+  AlertTriangle,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -70,15 +71,28 @@ export default function HardwareConsolePage() {
             Cyber-Physical Co-Processor &amp; Hardware HMI Console
           </h1>
           <p className="text-sm text-muted-foreground mt-1 max-w-2xl">
-            Real-time microcontroller supervision (ESP32/STM32) over an isolated UART serial link.
-            Manages deterministic tri-modal actuation and closed-loop Human-in-the-Loop (HITL) reaction chronometry.
+            Simulated microcontroller supervision protocol (ESP32/STM32) over an emulated UART serial link.
+            Demonstrates deterministic tri-modal actuation and closed-loop Human-in-the-Loop (HITL) reaction chronometry for capstone viva review.
           </p>
         </div>
 
         <div className="flex items-center gap-2.5">
-          <Badge variant="outline" className="text-xs font-mono text-emerald-500 border-emerald-500/30">
-            UART LINK: 115200 BAUD [ACTIVE]
+          <Badge variant="outline" className="text-xs font-mono text-amber-500 border-amber-500/40 bg-amber-500/10">
+            SIMULATED HARDWARE CONSOLE
           </Badge>
+        </div>
+      </div>
+
+      {/* Simulation Disclaimer Banner */}
+      <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 flex items-start gap-3">
+        <AlertTriangle className="size-5 text-amber-500 shrink-0 mt-0.5" />
+        <div className="space-y-1 text-xs">
+          <p className="font-bold text-amber-700 dark:text-amber-300 uppercase tracking-wider font-mono">
+            Simulated Hardware Console — No Physical Microcontroller Connected
+          </p>
+          <p className="text-muted-foreground leading-relaxed">
+            No physical ESP32/STM32 serial device is attached to this session. All UART binary packets, watchdog countdowns, DRV2605L haptic surges, SSD1306 OLED renders, HITL reaction timings, and INA219 current/power gauges below are browser-simulated for academic protocol demonstration and do not read from or actuate physical hardware.
+          </p>
         </div>
       </div>
 

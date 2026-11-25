@@ -18,6 +18,23 @@ class AlertStateEnum(str, Enum):
     MONITORING_UNAVAILABLE = "MONITORING_UNAVAILABLE"
 
 
+class OperationalStateEnum(str, Enum):
+    """Operational readiness state, strictly separate from drowsiness severity."""
+
+    CALIBRATION_REQUIRED = "CALIBRATION_REQUIRED"
+    CALIBRATING = "CALIBRATING"
+    MONITORING_ACTIVE = "MONITORING_ACTIVE"
+    DEGRADED = "DEGRADED"
+    ERROR = "ERROR"
+
+
+class EngineTypeEnum(str, Enum):
+    """Dual-engine identity tag for telemetry and profile separation."""
+
+    BROWSER = "BROWSER"
+    PYTHON = "PYTHON"
+
+
 class HeadPoseDTO(BaseModel):
     """Euler head pose angles in degrees estimated via solvePnP / 4x4 matrix."""
 
@@ -44,6 +61,7 @@ class EyeMetricsDTO(BaseModel):
     blink_duration_ms: Optional[float] = Field(default=None, description="Duration of most recently completed blink in ms")
     blink_rcr: Optional[float] = Field(default=None, description="Reopening velocity ratio of most recent blink")
     blink_rate_per_min: float = Field(default=0.0, description="Rolling blink frequency per minute", ge=0.0)
+    total_blink_count: Optional[int] = Field(default=None, description="Cumulative session blink count", ge=0)
     mar_yawn: float = Field(default=0.0, description="Mouth Aspect Ratio for yawn tracking", ge=0.0)
     blink_state: str = Field(default="OPEN", description="Temporal blink state: OPEN, CLOSING, CLOSED, REOPENING, PROLONGED_CLOSURE, UNCERTAIN_GAP")
     blink_classification: str = Field(default="NORMAL", description="Deterministic blink classification: NORMAL, PROLONGED, REPEATED_ABNORMAL, MICROSLEEP_CANDIDATE, UNCERTAIN")
@@ -181,6 +199,14 @@ class FrameTelemetryDTO(BaseModel):
     authoritative_engine: str = Field(
         default="DrowsinessEngine",
         description="Identifier of the authoritative drowsiness intelligence engine",
+    )
+    operational_state: Optional[OperationalStateEnum] = Field(
+        default=None,
+        description="Operational readiness state: CALIBRATION_REQUIRED, CALIBRATING, MONITORING_ACTIVE, DEGRADED, ERROR",
+    )
+    engine_type: EngineTypeEnum = Field(
+        default=EngineTypeEnum.PYTHON,
+        description="Originating AI runtime engine: BROWSER or PYTHON",
     )
     monitoring_status: str = Field(default="MONITORING_ACTIVE", description="Monitoring availability: MONITORING_ACTIVE, FACE_VISIBILITY_DEGRADED, MONITORING_UNAVAILABLE, MONITORING_RECOVERING")
     risk_score: float = Field(description="Composite personalised fatigue risk score in [0.0, 1.0]", ge=0.0, le=1.0)

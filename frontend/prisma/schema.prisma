@@ -27,9 +27,10 @@ model User {
   accounts Account[]
 
   // DriveGuard Domain Relations
-  profile         UserProfile?
-  driverProfile   DriverProfile?
-  drivingSessions DrivingSession[]
+  profile              UserProfile?
+  driverProfiles       DriverProfile[]
+  driverProfileHistory DriverProfileHistory[]
+  drivingSessions      DrivingSession[]
 
   @@map("user")
 }
@@ -86,9 +87,19 @@ model Verification {
 // 2. DRIVER & ONBOARDING PROFILE TABLE
 // ==========================================
 enum SensitivityLevel {
+  RELAXED
   STANDARD
   HIGH
-  HIGHWAY
+}
+
+enum EngineType {
+  BROWSER
+  PYTHON
+}
+
+enum SessionStatus {
+  ACTIVE
+  COMPLETED
 }
 
 model UserProfile {
@@ -131,37 +142,67 @@ model UserProfile {
 // 3. CALIBRATED AI DRIVER BASELINE (DG-03)
 // ==========================================
 model DriverProfile {
-  id                     String    @id @default(cuid())
-  userId                 String    @unique
-  user                   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                     String                 @id @default(cuid())
+  userId                 String
+  user                   User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  engineType             EngineType
+  profileVersion         Int                    @default(1)
+  profileUuid            String                 @unique @default(uuid())
+  contentHash            String?
 
-  calibrationMode        String    @default("UNIVARIATE_CENTER")
-  centerEarMedian        Float     @default(0.29)
-  centerEarMadScaled     Float     @default(0.015)
-  blinkDurationMedianMs  Float     @default(260.0)
-  blinkDurationMadMs     Float     @default(45.0)
-  blinkRcrMedian         Float     @default(1.15)
-  blinkRcrMad            Float     @default(0.20)
-  blinkFreqMedianPerMin  Float     @default(16.0)
-  blinkFreqMadPerMin     Float     @default(4.5)
-  baselinePerclosPct     Float     @default(3.5)
-  blinkAmplitudeMedian   Float     @default(0.14)
-  temporalBlinksSampled  Int       @default(0)
-  temporalWindowSec      Float     @default(120.0)
-  sensitivityLevel       String    @default("STANDARD")
-  neutralPitchDeg        Float     @default(0.0)
-  neutralYawDeg          Float     @default(0.0)
-  calibrationReliability Float     @default(0.50)
+  calibrationMode        String                 @default("UNIVARIATE_CENTER")
+  centerEarMedian        Float                  @default(0.29)
+  centerEarMadScaled     Float                  @default(0.015)
+  blinkDurationMedianMs  Float                  @default(260.0)
+  blinkDurationMadMs     Float                  @default(45.0)
+  blinkRcrMedian         Float                  @default(1.15)
+  blinkRcrMad            Float                  @default(0.20)
+  blinkFreqMedianPerMin  Float                  @default(16.0)
+  blinkFreqMadPerMin     Float                  @default(4.5)
+  baselinePerclosPct     Float                  @default(3.5)
+  blinkAmplitudeMedian   Float                  @default(0.14)
+  temporalBlinksSampled  Int                    @default(0)
+  temporalWindowSec      Float                  @default(120.0)
+  sensitivityLevel       String                 @default("STANDARD")
+  neutralPitchDeg        Float                  @default(0.0)
+  neutralYawDeg          Float                  @default(0.0)
+  neutralRotMat          Json?
+  calibrationIsMirrored  Boolean?
+  calibrationReliability Float                  @default(0.50)
 
   // JSONB storage for 4-Zone baselines (CENTER, LEFT_MIRROR, RIGHT_MIRROR, DASHBOARD)
+  // Legacy _poseMetadata/_temporalBaseline keys remain additive during Phase 0.
   zoneBaselines          Json?
-  isCalibrated           Boolean   @default(false)
+  isCalibrated           Boolean                @default(false)
   calibratedAt           DateTime?
 
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
+  history                DriverProfileHistory[]
 
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+
+  @@unique([userId, engineType])
   @@map("driver_profiles")
+}
+
+model DriverProfileHistory {
+  id                 String        @id @default(cuid())
+  driverProfileId    String
+  driverProfile      DriverProfile @relation(fields: [driverProfileId], references: [id], onDelete: Cascade)
+  userId             String
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  engineType         EngineType
+  profileVersion     Int
+  profileUuid        String
+  contentHash        String?
+  snapshot           Json
+  clientCalibratedAt DateTime?
+  serverRecordedAt   DateTime      @default(now())
+  archiveReason      String
+
+  @@index([userId, engineType, serverRecordedAt(sort: Desc)], map: "driver_profile_history_userId_engineType_idx")
+  @@index([driverProfileId])
+  @@map("driver_profile_history")
 }
 
 // ==========================================
@@ -172,7 +213,11 @@ model DrivingSession {
   userId              String
   user                User              @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  engineType          EngineType?
   sessionCode         String            @unique
+  clientSessionId     String?           @unique
+  status              SessionStatus     @default(ACTIVE)
+  finalizeToken       String?
   startedAt           DateTime          @default(now())
   endedAt             DateTime?
   durationSeconds     Int               @default(0)
@@ -197,6 +242,7 @@ model DrivingSession {
   updatedAt           DateTime          @updatedAt
 
   @@index([userId])
+  @@index([userId, engineType])
   @@index([startedAt])
   @@map("driving_sessions")
 }
@@ -205,6 +251,7 @@ model DrowsinessAlert {
   id              String         @id @default(cuid())
   sessionId       String
   session         DrivingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  eventId         String?        @unique
 
   timestampMs     Float
   severity        String         // "WARNING" | "CRITICAL"
@@ -212,7 +259,7 @@ model DrowsinessAlert {
   earValue        Float
   perclosPct      Float
   poseZone        String         // "CENTER" | "LEFT_MIRROR" | "RIGHT_MIRROR" | "DASHBOARD"
-  reasons         String[]       // ["MICROSLEEP", "INCREASED_PERCLOS"]
+  reasons         String[]       @default([]) // ["MICROSLEEP", "INCREASED_PERCLOS"]
   cascadeDecision String         // "GEOMETRIC" | "CNN" | "WEIGHTED_CONSENSUS"
 
   createdAt       DateTime       @default(now())

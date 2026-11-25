@@ -61,6 +61,7 @@ from backend.app.camera.frame_quality import (
 )
 from backend.app.features import DriverFeatureExtractor, DriverFeatures
 from backend.app.intelligence import DrowsinessAssessment, DrowsinessEngine
+from backend.app.intelligence.reason_codes import OperationalState
 from backend.app.schemas.profile import DriverProfileDTO
 from backend.app.services.frame_adapters import AdaptedFrame
 from backend.app.services.profile_store import ProfileStore, profile_store
@@ -208,6 +209,8 @@ class LocalMonitoringConfig:
     calibration_step_duration_sec: float = 6.0
     cnn_shadow_enabled: bool = False
     cnn_shadow_hz: float = 15.0
+    sensitivity_level: str = "STANDARD"
+    mirror_suppression_enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -253,7 +256,9 @@ class ProcessedTelemetrySnapshot:
     optical_status: str
     inference_latency_ms: float
     calibrated_profile_id: Optional[str] = None
+    operational_state: str = OperationalState.MONITORING_ACTIVE.value
     shadow_status: str = "DISABLED"
+    shadow_is_authoritative: bool = False
     shadow_left_cnn: Optional[str] = None
     shadow_right_cnn: Optional[str] = None
     shadow_binoc_agreement: Optional[bool] = None
@@ -281,6 +286,7 @@ class LocalMonitoringFrameResult:
     telemetry: ProcessedTelemetrySnapshot
     completed_calibration_profile: Optional[DriverBehaviourProfile] = None
     calibration_rejection_reason: Optional[str] = None
+    operational_state: OperationalState = OperationalState.MONITORING_ACTIVE
 
 
 class LocalMonitoringService:
@@ -342,8 +348,15 @@ class LocalMonitoringService:
             is_mirrored=self.config.is_mirrored,
             profile=profile_loaded,
         )
+        resolved_sensitivity = (
+            getattr(profile_loaded, "sensitivity_level", None)
+            if profile_loaded is not None
+            else None
+        ) or self.config.sensitivity_level
         self.drowsiness_engine = DrowsinessEngine(
             face_loss_grace_ms=float(face_loss_grace_ms),
+            sensitivity_level=resolved_sensitivity,
+            mirror_suppression_enabled=self.config.mirror_suppression_enabled,
         )
         self.alert_manager = AlertStateManager()
 
@@ -447,7 +460,12 @@ class LocalMonitoringService:
             self.feature_extractor.set_profile(None)
             return False
         snapshot = create_immutable_profile_snapshot(profile)
-        return self.feature_extractor.set_profile(snapshot)
+        ok = self.feature_extractor.set_profile(snapshot)
+        if ok:
+            prof_sens = getattr(snapshot, "sensitivity_level", None)
+            if prof_sens:
+                self.drowsiness_engine.apply_sensitivity_preset(prof_sens)
+        return ok
 
     def start_calibration(
         self,
@@ -539,7 +557,7 @@ class LocalMonitoringService:
     ) -> LocalMonitoringFrameResult:
         """Process a canonical `AdaptedFrame` produced by any input adapter."""
         return self.process_frame(
-            frame_bgr=adapted.frame_bgr,
+            frame_bgr=adapted.frame,
             timestamp_ms=adapted.timestamp_ms,
             frame_index=adapted.frame_index,
             is_mirrored=adapted.is_mirrored,
@@ -547,6 +565,7 @@ class LocalMonitoringService:
             frame_height=adapted.frame_height,
             packet=adapted.packet,
             landmark_result_override=landmark_result_override,
+            color_format=adapted.color_format,
         )
 
     def process_frame(
@@ -559,6 +578,7 @@ class LocalMonitoringService:
         frame_height: Optional[int] = None,
         packet: Optional[FramePacket] = None,
         landmark_result_override: Optional[FaceLandmarkResult] = None,
+        color_format: str = "BGR",
     ) -> LocalMonitoringFrameResult:
         """
         Execute one full authoritative local pipeline step on a single camera frame.
@@ -567,15 +587,27 @@ class LocalMonitoringService:
         mir = self.config.is_mirrored if is_mirrored is None else is_mirrored
         f_h = frame_height if (frame_height and frame_height > 0) else int(frame_bgr.shape[0])
         f_w = frame_width if (frame_width and frame_width > 0) else int(frame_bgr.shape[1])
+        fmt = color_format.upper()
 
-        # 1. Optical frame quality analysis
-        quality = self.quality_analyzer.analyze(frame_bgr)
+        # 1. Optical frame quality analysis (supports native BGR or RGB directly)
+        try:
+            quality = self.quality_analyzer.analyze(frame_bgr, color_format=fmt)
+        except TypeError:
+            quality = self.quality_analyzer.analyze(frame_bgr)
 
-        # 2. Facial landmark localization
+        # 2. Facial landmark localization (bypasses BGR->RGB conversion when fmt == 'RGB')
         if landmark_result_override is not None:
             landmark = landmark_result_override
         elif self.landmarker is not None:
-            landmark = self.landmarker.detect(packet if packet is not None else frame_bgr, timestamp_ms=int(timestamp_ms))
+            detect_input = packet if packet is not None else frame_bgr
+            try:
+                landmark = self.landmarker.detect(
+                    detect_input,
+                    timestamp_ms=int(timestamp_ms),
+                    color_format=fmt,
+                )
+            except TypeError:
+                landmark = self.landmarker.detect(detect_input, timestamp_ms=int(timestamp_ms))
         else:
             raise RuntimeError("No FaceLandmarker configured and no landmark_result_override supplied.")
 
@@ -597,12 +629,18 @@ class LocalMonitoringService:
                     ear_valid=features.ear.is_geometric_valid,
                 )
                 if should_shadow and landmark.has_face:
+                    import cv2
+                    shadow_bgr = (
+                        cv2.cvtColor(frame_bgr, cv2.COLOR_RGB2BGR)
+                        if fmt == "RGB"
+                        else frame_bgr
+                    )
                     lms_xyz = np.array(
                         [[lm.x * f_w, lm.y * f_h, lm.z * f_w] for lm in landmark.landmarks],
                         dtype=np.float64,
                     )
                     self.shadow_worker.submit_frame(
-                        frame_bgr=frame_bgr,
+                        frame_bgr=shadow_bgr,
                         landmarks_pixel_xyz=lms_xyz,
                         timestamp_ms=timestamp_ms,
                         frame_id=frame_index or self._frames_processed,
@@ -680,8 +718,13 @@ class LocalMonitoringService:
                 calib_status_msg = f"CALIBRATION FAILED: {reason}"
                 self.calibration_session = None
 
-        # 6. Drowsiness intelligence evaluation
-        assessment = self.drowsiness_engine.evaluate(features=features, quality=quality)
+        # 6. Drowsiness intelligence evaluation with strict OperationalState calibration gate
+        assessment = self.drowsiness_engine.evaluate(
+            features=features,
+            quality=quality,
+            is_profile_calibrated=self.feature_extractor.is_profile_feasible,
+            is_calibrating=self.is_calibrating,
+        )
 
         # 7. Alert state manager & optional local dispatcher
         transition = self.alert_manager.update(assessment)
@@ -741,7 +784,9 @@ class LocalMonitoringService:
             optical_status=quality.status.value,
             inference_latency_ms=landmark.inference_latency_ms,
             calibrated_profile_id=active_profile_id,
+            operational_state=assessment.operational_state.value,
             shadow_status=shadow_obs.status_label if shadow_obs else "DISABLED",
+            shadow_is_authoritative=False,
             shadow_left_cnn=shadow_obs.left_eye.cnn_predicted_class if shadow_obs else None,
             shadow_right_cnn=shadow_obs.right_eye.cnn_predicted_class if shadow_obs else None,
             shadow_binoc_agreement=shadow_obs.binocular_agreement if shadow_obs else None,
@@ -765,6 +810,7 @@ class LocalMonitoringService:
             telemetry=telemetry,
             completed_calibration_profile=completed_calib_profile,
             calibration_rejection_reason=calib_rejection_reason,
+            operational_state=assessment.operational_state,
         )
 
     def close(self) -> None:

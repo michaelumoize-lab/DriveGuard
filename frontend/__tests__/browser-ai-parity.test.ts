@@ -153,14 +153,18 @@ async function runTestSuite() {
 
     // Frame 3: Opening mouth to span = 0.26 -> MAR = 0.65 (above onset 0.55)
     res = detector.update(createMouth(0.26), 1350, 1.0, true, false);
-    assert(res.isYawnInProgress, "MAR >= 0.55 latches yawn in-progress state");
+    assert(res.isMouthOpen, "MAR >= 0.55 latches mouth-open state");
+    assert(!res.isYawnInProgress, "750 ms onset gate prevents speech burst at 0 ms from flagging isYawnInProgress");
 
-    // Frame 4: Drops to span = 0.20 -> MAR = 0.50 (still above release 0.45)
-    res = detector.update(createMouth(0.20), 1500, 1.0, true, false);
-    assert(res.isYawnInProgress, "MAR remaining above release 0.45 stays in-progress (hysteresis hold)");
+    // Hold MAR >= 0.45 across 800 ms (5 steps of 160ms = 800ms >= 750ms onset gate)
+    for (let t = 1510; t <= 2150; t += 160) {
+      res = detector.update(createMouth(0.20), t, 1.0, true, false);
+    }
+    assert(res.isMouthOpen, "MAR remaining above release 0.45 stays open (hysteresis hold)");
+    assert(res.isYawnInProgress, "Sustained opening >= 750 ms engages isYawnInProgress (matching Python mar.py)");
 
     // Frame 5: Drops below release 0.45 (span = 0.12 -> MAR = 0.30)
-    res = detector.update(createMouth(0.12), 1650, 1.0, true, false);
+    res = detector.update(createMouth(0.12), 2300, 1.0, true, false);
     assert(!res.isYawnInProgress, "MAR below 0.45 cleanly releases yawn");
   }
 
@@ -418,6 +422,50 @@ async function runTestSuite() {
     assert(frame.eye_metrics?.ear_raw === 0.19, "Telemetry adapter preserves raw EAR");
     assert(frame.eye_metrics?.perclos_pct === 15.5, "Telemetry adapter preserves PERCLOS");
     assert(frame.runtime_mode === "browser", "Telemetry adapter marks runtime_mode as browser");
+
+    // Verify BrowserDetectionEngine.stop() clears cached telemetry & performance metrics
+    const { BrowserDetectionEngine } = await import("../lib/ai/browser-detection-engine");
+    const browserEngine = new BrowserDetectionEngine({ driverId: "driver_test" });
+    (browserEngine as unknown as {
+      _latestTelemetry: typeof mockTelemetry | null;
+      _currentInferenceFps: number;
+      _latencySamples: number[];
+      _lastLatencyMs: number;
+      _totalFrames: number;
+      _droppedFrames: number;
+    })._latestTelemetry = mockTelemetry;
+    (browserEngine as unknown as {
+      _currentInferenceFps: number;
+      _latencySamples: number[];
+      _lastLatencyMs: number;
+      _totalFrames: number;
+      _droppedFrames: number;
+    })._currentInferenceFps = 14.5;
+    (browserEngine as unknown as { _latencySamples: number[] })._latencySamples = [12, 18];
+    (browserEngine as unknown as { _lastLatencyMs: number })._lastLatencyMs = 18;
+    (browserEngine as unknown as { _totalFrames: number })._totalFrames = 42;
+    (browserEngine as unknown as { _droppedFrames: number })._droppedFrames = 3;
+
+    assert(
+      browserEngine.retrieveCurrentState() !== null,
+      "BrowserDetectionEngine holds latest telemetry while session is active"
+    );
+
+    browserEngine.stop();
+
+    assert(
+      browserEngine.retrieveCurrentState() === null,
+      "BrowserDetectionEngine.stop() clears latest telemetry reading"
+    );
+    const clearedMetrics = browserEngine.retrievePerformanceMetrics();
+    assert(
+      clearedMetrics.inferenceFps === 0 &&
+        clearedMetrics.averageInferenceLatencyMs === 0 &&
+        clearedMetrics.totalFramesProcessed === 0 &&
+        clearedMetrics.droppedFrames === 0,
+      "BrowserDetectionEngine.stop() resets FPS, latency, and frame counters to 0"
+    );
+    browserEngine.dispose();
   }
 
   console.log("\n======================================================================");

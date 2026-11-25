@@ -65,6 +65,7 @@ export function useCamera(options: UseCameraOptions = {}) {
   });
 
   const opticalAnalyzerRef = useRef<OpticalQualityAnalyzer | null>(null);
+  const opticalQualityRef = useRef<OpticalFrameQuality | null>(null);
   useEffect(() => {
     opticalAnalyzerRef.current = new OpticalQualityAnalyzer();
     return () => {
@@ -73,78 +74,121 @@ export function useCamera(options: UseCameraOptions = {}) {
     };
   }, []);
 
-  // Periodic optical quality & hardware ingestion analysis loop
+  // Periodic optical quality & throttled (1 Hz) hardware ingestion diagnostics
   useEffect(() => {
     if (cameraState !== "active") {
+      opticalQualityRef.current = null;
       setOpticalQuality(null);
       return;
     }
 
     let isMounted = true;
-    let frameTimes: number[] = [];
-    let intervalId: NodeJS.Timeout | null = null;
-    let animId: number | null = null;
+    const frameTimes: number[] = [];
+    let opticalIntervalId: ReturnType<typeof setInterval> | null = null;
+    let diagIntervalId: ReturnType<typeof setInterval> | null = null;
+    let vfcHandle: number | null = null;
+    let vfcVideo: (HTMLVideoElement & {
+      requestVideoFrameCallback?: (cb: (now: number) => void) => number;
+      cancelVideoFrameCallback?: (handle: number) => void;
+    }) | null = null;
 
-    // Optical analysis interval (every 800ms to keep CPU minimal)
-    intervalId = setInterval(() => {
+    // Optical analysis interval (every 1000ms to keep CPU & React updates minimal)
+    opticalIntervalId = setInterval(() => {
       const video = videoRef.current;
       if (video && opticalAnalyzerRef.current && video.readyState >= 2) {
         const quality = opticalAnalyzerRef.current.analyze(video);
         if (quality && isMounted) {
+          opticalQualityRef.current = quality;
           setOpticalQuality(quality);
         }
       }
-    }, 800);
+    }, 1000);
 
-    // Frame ingestion FPS calculation
-    const trackFps = (timestamp: number) => {
-      frameTimes.push(timestamp);
-      // Keep only frames in the last 1000ms
-      while (frameTimes.length > 0 && frameTimes[0] < timestamp - 1000) {
+    // Measure genuine video frame arrival via requestVideoFrameCallback when available
+    // (does NOT trigger React state updates per frame; state is emitted at 1 Hz below)
+    const videoEl = videoRef.current as (HTMLVideoElement & {
+      requestVideoFrameCallback?: (cb: (now: number) => void) => number;
+      cancelVideoFrameCallback?: (handle: number) => void;
+    }) | null;
+    const hasRvfc = Boolean(videoEl && typeof videoEl.requestVideoFrameCallback === "function");
+
+    const onVideoFrame = (now: number) => {
+      if (!isMounted) return;
+      frameTimes.push(now);
+      while (frameTimes.length > 0 && frameTimes[0] < now - 1000) {
+        frameTimes.shift();
+      }
+      if (vfcVideo && typeof vfcVideo.requestVideoFrameCallback === "function") {
+        vfcHandle = vfcVideo.requestVideoFrameCallback(onVideoFrame);
+      }
+    };
+
+    if (hasRvfc && videoEl) {
+      vfcVideo = videoEl;
+      vfcHandle = videoEl.requestVideoFrameCallback!(onVideoFrame);
+    }
+
+    // Throttled 1 Hz React state emission for hardware diagnostics (never 60 FPS)
+    const emitDiagnostics = () => {
+      if (!isMounted) return;
+      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      while (frameTimes.length > 0 && frameTimes[0] < now - 1000) {
         frameTimes.shift();
       }
 
-      if (frameTimes.length > 1) {
-        const measuredFps = frameTimes.length;
-        // Compute inter-frame jitter
+      const videoTrack = streamRef.current?.getVideoTracks()[0];
+      const label = videoTrack?.label || "Integrated Camera";
+      const settings = videoTrack?.getSettings?.() || {};
+
+      let measuredFps = 0;
+      let jitterMs = 0;
+
+      if (hasRvfc && frameTimes.length > 1) {
+        measuredFps = frameTimes.length;
+        const expectedDelta = 1000 / Math.max(1, measuredFps);
         let sumDelta = 0;
         for (let i = 1; i < frameTimes.length; i++) {
-          sumDelta += Math.abs(frameTimes[i] - frameTimes[i - 1] - 1000 / Math.max(1, measuredFps));
+          sumDelta += Math.abs(frameTimes[i] - frameTimes[i - 1] - expectedDelta);
         }
-        const jitterMs = Number((sumDelta / (frameTimes.length - 1)).toFixed(1));
-
-        const videoTrack = streamRef.current?.getVideoTracks()[0];
-        const label = videoTrack?.label || "Integrated Camera";
-        const settings = videoTrack?.getSettings?.() || {};
-
-        if (isMounted) {
-          setHardwareDiagnostics((prev) => ({
-            ...prev,
-            measuredFps,
-            negotiatedWidth: settings.width || resolution?.width || idealWidth,
-            negotiatedHeight: settings.height || resolution?.height || idealHeight,
-            negotiatedFps: settings.frameRate || idealFps,
-            jitterMs,
-            deviceLabel: label,
-            facingMode,
-            opticalQuality: opticalQuality || undefined,
-          }));
-        }
+        jitterMs = Number((sumDelta / (frameTimes.length - 1)).toFixed(1));
+      } else {
+        // Fallback when requestVideoFrameCallback is unavailable: track negotiated frameRate
+        measuredFps = Math.round(settings.frameRate || idealFps);
+        jitterMs = 0;
       }
 
-      if (isMounted && cameraState === "active") {
-        animId = requestAnimationFrame(trackFps);
-      }
+      setHardwareDiagnostics((prev) => ({
+        ...prev,
+        measuredFps,
+        negotiatedWidth: settings.width || resolution?.width || idealWidth,
+        negotiatedHeight: settings.height || resolution?.height || idealHeight,
+        negotiatedFps: settings.frameRate || idealFps,
+        jitterMs,
+        deviceLabel: label,
+        facingMode,
+        opticalQuality: opticalQualityRef.current || undefined,
+      }));
     };
 
-    animId = requestAnimationFrame(trackFps);
+    diagIntervalId = setInterval(emitDiagnostics, 1000);
 
     return () => {
       isMounted = false;
-      if (intervalId) clearInterval(intervalId);
-      if (animId) cancelAnimationFrame(animId);
+      if (opticalIntervalId) clearInterval(opticalIntervalId);
+      if (diagIntervalId) clearInterval(diagIntervalId);
+      if (
+        vfcHandle !== null &&
+        vfcVideo &&
+        typeof vfcVideo.cancelVideoFrameCallback === "function"
+      ) {
+        try {
+          vfcVideo.cancelVideoFrameCallback(vfcHandle);
+        } catch {
+          // ignore teardown race
+        }
+      }
     };
-  }, [cameraState, idealFps, idealHeight, idealWidth, facingMode, resolution, opticalQuality]);
+  }, [cameraState, idealFps, idealHeight, idealWidth, facingMode, resolution]);
 
   // Synchronized callback refs
   const onStateChangeRef = useRef(onStateChange);

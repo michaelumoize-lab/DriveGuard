@@ -39,6 +39,17 @@ class DriverProfileDTO(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     version: int = Field(default=1, description="Calibration format algorithm version")
+    engine_type: str = Field(default="PYTHON", description="Engine ownership tag: PYTHON or BROWSER")
+    profile_version: int = Field(default=1, description="Server-authoritative monotonic profile version", ge=1)
+    base_server_version: Optional[int] = Field(
+        default=None, description="Last reconciled server profile_version for conflict detection"
+    )
+    profile_uuid: Optional[str] = Field(default=None, description="Unique profile revision UUID")
+    content_hash: Optional[str] = Field(default=None, description="Canonical SHA-256 profile hash")
+    sync_state: str = Field(
+        default="LOCAL_ONLY",
+        description="Local reconciliation state: LOCAL_ONLY, PENDING_UPLOAD, SYNCED, CONFLICT_PENDING_REVIEW",
+    )
     driver_id: str = Field(default="driver_default", description="Unique driver identifier")
     calibrated_at: Optional[str] = Field(
         default=None, description="ISO timestamp of calibration completion"

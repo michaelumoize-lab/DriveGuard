@@ -319,10 +319,92 @@ export function estimate2DProfileFallbackYaw(
 }
 
 /**
- * Closed-form Orthogonal Procrustes / Kabsch rotation alignment from 3D reference model to landmark coordinates.
+ * Exact 3x3 symmetric Jacobi eigendecomposition returning eigenvalues and orthonormal
+ * right-handed eigenvectors sorted in descending eigenvalue order (lambda_0 >= lambda_1 >= lambda_2).
+ */
+function jacobiEigen3x3(sym: number[][]): { values: [number, number, number]; vectors: number[][] } {
+  const A = sym.map((r) => [...r]);
+  const V: number[][] = [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+  ];
+
+  for (let sweep = 0; sweep < 10; sweep++) {
+    let maxOff = 0;
+    for (let p = 0; p < 3; p++) {
+      for (let q = p + 1; q < 3; q++) {
+        const apq = A[p][q];
+        maxOff = Math.max(maxOff, Math.abs(apq));
+        if (Math.abs(apq) < 1e-15) continue;
+
+        const tau = (A[q][q] - A[p][p]) / (2.0 * apq);
+        const t =
+          tau >= 0
+            ? 1.0 / (tau + Math.hypot(1.0, tau))
+            : -1.0 / (-tau + Math.hypot(1.0, tau));
+        const c = 1.0 / Math.hypot(1.0, t);
+        const s = t * c;
+
+        const app = A[p][p];
+        const aqq = A[q][q];
+        A[p][p] = app - t * apq;
+        A[q][q] = aqq + t * apq;
+        A[p][q] = 0.0;
+        A[q][p] = 0.0;
+
+        for (let r = 0; r < 3; r++) {
+          if (r !== p && r !== q) {
+            const arp = A[r][p];
+            const arq = A[r][q];
+            A[r][p] = c * arp - s * arq;
+            A[p][r] = A[r][p];
+            A[r][q] = s * arp + c * arq;
+            A[q][r] = A[r][q];
+          }
+          const vrp = V[r][p];
+          const vrq = V[r][q];
+          V[r][p] = c * vrp - s * vrq;
+          V[r][q] = s * vrp + c * vrq;
+        }
+      }
+    }
+    if (maxOff < 1e-14) break;
+  }
+
+  // Sort eigenvalues descending
+  const order = [0, 1, 2].sort((a, b) => A[b][b] - A[a][a]);
+  const values: [number, number, number] = [
+    A[order[0]][order[0]],
+    A[order[1]][order[1]],
+    A[order[2]][order[2]],
+  ];
+  const vectors: number[][] = [
+    [V[0][order[0]], V[0][order[1]], V[0][order[2]]],
+    [V[1][order[0]], V[1][order[1]], V[1][order[2]]],
+    [V[2][order[0]], V[2][order[1]], V[2][order[2]]],
+  ];
+
+  // Enforce right-handed V (v2 = v0 x v1) so det(V) = +1
+  const v0 = [vectors[0][0], vectors[1][0], vectors[2][0]];
+  const v1 = [vectors[0][1], vectors[1][1], vectors[2][1]];
+  const v2Cross = [
+    v0[1] * v1[2] - v0[2] * v1[1],
+    v0[2] * v1[0] - v0[0] * v1[2],
+    v0[0] * v1[1] - v0[1] * v1[0],
+  ];
+  vectors[0][2] = v2Cross[0];
+  vectors[1][2] = v2Cross[1];
+  vectors[2][2] = v2Cross[2];
+
+  return { values, vectors };
+}
+
+/**
+ * Closed-form Orthogonal Procrustes / Kabsch SO(3) rotation alignment from 3D reference model
+ * to observed 3D landmark coordinates using exact 3x3 Jacobi SVD.
  *
- * Aligns CANONICAL_3D_FACE_POINTS (rigid indices: nose, eye corners, sellion, glabella)
- * to observed 3D landmarks, solving for optimal 3x3 orthonormal rotation matrix R.
+ * Handles near-planar facial landmark constellations stably without 180-degree sign flips.
  */
 function solveRigidRotationFrom3DLandmarks(
   landmarks: ArrayLike<NormalizedLandmark>,
@@ -348,8 +430,7 @@ function solveRigidRotationFrom3DLandmarks(
       CANONICAL_3D_FACE_POINTS[ptIdx][2],
     ]);
 
-    // Observed point Q (scaled to aspect ratio / frame dimension)
-    // MediaPipe landmark z is roughly on the same scale as x (normalized width)
+    // Observed point Q (scaled to pixel space; MediaPipe z shares x/width scale)
     Q.push([
       (lm.x - 0.5) * frameWidth,
       (lm.y - 0.5) * frameHeight,
@@ -359,8 +440,8 @@ function solveRigidRotationFrom3DLandmarks(
 
   // Compute centroids
   const n = P.length;
-  let pCentroid: [number, number, number] = [0, 0, 0];
-  let qCentroid: [number, number, number] = [0, 0, 0];
+  const pCentroid: [number, number, number] = [0, 0, 0];
+  const qCentroid: [number, number, number] = [0, 0, 0];
   for (let i = 0; i < n; i++) {
     pCentroid[0] += P[i][0] / n;
     pCentroid[1] += P[i][1] / n;
@@ -382,7 +463,7 @@ function solveRigidRotationFrom3DLandmarks(
     q[2] - qCentroid[2],
   ]);
 
-  // Covariance matrix H = P^T @ Q (3x3)
+  // Cross-covariance matrix H = Q^T @ P (3x3) so q_i ≈ s * R * p_i
   const H: number[][] = [
     [0, 0, 0],
     [0, 0, 0],
@@ -391,58 +472,54 @@ function solveRigidRotationFrom3DLandmarks(
   for (let i = 0; i < n; i++) {
     for (let r = 0; r < 3; r++) {
       for (let c = 0; c < 3; c++) {
-        H[r][c] += pCentered[i][r] * qCentered[i][c];
+        H[r][c] += qCentered[i][r] * pCentered[i][c];
       }
     }
   }
 
-  // Direct polar decomposition / SVD approximation of 3x3 matrix H = R @ S
-  // Compute R = H @ (H^T H)^(-1/2) using iterative matrix square root (Denman-Beavers / Schulz)
-  let R = H.map((row) => [...row]);
-  // Normalize initial guess
-  let normH = 0;
-  for (let r = 0; r < 3; r++) {
-    for (let c = 0; c < 3; c++) {
-      normH += H[r][c] * H[r][c];
-    }
-  }
-  normH = Math.sqrt(normH) || 1.0;
-  for (let r = 0; r < 3; r++) {
-    for (let c = 0; c < 3; c++) {
-      R[r][c] /= normH;
-    }
-  }
+  // Exact SVD via eigendecomposition of symmetric HtH = H^T @ H = V @ diag(sigma^2) @ V^T
+  const HtH = matMul3x3(transpose3x3(H), H);
+  const { vectors: V } = jacobiEigen3x3(HtH);
 
-  // 10 iterations of Schulz-Newton polar orthogonalization: R_{k+1} = 0.5 * R_k * (3I - R_k^T R_k)
-  for (let iter = 0; iter < 12; iter++) {
-    const RtR = matMul3x3(transpose3x3(R), R);
-    const threeI_minus_RtR = [
-      [3.0 - RtR[0][0], -RtR[0][1], -RtR[0][2]],
-      [-RtR[1][0], 3.0 - RtR[1][1], -RtR[1][2]],
-      [-RtR[2][0], -RtR[2][1], 3.0 - RtR[2][2]],
-    ];
-    const nextR = matMul3x3(R, threeI_minus_RtR);
-    for (let r = 0; r < 3; r++) {
-      for (let c = 0; c < 3; c++) {
-        R[r][c] = 0.5 * nextR[r][c];
-      }
-    }
-  }
+  // Compute first two left singular vectors: u_k = normalize(H @ v_k)
+  const mulH = (colIdx: number): [number, number, number] => [
+    H[0][0] * V[0][colIdx] + H[0][1] * V[1][colIdx] + H[0][2] * V[2][colIdx],
+    H[1][0] * V[0][colIdx] + H[1][1] * V[1][colIdx] + H[1][2] * V[2][colIdx],
+    H[2][0] * V[0][colIdx] + H[2][1] * V[1][colIdx] + H[2][2] * V[2][colIdx],
+  ];
 
-  // Ensure det(R) == +1 (Special Orthogonal SO(3))
-  const det =
-    R[0][0] * (R[1][1] * R[2][2] - R[1][2] * R[2][1]) -
-    R[0][1] * (R[1][0] * R[2][2] - R[1][2] * R[2][0]) +
-    R[0][2] * (R[1][0] * R[2][1] - R[1][1] * R[2][0]);
+  const rawU0 = mulH(0);
+  const normU0 = Math.hypot(rawU0[0], rawU0[1], rawU0[2]);
+  if (normU0 < 1e-9) return null;
+  const u0: [number, number, number] = [rawU0[0] / normU0, rawU0[1] / normU0, rawU0[2] / normU0];
 
-  if (det < 0) {
-    // Reflection correction: flip third column
-    R[0][2] = -R[0][2];
-    R[1][2] = -R[1][2];
-    R[2][2] = -R[2][2];
-  }
+  const rawU1 = mulH(1);
+  // Gram-Schmidt orthogonalization against u0
+  const dot01 = rawU1[0] * u0[0] + rawU1[1] * u0[1] + rawU1[2] * u0[2];
+  const orthU1: [number, number, number] = [
+    rawU1[0] - dot01 * u0[0],
+    rawU1[1] - dot01 * u0[1],
+    rawU1[2] - dot01 * u0[2],
+  ];
+  const normU1 = Math.hypot(orthU1[0], orthU1[1], orthU1[2]);
+  if (normU1 < 1e-9) return null;
+  const u1: [number, number, number] = [orthU1[0] / normU1, orthU1[1] / normU1, orthU1[2] / normU1];
 
-  return isValidRotationMatrix(R, 0.05) ? R : null;
+  // Uniquely determine third left singular vector u2 = u0 x u1 so det(U) = +1 => R = U @ V^T in SO(3)
+  const u2: [number, number, number] = [
+    u0[1] * u1[2] - u0[2] * u1[1],
+    u0[2] * u1[0] - u0[0] * u1[2],
+    u0[0] * u1[1] - u0[1] * u1[0],
+  ];
+
+  const U: number[][] = [
+    [u0[0], u1[0], u2[0]],
+    [u0[1], u1[1], u2[1]],
+    [u0[2], u1[2], u2[2]],
+  ];
+
+  const R = matMul3x3(U, transpose3x3(V));
+  return isValidRotationMatrix(R, 1e-2) ? R : null;
 }
 
 /**
@@ -457,7 +534,7 @@ export function estimateHeadPose(
   neutralRotMat?: number[][] | null,
   isMirrored: boolean = false,
   currentZone?: PoseZone | null,
-  facialTransformMatrix?: number[] | number[][] | null,
+  facialTransformMatrix?: ArrayLike<number> | number[][] | null,
   neutralIsMirrored?: boolean | null
 ): HeadPoseResult {
   const invalidResult: HeadPoseResult = {
@@ -491,25 +568,40 @@ export function estimateHeadPose(
 
   let rotMat: number[][] | null = null;
 
-  // 1. If MediaPipe provided a 4x4 facial transformation matrix directly, extract 3x3 rotation
+  // 1. If MediaPipe provided a 4x4 facial transformation matrix directly (including Float32Array),
+  // extract the 3x3 rotation submatrix without falling back unnecessarily.
   if (facialTransformMatrix) {
-    if (Array.isArray(facialTransformMatrix)) {
-      if (facialTransformMatrix.length === 16 && typeof facialTransformMatrix[0] === "number") {
-        const m = facialTransformMatrix as number[];
-        // Column-major or row-major check
-        rotMat = [
-          [m[0], m[1], m[2]],
-          [m[4], m[5], m[6]],
-          [m[8], m[9], m[10]],
-        ];
-      } else if (facialTransformMatrix.length === 4 && Array.isArray(facialTransformMatrix[0])) {
-        const m = facialTransformMatrix as number[][];
-        rotMat = [
-          [m[0][0], m[0][1], m[0][2]],
-          [m[1][0], m[1][1], m[1][2]],
-          [m[2][0], m[2][1], m[2][2]],
-        ];
-      }
+    if (
+      Array.isArray(facialTransformMatrix) &&
+      facialTransformMatrix.length === 4 &&
+      Array.isArray(facialTransformMatrix[0])
+    ) {
+      const m = facialTransformMatrix as number[][];
+      rotMat = [
+        [m[0][0], m[0][1], m[0][2]],
+        [m[1][0], m[1][1], m[1][2]],
+        [m[2][0], m[2][1], m[2][2]],
+      ];
+    } else if (
+      typeof (facialTransformMatrix as ArrayLike<number>).length === "number" &&
+      (facialTransformMatrix as ArrayLike<number>).length >= 16 &&
+      typeof (facialTransformMatrix as ArrayLike<number>)[0] === "number"
+    ) {
+      const m = facialTransformMatrix as ArrayLike<number>;
+      const colMajorTransNorm = Math.hypot(m[12], m[13], m[14]);
+      const rowMajorTransNorm = Math.hypot(m[3], m[7], m[11]);
+      const isColumnMajor = colMajorTransNorm > 1e-3 && rowMajorTransNorm < 1e-3;
+      rotMat = isColumnMajor
+        ? [
+            [m[0], m[4], m[8]],
+            [m[1], m[5], m[9]],
+            [m[2], m[6], m[10]],
+          ]
+        : [
+            [m[0], m[1], m[2]],
+            [m[4], m[5], m[6]],
+            [m[8], m[9], m[10]],
+          ];
     }
     if (rotMat && !isValidRotationMatrix(rotMat, 0.1)) {
       rotMat = null;

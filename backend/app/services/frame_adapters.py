@@ -26,18 +26,75 @@ class FrameDecodeError(ValueError):
     """Raised when an incoming frame payload cannot be decoded into a valid BGR image."""
 
 
-@dataclass(frozen=True)
 class AdaptedFrame:
-    """Canonical BGR frame envelope accepted by `LocalMonitoringService`."""
+    """
+    Canonical frame envelope accepted by `LocalMonitoringService`.
 
-    frame_bgr: np.ndarray
-    timestamp_ms: float
-    frame_width: int
-    frame_height: int
-    frame_index: int = 0
-    source_id: str = "unknown"
-    is_mirrored: bool = True
-    packet: Optional[FramePacket] = None
+    Supports native `"BGR"` (OpenCV / decoded JPEG) and zero-copy `"RGB"`
+    (LiveKit WebRTC RGB24) passthrough via `.frame` and `.color_format`,
+    eliminating redundant `RGB -> BGR -> RGB` color conversions while keeping
+    `.frame_bgr` backward-compatible via lazy conversion when requested.
+    """
+
+    __slots__ = (
+        "_frame",
+        "_cached_bgr",
+        "timestamp_ms",
+        "frame_width",
+        "frame_height",
+        "frame_index",
+        "source_id",
+        "is_mirrored",
+        "packet",
+        "color_format",
+    )
+
+    def __init__(
+        self,
+        frame_bgr: Optional[np.ndarray] = None,
+        timestamp_ms: float = 0.0,
+        frame_width: int = 0,
+        frame_height: int = 0,
+        frame_index: int = 0,
+        source_id: str = "unknown",
+        is_mirrored: bool = True,
+        packet: Optional[FramePacket] = None,
+        *,
+        frame: Optional[np.ndarray] = None,
+        color_format: str = "BGR",
+    ) -> None:
+        raw = frame if frame is not None else frame_bgr
+        if raw is None:
+            raise FrameDecodeError("AdaptedFrame requires either 'frame' or 'frame_bgr'.")
+        fmt = color_format.upper()
+        if fmt not in ("BGR", "RGB"):
+            raise ValueError(f"Unsupported color_format '{color_format}'; expected 'BGR' or 'RGB'.")
+        object.__setattr__(self, "_frame", raw)
+        object.__setattr__(self, "_cached_bgr", raw if fmt == "BGR" else None)
+        object.__setattr__(self, "timestamp_ms", float(timestamp_ms))
+        object.__setattr__(self, "frame_width", int(frame_width))
+        object.__setattr__(self, "frame_height", int(frame_height))
+        object.__setattr__(self, "frame_index", int(frame_index))
+        object.__setattr__(self, "source_id", source_id)
+        object.__setattr__(self, "is_mirrored", bool(is_mirrored))
+        object.__setattr__(self, "packet", packet)
+        object.__setattr__(self, "color_format", fmt)
+
+    def __setattr__(self, name: str, value) -> None:
+        raise AttributeError("AdaptedFrame is immutable.")
+
+    @property
+    def frame(self) -> np.ndarray:
+        """Native frame array in `self.color_format` ('BGR' or 'RGB') with zero conversion."""
+        return self._frame
+
+    @property
+    def frame_bgr(self) -> np.ndarray:
+        """Backward-compatible BGR accessor (zero-cost for BGR; lazy convert for RGB)."""
+        if self._cached_bgr is None:
+            converted = cv2.cvtColor(self._frame, cv2.COLOR_RGB2BGR)
+            object.__setattr__(self, "_cached_bgr", converted)
+        return self._cached_bgr
 
 
 def _validate_bgr_array(frame: np.ndarray, source_id: str) -> np.ndarray:
@@ -151,11 +208,11 @@ class ArrayFrameAdapter:
         is_mirrored: bool = True,
     ) -> AdaptedFrame:
         frame = _validate_bgr_array(frame_rgb, source_id)
-        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        h, w = frame_bgr.shape[:2]
+        h, w = frame.shape[:2]
         ts = float(timestamp_ms) if timestamp_ms is not None else (time.perf_counter() * 1000.0)
         return AdaptedFrame(
-            frame_bgr=frame_bgr,
+            frame=frame,
+            color_format="RGB",
             timestamp_ms=ts,
             frame_width=int(w),
             frame_height=int(h),

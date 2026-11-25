@@ -11,6 +11,19 @@
 
 export type AlertState = "NORMAL" | "WARNING" | "CRITICAL" | "MONITORING_UNAVAILABLE";
 
+export type EngineType = "BROWSER" | "PYTHON";
+
+/**
+ * Operational readiness state, strictly separate from drowsiness severity.
+ * An uncalibrated driver or degraded camera must never be presented as NORMAL.
+ */
+export type OperationalState =
+  | "CALIBRATION_REQUIRED"
+  | "CALIBRATING"
+  | "MONITORING_ACTIVE"
+  | "DEGRADED"
+  | "ERROR";
+
 export type AuthoritativeDrowsinessState =
   | "NORMAL"
   | "ATTENTION"
@@ -66,6 +79,7 @@ export interface EyeMetrics {
   blink_duration_ms: number | null;
   blink_rcr: number | null;
   blink_rate_per_min: number;
+  total_blink_count?: number;
   mar_yawn: number;
   blink_state?: string;
   blink_classification?: string;
@@ -143,6 +157,8 @@ export interface FrameTelemetry {
   alert_state?: AuthoritativeAlertState | null;
   is_recovering?: boolean;
   authoritative_engine?: string;
+  operational_state?: OperationalState;
+  engine_type?: EngineType;
   monitoring_status?: MonitoringStatus;
   risk_score: number;
   pose_zone: PoseZone;
@@ -244,6 +260,10 @@ export interface ZoneBaselineEntry {
 
 export interface CalibratedProfilePayload {
   version?: number;
+  engine_type?: EngineType;
+  profile_version?: number;
+  profile_uuid?: string;
+  content_hash?: string | null;
   driver_id: string;
   calibrated_at?: string | null;
   is_calibrated?: boolean;
@@ -344,6 +364,8 @@ export interface ServerTelemetryMessage {
 
 export interface SessionEndPayload {
   sessionCode: string;
+  clientSessionId?: string;
+  finalizeToken?: string;
   durationSeconds: number;
   averageFps: number;
   averageLatencyMs: number;
@@ -363,7 +385,9 @@ export interface SessionEndPayload {
 }
 
 export interface AlertLogPayload {
-  sessionCode: string;
+  sessionCode?: string;
+  clientSessionId?: string;
+  eventId?: string;
   severity: "WARNING" | "CRITICAL";
   riskScore: number;
   earValue: number;
@@ -500,6 +524,20 @@ export const REASON_CODE_CATALOG: Record<string, ReasonExplanation> = {
     description: "Frame lighting, blur, or landmark confidence is too low for reliable drowsiness evaluation.",
     subsystem: "QUALITY",
     severity: "WARNING",
+  },
+  CALIBRATION_REQUIRED: {
+    code: "CALIBRATION_REQUIRED",
+    title: "Personal Calibration Required",
+    description: "Complete 4-Zone baseline calibration before drowsiness monitoring can activate.",
+    subsystem: "QUALITY",
+    severity: "WARNING",
+  },
+  CALIBRATION_IN_PROGRESS: {
+    code: "CALIBRATION_IN_PROGRESS",
+    title: "Calibration In Progress",
+    description: "Collecting personalised spatial EAR baselines across cockpit zones.",
+    subsystem: "CONTEXT",
+    severity: "INFO",
   },
 
   // --- Transport & Session Availability Codes ---
@@ -700,6 +738,10 @@ export type EffectiveDisplayState =
   | "IDLE"
   | "AWAITING_TELEMETRY"
   | "STALE"
+  | "CALIBRATION_REQUIRED"
+  | "CALIBRATING"
+  | "DEGRADED"
+  | "ERROR"
   | "MONITORING_UNAVAILABLE"
   | "NORMAL"
   | "ATTENTION"
@@ -708,7 +750,8 @@ export type EffectiveDisplayState =
 
 /**
  * Single authoritative UI state presentation resolver.
- * Never returns "NORMAL" when telemetry is absent, stale, or backend monitoring is unavailable.
+ * Never returns "NORMAL" when telemetry is absent, stale, uncalibrated,
+ * calibrating, degraded, errored, or when backend monitoring is unavailable.
  */
 export function resolveEffectiveDisplayState(
   telemetry: FrameTelemetry | null,
@@ -728,6 +771,20 @@ export function resolveEffectiveDisplayState(
       return "AWAITING_TELEMETRY";
     }
     return "IDLE";
+  }
+
+  // Operational readiness states always supersede drowsiness severity
+  if (telemetry.operational_state === "ERROR") {
+    return "ERROR";
+  }
+  if (telemetry.operational_state === "CALIBRATION_REQUIRED") {
+    return "CALIBRATION_REQUIRED";
+  }
+  if (telemetry.operational_state === "CALIBRATING") {
+    return "CALIBRATING";
+  }
+  if (telemetry.operational_state === "DEGRADED") {
+    return "DEGRADED";
   }
 
   if (

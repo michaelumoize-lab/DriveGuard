@@ -37,7 +37,7 @@ export default async function SessionDetailPage({ params }: SessionDetailPagePro
     redirect(`/auth/sign-in?redirectTo=/dashboard/sessions/${encodeURIComponent(id)}`);
   }
 
-  const [drivingSession, driverProfile] = await Promise.all([
+  const [drivingSession, driverProfiles] = await Promise.all([
     prisma.drivingSession.findFirst({
       where: {
         id,
@@ -49,7 +49,7 @@ export default async function SessionDetailPage({ params }: SessionDetailPagePro
         },
       },
     }),
-    prisma.driverProfile.findUnique({
+    prisma.driverProfile.findMany({
       where: { userId: session.user.id },
     }),
   ]);
@@ -57,6 +57,15 @@ export default async function SessionDetailPage({ params }: SessionDetailPagePro
   if (!drivingSession) {
     notFound();
   }
+
+  const driverProfile =
+    (drivingSession.engineType
+      ? driverProfiles.find((p) => p.engineType === drivingSession.engineType)
+      : undefined) ??
+    driverProfiles.find((p) => p.engineType === "PYTHON" && p.isCalibrated) ??
+    driverProfiles.find((p) => p.isCalibrated) ??
+    driverProfiles[0] ??
+    null;
 
   const alerts: ReplayAlertEvent[] = drivingSession.alerts.map((a) => ({
     id: a.id,

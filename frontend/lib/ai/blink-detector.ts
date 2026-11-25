@@ -201,7 +201,7 @@ export class BlinkKinematicsDetector {
         recentBlinkRcr: this._recentRcr,
         totalBlinkCount: this._totalBlinks,
         prolongedBlinkCount: this._prolongedBlinks,
-        samplingGapDetected: false,
+        samplingGapDetected: this._state === BlinkState.UNCERTAIN_GAP,
       };
     }
 
@@ -516,7 +516,7 @@ export class BlinkKinematicsDetector {
                 isKinematicsReliable = true;
                 vClose = closeDisplacement / closeDtSec;
                 vReopen = amplitude / reopenDtSec;
-                rccr: rcr = vReopen / Math.max(1e-6, vClose);
+                rcr = vReopen / Math.max(1e-6, vClose);
               }
 
               const isBinocular = this._wasLeftClosed && this._wasRightClosed;

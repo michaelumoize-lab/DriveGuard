@@ -12,14 +12,47 @@ export default async function OnboardingPage() {
     redirect("/auth/sign-in?redirectTo=/onboarding");
   }
 
-  const [profile, driverProfile] = await Promise.all([
+  const [profile, driverProfiles] = await Promise.all([
     getOrCreateUserProfile(session.user.id),
-    prisma.driverProfile.findUnique({ where: { userId: session.user.id } }),
+    prisma.driverProfile.findMany({
+      where: { userId: session.user.id },
+    }),
   ]);
 
   if (profile.onboardingCompleted) {
     redirect("/dashboard");
   }
+
+  const mapProfile = (p: (typeof driverProfiles)[number] | undefined) =>
+    p
+      ? {
+          engineType: p.engineType,
+          isCalibrated: p.isCalibrated,
+          calibrationMode: p.calibrationMode,
+          centerEarMedian: p.centerEarMedian,
+          centerEarMadScaled: p.centerEarMadScaled,
+          blinkDurationMedianMs: p.blinkDurationMedianMs,
+          blinkDurationMadMs: p.blinkDurationMadMs,
+          blinkRcrMedian: p.blinkRcrMedian,
+          blinkRcrMad: p.blinkRcrMad,
+          neutralPitchDeg: p.neutralPitchDeg,
+          neutralYawDeg: p.neutralYawDeg,
+          neutralRotMat: (p.neutralRotMat as number[][] | null) ?? null,
+          calibrationIsMirrored: p.calibrationIsMirrored ?? null,
+          calibrationReliability: p.calibrationReliability,
+          profileVersion: p.profileVersion,
+          profileHash: p.contentHash ?? null,
+          zoneBaselines:
+            (p.zoneBaselines as Record<string, unknown> | null) ?? null,
+        }
+      : null;
+
+  const browserProfile = mapProfile(
+    driverProfiles.find((p) => p.engineType === "BROWSER")
+  );
+  const pythonProfile = mapProfile(
+    driverProfiles.find((p) => p.engineType === "PYTHON")
+  );
 
   return (
     <OnboardingWizard
@@ -45,25 +78,8 @@ export default async function OnboardingPage() {
         mirrorSuppression: profile.mirrorSuppression,
         wearsGlasses: profile.wearsGlasses,
       }}
-      initialDriverProfile={
-        driverProfile
-          ? {
-              isCalibrated: driverProfile.isCalibrated,
-              calibrationMode: driverProfile.calibrationMode,
-              centerEarMedian: driverProfile.centerEarMedian,
-              centerEarMadScaled: driverProfile.centerEarMadScaled,
-              blinkDurationMedianMs: driverProfile.blinkDurationMedianMs,
-              blinkDurationMadMs: driverProfile.blinkDurationMadMs,
-              blinkRcrMedian: driverProfile.blinkRcrMedian,
-              blinkRcrMad: driverProfile.blinkRcrMad,
-              neutralPitchDeg: driverProfile.neutralPitchDeg,
-              neutralYawDeg: driverProfile.neutralYawDeg,
-              calibrationReliability: driverProfile.calibrationReliability,
-              zoneBaselines:
-                (driverProfile.zoneBaselines as Record<string, unknown> | null) ?? null,
-            }
-          : null
-      }
+      initialDriverProfile={browserProfile}
+      initialPythonProfile={pythonProfile}
     />
   );
 }

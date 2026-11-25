@@ -37,13 +37,16 @@ export function SystemHealthPanel() {
     );
   };
 
+  const isBrowserWasmSupported =
+    typeof WebAssembly === "object" && typeof WebAssembly.instantiate === "function";
+
   // Calculate healthy service count out of 4 active platform subsystems
   const healthyCount = health?.services
     ? [
         health.services.nextjs?.status === "online",
         health.services.fastapi?.status === "online",
         health.services.postgresql?.status === "connected",
-        true, // Edge Cascade ONNX pipeline
+        isBrowserWasmSupported,
       ].filter(Boolean).length
     : 0;
   const totalServices = 4;
@@ -166,19 +169,19 @@ export function SystemHealthPanel() {
             </div>
           </div>
 
-          {/* Cascade Inference Engine */}
+          {/* Authoritative Geometric AI Runtime */}
           <div className="p-3.5 sm:p-4 bg-muted/30 hover:bg-muted/50 rounded-xl border border-border/80 transition-all flex flex-col justify-between space-y-2">
             <div className="flex items-center gap-2 min-w-0">
               <div className="p-1.5 bg-emerald-500/10 rounded-lg border border-emerald-500/20 text-emerald-500 shrink-0">
                 <Sparkles className="w-4 h-4" />
               </div>
-              <span className="text-xs font-semibold text-foreground truncate">Edge Cascade</span>
+              <span className="text-xs font-semibold text-foreground truncate">Browser AI Runtime</span>
             </div>
 
             <div className="flex flex-col gap-1 min-w-0">
-              {getStatusBadge("online")}
+              {getStatusBadge(isBrowserWasmSupported ? "available" : "degraded")}
               <span className="text-[11px] font-mono text-muted-foreground pt-0.5 truncate">
-                MobileNetV3 ONNX Ready
+                Geometric Authoritative (MediaPipe + PDBP)
               </span>
             </div>
           </div>

@@ -33,12 +33,25 @@ const DEFAULT_CONFIG: MediaPipeConfig = {
   minTrackingConfidence: 0.5,
 };
 
+/**
+ * Enforce strictly monotonic integer timestamps for MediaPipe VIDEO mode
+ * so duplicate or jittered frame clocks never trigger WASM graph errors.
+ */
+export function enforceMonotonicVideoTimestamp(
+  rawTimestampMs: number,
+  lastTimestampMs: number
+): number {
+  const rounded = Number.isFinite(rawTimestampMs) ? Math.round(rawTimestampMs) : 0;
+  return Math.max(rounded, lastTimestampMs + 1);
+}
+
 export class MediaPipeService {
   private static _instance: MediaPipeService | null = null;
   private _landmarker: FaceLandmarker | null = null;
   private _isInitializing: boolean = false;
   private _initPromise: Promise<FaceLandmarker> | null = null;
   private _activeDelegate: "GPU" | "CPU" = "GPU";
+  private _lastVideoTimestampMs: number = -1;
 
   private constructor() {}
 
@@ -158,7 +171,12 @@ export class MediaPipeService {
     }
 
     try {
-      return this._landmarker.detectForVideo(videoElement, timestampMs);
+      const monotonicTs = enforceMonotonicVideoTimestamp(
+        timestampMs,
+        this._lastVideoTimestampMs
+      );
+      this._lastVideoTimestampMs = monotonicTs;
+      return this._landmarker.detectForVideo(videoElement, monotonicTs);
     } catch (err) {
       console.warn("[MediaPipe] detectForVideo frame skipped:", err);
       return null;
@@ -176,5 +194,6 @@ export class MediaPipeService {
     }
     this._initPromise = null;
     this._isInitializing = false;
+    this._lastVideoTimestampMs = -1;
   }
 }

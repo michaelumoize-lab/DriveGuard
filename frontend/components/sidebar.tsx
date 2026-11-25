@@ -139,6 +139,11 @@ const engineeringNavItems: NavItem[] = [
         icon: Camera,
       },
       {
+        title: "Synthetic Testbench",
+        href: "/dashboard/synthetic-testbench",
+        icon: FlaskConical,
+      },
+      {
         title: "Defense Companion",
         href: "/dashboard/defense-guide",
         icon: Brain,

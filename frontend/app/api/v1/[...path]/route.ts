@@ -3,7 +3,11 @@ import { PRODUCTION_FASTAPI_URL, resolveCloudFastApiUrl } from "@/lib/fastapi-ur
 import { getServerSession } from "@/lib/get-session";
 import { createBackendAccessToken, verifyBackendAccessToken } from "@/lib/backend-auth";
 import { prisma } from "@/lib/prisma";
-import { buildDriverProfileDtoPayload } from "@/lib/api/profile-mapper";
+import { syncAuthoritativePythonProfileBeforeForward } from "@/lib/api/bff-profile-sync";
+import {
+  isPublicHealthSubPath,
+  resolveFastApiUpstreamPath,
+} from "@/lib/api/proxy-target";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +20,7 @@ async function proxyToFastApi(
   const search = req.nextUrl.search || "";
 
   // Public operational paths that do not require driver session
-  const isPublicHealth = subPath === "health" || subPath === "" || subPath === "health/liveness";
+  const isPublicHealth = isPublicHealthSubPath(subPath);
 
   let backendToken: string | null = null;
   const primaryBase = resolveCloudFastApiUrl();
@@ -54,46 +58,24 @@ async function proxyToFastApi(
       );
     }
 
-    // DG-04: Prioritize PostgreSQL calibration records across backend restarts.
-    // When initializing a session or requesting a LiveKit token, synchronize the authoritative
-    // profile from PostgreSQL to FastAPI so cold-started workers immediately have calibrated baselines.
-    if (subPath === "livekit/token" || subPath === "sessions") {
-      try {
-        const dbProfile = await prisma.driverProfile.findUnique({ where: { userId } });
-        if (dbProfile && dbProfile.isCalibrated) {
-          const syncUrl = `${primaryBase}/api/v1/profiles`;
-          const fastApiProfileDto = buildDriverProfileDtoPayload(
-            {
-              ...dbProfile,
-              zoneBaselines:
-                dbProfile.zoneBaselines &&
-                typeof dbProfile.zoneBaselines === "object" &&
-                !Array.isArray(dbProfile.zoneBaselines)
-                  ? (dbProfile.zoneBaselines as Record<string, unknown>)
-                  : null,
-            },
-            userId
-          );
-
-          fetch(syncUrl, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${backendToken}`,
-            },
-            body: JSON.stringify(fastApiProfileDto),
-            signal: AbortSignal.timeout(3000),
-          }).catch((syncErr) => {
-            console.warn("[API Proxy] Background profile sync warning:", syncErr);
-          });
-        }
-      } catch (dbErr) {
-        console.warn("[API Proxy] Postgres profile lookup warning:", dbErr);
-      }
-    }
+    // DG-04 / Phase 4B: Synchronously await PostgreSQL PYTHON profile sync (bounded 2.5s timeout)
+    // BEFORE forwarding `livekit/token` or `sessions` so cold-started Python workers immediately
+    // receive calibrated PYTHON baselines and NEVER receive BROWSER profiles.
+    await syncAuthoritativePythonProfileBeforeForward({
+      subPath,
+      userId,
+      primaryBase,
+      backendToken,
+      timeoutMs: 2500,
+      loadPythonProfile: async (uid) =>
+        prisma.driverProfile.findUnique({
+          where: { userId_engineType: { userId: uid, engineType: "PYTHON" } },
+        }),
+    });
   }
 
-  const targetUrl = `${primaryBase}/api/v1/${subPath}${search}`;
+  const upstreamPath = resolveFastApiUpstreamPath(subPath);
+  const targetUrl = `${primaryBase}${upstreamPath}${search}`;
 
   const headers = new Headers();
   const contentType = req.headers.get("content-type");
@@ -127,7 +109,7 @@ async function proxyToFastApi(
       upstreamRes.headers.get("x-render-routing") === "no-server" &&
       primaryBase !== PRODUCTION_FASTAPI_URL
     ) {
-      const fallbackUrl = `${PRODUCTION_FASTAPI_URL}/api/v1/${subPath}${search}`;
+      const fallbackUrl = `${PRODUCTION_FASTAPI_URL}${upstreamPath}${search}`;
       upstreamRes = await executeUpstream(fallbackUrl);
     }
 

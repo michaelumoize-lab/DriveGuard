@@ -105,10 +105,46 @@ def dummy_frame() -> np.ndarray:
     return _make_sharp_frame(width=640, height=480)
 
 
+def _make_calibrated_face_loss_profile(driver_id: str = "driver_fl"):
+    from backend.app.ai.geometry import PoseZone
+    from backend.app.ai.pdbp_calibration import DriverBehaviourProfile, ZoneBaseline
+
+    return DriverBehaviourProfile(
+        driver_id=driver_id,
+        calibration_mode="4_ZONE",
+        center_ear_median=0.28,
+        center_ear_mad_scaled=0.016,
+        blink_duration_median_ms=200.0,
+        blink_duration_mad_ms=25.0,
+        blink_rcr_median=1.0,
+        blink_rcr_mad=0.15,
+        blink_freq_median_per_min=15.0,
+        blink_freq_mad_per_min=4.0,
+        neutral_pitch_deg=0.0,
+        neutral_yaw_deg=0.0,
+        calibration_reliability=0.95,
+        zone_baselines={
+            PoseZone.CENTER: ZoneBaseline(
+                zone=PoseZone.CENTER,
+                ear_median=0.28,
+                ear_mad_scaled=0.016,
+                pitch_median_deg=0.0,
+                yaw_median_deg=0.0,
+                sample_count=60,
+            )
+        },
+    )
+
+
 def test_single_frame_face_drop_does_not_bounce_state(dummy_frame):
     """A transient single-frame landmark drop must not bounce state to MONITORING_UNAVAILABLE."""
     mock_lm = ControllableMockLandmarker(face_detected=True, ear=0.28)
-    engine = SessionAIEngine(landmarker=mock_lm, face_loss_grace_ms=450.0)
+    engine = SessionAIEngine(
+        landmarker=mock_lm,
+        profile=_make_calibrated_face_loss_profile(),
+        face_loss_grace_ms=450.0,
+        is_mirrored=True,
+    )
     try:
         ts = 1000.0
         for _ in range(3):
@@ -143,7 +179,12 @@ def test_single_frame_face_drop_does_not_bounce_state(dummy_frame):
 def test_sustained_face_loss_exceeding_grace_period_transitions_to_unavailable(dummy_frame):
     """Face loss lasting >= face_loss_grace_ms must transition to MONITORING_UNAVAILABLE."""
     mock_lm = ControllableMockLandmarker(face_detected=True, ear=0.28)
-    engine = SessionAIEngine(landmarker=mock_lm, face_loss_grace_ms=450.0)
+    engine = SessionAIEngine(
+        landmarker=mock_lm,
+        profile=_make_calibrated_face_loss_profile(),
+        face_loss_grace_ms=450.0,
+        is_mirrored=True,
+    )
     try:
         ts = 2000.0
         dto = engine.process_frame(dummy_frame, timestamp_ms=ts)
@@ -171,7 +212,12 @@ def test_sustained_face_loss_exceeding_grace_period_transitions_to_unavailable(d
 def test_recovery_from_sustained_face_loss_restores_monitoring(dummy_frame):
     """Recovery after sustained UNAVAILABLE transitions through RECOVERING to ACTIVE."""
     mock_lm = ControllableMockLandmarker(face_detected=True, ear=0.28)
-    engine = SessionAIEngine(landmarker=mock_lm, face_loss_grace_ms=300.0)
+    engine = SessionAIEngine(
+        landmarker=mock_lm,
+        profile=_make_calibrated_face_loss_profile(),
+        face_loss_grace_ms=300.0,
+        is_mirrored=True,
+    )
     try:
         ts = 3000.0
         engine.process_frame(dummy_frame, timestamp_ms=ts)

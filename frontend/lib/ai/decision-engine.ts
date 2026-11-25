@@ -16,9 +16,79 @@ import {
   DecisionResult,
   DrowsinessState,
   ExplainableReason,
+  OperationalState,
   ReasonCode,
   TemporalMetrics,
 } from "./types";
+
+export type SensitivityLevel = "RELAXED" | "STANDARD" | "HIGH";
+
+export interface SensitivityPreset {
+  sustainedClosureThresholdMs: number;
+  extendedClosureThresholdMs: number;
+  perclosAttentionThresholdPct: number;
+  perclosWarningThresholdPct: number;
+  severePerclosThresholdPct: number;
+  prolongedBlinkThresholdMs: number;
+  offRoadDistractionLimitMs: number;
+  recoveryCriticalMs: number;
+  recoveryWarningMs: number;
+  recoveryAttentionMs: number;
+}
+
+/**
+ * Canonical Sensitivity Presets (Decision C / Section 2.4).
+ * Exact 1:1 mirror of backend/app/intelligence/decision_engine.py SENSITIVITY_PRESETS.
+ * Invariant: Sensitivity modifies ONLY DecisionEngine escalation thresholds;
+ * raw physiological features (EAR, MAR, PERCLOS, Head Pose) remain 100% invariant.
+ */
+export const SENSITIVITY_PRESETS: Record<SensitivityLevel, SensitivityPreset> = {
+  HIGH: {
+    sustainedClosureThresholdMs: 1200.0,
+    extendedClosureThresholdMs: 400.0,
+    perclosAttentionThresholdPct: 6.0,
+    perclosWarningThresholdPct: 12.0,
+    severePerclosThresholdPct: 25.0,
+    prolongedBlinkThresholdMs: 420.0,
+    offRoadDistractionLimitMs: 2500.0,
+    recoveryCriticalMs: 2000.0,
+    recoveryWarningMs: 1500.0,
+    recoveryAttentionMs: 1000.0,
+  },
+  STANDARD: {
+    sustainedClosureThresholdMs: 1500.0,
+    extendedClosureThresholdMs: 500.0,
+    perclosAttentionThresholdPct: 8.0,
+    perclosWarningThresholdPct: 15.0,
+    severePerclosThresholdPct: 30.0,
+    prolongedBlinkThresholdMs: 500.0,
+    offRoadDistractionLimitMs: 3500.0,
+    recoveryCriticalMs: 2000.0,
+    recoveryWarningMs: 1500.0,
+    recoveryAttentionMs: 1000.0,
+  },
+  RELAXED: {
+    sustainedClosureThresholdMs: 1800.0,
+    extendedClosureThresholdMs: 600.0,
+    perclosAttentionThresholdPct: 10.0,
+    perclosWarningThresholdPct: 20.0,
+    severePerclosThresholdPct: 35.0,
+    prolongedBlinkThresholdMs: 580.0,
+    offRoadDistractionLimitMs: 4000.0,
+    recoveryCriticalMs: 2000.0,
+    recoveryWarningMs: 1500.0,
+    recoveryAttentionMs: 1000.0,
+  },
+};
+
+export function normalizeSensitivityLevel(level?: string | null): SensitivityLevel {
+  if (!level) return "STANDARD";
+  const upper = String(level).trim().toUpperCase();
+  if (upper === "HIGH" || upper === "STANDARD" || upper === "RELAXED") {
+    return upper;
+  }
+  return "STANDARD";
+}
 
 export interface ConfidenceAssessment {
   overallConfidence: number;
@@ -27,6 +97,8 @@ export interface ConfidenceAssessment {
   yawnViable: boolean;
   isReliable: boolean;
   isOcularAvailable?: boolean | null;
+  isCalibrated?: boolean;
+  isCalibrating?: boolean;
 }
 
 export class DecisionEngine {
@@ -47,6 +119,9 @@ export class DecisionEngine {
     [DrowsinessState.CRITICAL_WARNING]: 3,
     [DrowsinessState.INSUFFICIENT_DATA]: -1,
   };
+
+  public sensitivityLevel: SensitivityLevel;
+  public mirrorSuppressionEnabled: boolean;
 
   public sustainedClosureThresholdMs: number;
   public extendedClosureThresholdMs: number;
@@ -81,6 +156,8 @@ export class DecisionEngine {
   private _ocularElevatedActive: boolean = false;
 
   constructor(options?: {
+    sensitivityLevel?: SensitivityLevel | string | null;
+    mirrorSuppressionEnabled?: boolean;
     sustainedClosureThresholdMs?: number;
     extendedClosureThresholdMs?: number;
     perclosWarningThresholdPct?: number;
@@ -95,20 +172,52 @@ export class DecisionEngine {
     sensorUnreliableGraceMs?: number;
     maxSamplingGapMs?: number;
   }) {
-    this.sustainedClosureThresholdMs = options?.sustainedClosureThresholdMs ?? 1500.0;
-    this.extendedClosureThresholdMs = options?.extendedClosureThresholdMs ?? 500.0;
-    this.perclosWarningThresholdPct = options?.perclosWarningThresholdPct ?? 15.0;
-    this.perclosAttentionThresholdPct = options?.perclosAttentionThresholdPct ?? 8.0;
-    this.severePerclosThresholdPct = options?.severePerclosThresholdPct ?? 30.0;
-    this.prolongedBlinkThresholdMs = options?.prolongedBlinkThresholdMs ?? 500.0;
-    this.offRoadDistractionLimitMs = options?.offRoadDistractionLimitMs ?? 3500.0;
+    this.sensitivityLevel = normalizeSensitivityLevel(options?.sensitivityLevel);
+    this.mirrorSuppressionEnabled = options?.mirrorSuppressionEnabled ?? true;
+    const preset = SENSITIVITY_PRESETS[this.sensitivityLevel];
 
-    this.recoveryCriticalMs = options?.recoveryCriticalMs ?? 2000.0;
-    this.recoveryWarningMs = options?.recoveryWarningMs ?? 1500.0;
-    this.recoveryAttentionMs = options?.recoveryAttentionMs ?? 1000.0;
+    this.sustainedClosureThresholdMs =
+      options?.sustainedClosureThresholdMs ?? preset.sustainedClosureThresholdMs;
+    this.extendedClosureThresholdMs =
+      options?.extendedClosureThresholdMs ?? preset.extendedClosureThresholdMs;
+    this.perclosWarningThresholdPct =
+      options?.perclosWarningThresholdPct ?? preset.perclosWarningThresholdPct;
+    this.perclosAttentionThresholdPct =
+      options?.perclosAttentionThresholdPct ?? preset.perclosAttentionThresholdPct;
+    this.severePerclosThresholdPct =
+      options?.severePerclosThresholdPct ?? preset.severePerclosThresholdPct;
+    this.prolongedBlinkThresholdMs =
+      options?.prolongedBlinkThresholdMs ?? preset.prolongedBlinkThresholdMs;
+    this.offRoadDistractionLimitMs =
+      options?.offRoadDistractionLimitMs ?? preset.offRoadDistractionLimitMs;
+
+    this.recoveryCriticalMs = options?.recoveryCriticalMs ?? preset.recoveryCriticalMs;
+    this.recoveryWarningMs = options?.recoveryWarningMs ?? preset.recoveryWarningMs;
+    this.recoveryAttentionMs = options?.recoveryAttentionMs ?? preset.recoveryAttentionMs;
     this.faceLossGraceMs = options?.faceLossGraceMs ?? 1000.0;
     this.sensorUnreliableGraceMs = options?.sensorUnreliableGraceMs ?? 1000.0;
     this.maxSamplingGapMs = options?.maxSamplingGapMs ?? 250.0;
+  }
+
+  public applySensitivityPreset(level?: SensitivityLevel | string | null): SensitivityLevel {
+    const normalized = normalizeSensitivityLevel(level);
+    const preset = SENSITIVITY_PRESETS[normalized];
+    this.sensitivityLevel = normalized;
+    this.sustainedClosureThresholdMs = preset.sustainedClosureThresholdMs;
+    this.extendedClosureThresholdMs = preset.extendedClosureThresholdMs;
+    this.perclosAttentionThresholdPct = preset.perclosAttentionThresholdPct;
+    this.perclosWarningThresholdPct = preset.perclosWarningThresholdPct;
+    this.severePerclosThresholdPct = preset.severePerclosThresholdPct;
+    this.prolongedBlinkThresholdMs = preset.prolongedBlinkThresholdMs;
+    this.offRoadDistractionLimitMs = preset.offRoadDistractionLimitMs;
+    this.recoveryCriticalMs = preset.recoveryCriticalMs;
+    this.recoveryWarningMs = preset.recoveryWarningMs;
+    this.recoveryAttentionMs = preset.recoveryAttentionMs;
+    return normalized;
+  }
+
+  public setMirrorSuppression(enabled: boolean): void {
+    this.mirrorSuppressionEnabled = Boolean(enabled);
   }
 
   public evaluate(
@@ -125,17 +234,39 @@ export class DecisionEngine {
       yawnViable: true,
       isReliable: true,
       isOcularAvailable: true,
+      isCalibrated: true,
+      isCalibrating: false,
     };
 
     // Monotonic timestamp validation
     if (!Number.isFinite(tsMs) || tsMs < 0.0) {
-      return this._buildResult(this._prevTsMs || 0.0, this.currentState, [], null, false);
+      return this._buildResult(
+        this._prevTsMs || 0.0,
+        this.currentState,
+        [],
+        null,
+        false,
+        false,
+        conf.isCalibrated === false
+          ? OperationalState.CALIBRATION_REQUIRED
+          : OperationalState.MONITORING_ACTIVE
+      );
     }
 
     if (this._prevTsMs !== null) {
       const dtMs = tsMs - this._prevTsMs;
       if (dtMs <= 0.0) {
-        return this._buildResult(this._prevTsMs, this.currentState, [], null, false);
+        return this._buildResult(
+          this._prevTsMs,
+          this.currentState,
+          [],
+          null,
+          false,
+          false,
+          conf.isCalibrated === false
+            ? OperationalState.CALIBRATION_REQUIRED
+            : OperationalState.MONITORING_ACTIVE
+        );
       }
       if (dtMs > this.maxSamplingGapMs) {
         this._recoveryStartTsMs = null;
@@ -145,6 +276,52 @@ export class DecisionEngine {
     }
 
     this._prevTsMs = tsMs;
+
+    // STEP 0: Strict Operational Calibration Gate (Decision 2)
+    // Never emit NORMAL when calibration is in progress or missing/infeasible.
+    if (conf.isCalibrating === true) {
+      this._recoveryStartTsMs = null;
+      this._recoveryCandidateSev = null;
+      this._alertRecoveryStartTsMs = null;
+      const primary: ExplainableReason = {
+        code: ReasonCode.CALIBRATION_IN_PROGRESS,
+        message: "Guided 4-Zone baseline calibration is in progress",
+      };
+      this.currentState = DrowsinessState.INSUFFICIENT_DATA;
+      return this._buildResult(
+        tsMs,
+        DrowsinessState.INSUFFICIENT_DATA,
+        [primary],
+        primary,
+        false,
+        false,
+        OperationalState.CALIBRATING
+      );
+    }
+
+    if (conf.isCalibrated === false) {
+      this._stableFaceStartTsMs = null;
+      this._recoveryStartTsMs = null;
+      this._recoveryCandidateSev = null;
+      this._alertRecoveryStartTsMs = null;
+      this.alertActive = false;
+      this._unresolvedAlertState = null;
+      this._historicalReason = null;
+      const primary: ExplainableReason = {
+        code: ReasonCode.CALIBRATION_REQUIRED,
+        message: "Personalised 4-Zone calibration is required before drowsiness monitoring activates",
+      };
+      this.currentState = DrowsinessState.INSUFFICIENT_DATA;
+      return this._buildResult(
+        tsMs,
+        DrowsinessState.INSUFFICIENT_DATA,
+        [primary],
+        primary,
+        false,
+        false,
+        OperationalState.CALIBRATION_REQUIRED
+      );
+    }
 
     // STEP 1: Sensor & Face Viability Evaluation
     const isFaceLost = !metrics.hasFace;
@@ -182,7 +359,15 @@ export class DecisionEngine {
       };
       reasons.push(primary);
       this.currentState = candidateState;
-      return this._buildResult(tsMs, candidateState, reasons, primary, false);
+      return this._buildResult(
+        tsMs,
+        candidateState,
+        reasons,
+        primary,
+        false,
+        false,
+        OperationalState.DEGRADED
+      );
     }
 
     if (isFaceLost || isSensorUnreliable) {
@@ -200,7 +385,15 @@ export class DecisionEngine {
         metricValue: dur,
         threshold: limit,
       };
-      return this._buildResult(tsMs, this.currentState, [primary], primary, false);
+      return this._buildResult(
+        tsMs,
+        this.currentState,
+        [primary],
+        primary,
+        false,
+        false,
+        OperationalState.DEGRADED
+      );
     }
 
     if (this._stableFaceStartTsMs === null) {
@@ -280,9 +473,12 @@ export class DecisionEngine {
         });
       }
 
+      const effectiveMirrorCheck = Boolean(
+        this.mirrorSuppressionEnabled && metrics.isMirrorCheckContext
+      );
       if (
         metrics.activeOffRoadDwellMs >= this.offRoadDistractionLimitMs &&
-        !metrics.isMirrorCheckContext
+        !effectiveMirrorCheck
       ) {
         candidateState = DrowsinessState.DROWSINESS_WARNING;
         reasons.push({
@@ -340,7 +536,7 @@ export class DecisionEngine {
         });
       }
 
-      if (metrics.isMirrorCheckContext) {
+      if (this.mirrorSuppressionEnabled && metrics.isMirrorCheckContext) {
         reasons.push({
           code: ReasonCode.MIRROR_CHECK_CONTEXT,
           message: "Normal driving mirror check",
@@ -536,7 +732,8 @@ export class DecisionEngine {
       reasons,
       primaryReason,
       isAlertRecovering,
-      metrics.isMirrorCheckContext
+      Boolean(this.mirrorSuppressionEnabled && metrics.isMirrorCheckContext),
+      OperationalState.MONITORING_ACTIVE
     );
   }
 
@@ -546,14 +743,16 @@ export class DecisionEngine {
     reasons: ExplainableReason[],
     primaryReason: ExplainableReason | null,
     isAlertRecovering: boolean,
-    isMirrorCheckContext: boolean = false
+    isMirrorCheckContext: boolean = false,
+    operationalState: OperationalState = OperationalState.MONITORING_ACTIVE
   ): DecisionResult {
     const sev = DecisionEngine.SEVERITY_MAP[state];
     const codeStr = primaryReason ? primaryReason.code : "NONE";
-    const summaryText = `[${state} (Sev ${sev}) | ${codeStr}]`;
+    const summaryText = `[${operationalState} | ${state} (Sev ${sev}) | ${codeStr}]`;
 
     return {
       timestampMs,
+      operationalState,
       state,
       severity: sev,
       reasons,

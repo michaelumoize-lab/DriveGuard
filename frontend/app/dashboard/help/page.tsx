@@ -68,7 +68,7 @@ export default function HelpPage() {
             <ul className="list-disc pl-5 space-y-1 text-xs">
               <li><strong>MediaPipe Tasks 478 3D Mesh:</strong> Real-time 6DoF head pose estimation and iris tracking.</li>
               <li><strong>4-Zone Pose-Conditioned Baselines:</strong> CENTER, LEFT MIRROR, RIGHT MIRROR, DASHBOARD.</li>
-              <li><strong>Confidence-Gated Cascade:</strong> Fast geometric analysis with on-demand MobileNetV3-Small ONNX verification.</li>
+              <li><strong>Dual-Engine Geometric-Authoritative AI:</strong> Independent Browser WASM and Local/Remote Python MediaPipe + PDBP pipelines (passive neural shadow observer disabled in production).</li>
               <li><strong>Sub-Frame Blink Kinematics:</strong> Duration, Reopening Velocity (RCR), and rolling 60s PERCLOS.</li>
               <li><strong>Explainable Hysteresis FSM:</strong> NORMAL, WARNING, CRITICAL states with human-readable reason codes.</li>
             </ul>
@@ -96,10 +96,10 @@ export default function HelpPage() {
             DriveGuard&apos;s guided calibration captures your unique baseline across 4 zones in just ~15 seconds:
           </p>
           <ol className="list-decimal pl-5 space-y-1 text-xs">
-            <li><strong>CENTER (4.0 s):</strong> Looking straight ahead at the roadway. Establishes your primary anchor baseline ($B_0$) and normal median EAR.</li>
-            <li><strong>LEFT MIRROR (3.0 s):</strong> Glancing toward your driver-side mirror (Yaw $\approx +24^\circ$).</li>
-            <li><strong>RIGHT MIRROR (3.0 s):</strong> Glancing toward your passenger-side mirror (Yaw $\approx -24^\circ$).</li>
-            <li><strong>DASHBOARD (3.0 s):</strong> Glancing down toward the instrument cluster (Pitch $\approx -14^\circ$).</li>
+            <li><strong>CENTER (4.0 s):</strong> Looking straight ahead at the roadway. Establishes your primary anchor baseline (B₀) and normal median EAR.</li>
+            <li><strong>LEFT MIRROR (3.0 s):</strong> Glancing toward your driver-side mirror (Yaw ≈ +24°).</li>
+            <li><strong>RIGHT MIRROR (3.0 s):</strong> Glancing toward your passenger-side mirror (Yaw ≈ -24°).</li>
+            <li><strong>DASHBOARD (3.0 s):</strong> Glancing down toward the instrument cluster (Pitch ≈ -14°).</li>
           </ol>
           <p className="text-xs">
             The calibration wizard uses real-time <strong>target-acquisition spatial gating</strong>: samples are only gathered
@@ -124,7 +124,7 @@ export default function HelpPage() {
               <strong className="text-foreground">Mounting &amp; Framing Rule:</strong> Look naturally forward down the road, NOT directly at the phone lens. The camera should capture your head with a face-height ratio between 18% and 50% of the frame.
             </div>
             <div>
-              <strong className="text-foreground">Optical Quality Monitoring:</strong> The camera feed continuously samples mean luminance ($40 - 210$) to flag dark cabins or glare, and computes the Laplacian edge variance ($\ge 75$) to detect lens defocus or motion blur.
+              <strong className="text-foreground">Optical Quality Monitoring:</strong> The camera feed continuously samples mean luminance (40–210) to flag dark cabins or glare, and computes the Laplacian edge variance (≥ 75) to detect lens defocus or motion blur.
             </div>
             <div>
               <strong className="text-foreground">Screen Wake Lock:</strong> While monitoring is active, the browser automatically acquires a Screen Wake Lock to prevent your phone screen from dimming or locking while driving.
@@ -146,9 +146,9 @@ export default function HelpPage() {
           </p>
           <ol className="list-decimal pl-5 space-y-1 text-xs">
             <li><strong>Camera Feed:</strong> Optical video stream is active, negotiated, and not severely degraded.</li>
-            <li><strong>MediaPipe WASM:</strong> 478-landmark 3D face mesh perception engine is loaded in memory and primed.</li>
-            <li><strong>MobileNetV3 ONNX Cascade:</strong> Neural cascade verifier is verified in runtime memory.</li>
-            <li><strong>Backend API &amp; Neon DB:</strong> Fast HTTP health ping confirms database connectivity for persistent telemetry logs.</li>
+            <li><strong>MediaPipe WASM / Vision Runtime:</strong> 478-landmark 3D face mesh perception engine is loaded in memory and primed.</li>
+            <li><strong>Geometric &amp; Temporal AI Pipeline:</strong> Calibrated 4-zone PDBP baselines, head pose estimator, and temporal PERCLOS/blink kinematics are verified in runtime memory.</li>
+            <li><strong>Persistence &amp; Backend Sync:</strong> Checks API/database connectivity; in Browser AI mode, sessions remain operational offline via the local <code className="font-mono">OFFLINE_QUEUED</code> store and sync automatically once reconnected.</li>
             <li><strong>Audio Synthesizer:</strong> Web Audio context is initialized for acoustic warning sweeps.</li>
           </ol>
           <p className="text-xs">
@@ -166,14 +166,17 @@ export default function HelpPage() {
       content: (
         <div className="space-y-3 text-sm text-muted-foreground leading-relaxed">
           <p>
-            DriveGuard includes three dedicated academic portals built specifically for external examiner evaluations and capstone defenses:
+            DriveGuard includes dedicated academic and engineering portals built for external examiner evaluations and capstone defenses—kept strictly separate from live production monitoring:
           </p>
           <ul className="list-disc pl-5 space-y-1.5 text-xs">
             <li>
-              <strong>Ablation Benchmarks (`/dashboard/benchmarks`):</strong> Displays quantitative evaluation tables for RQ1/RQ2/RQ3, false alarm reductions, and an interactive sensitivity slider with one-click LaTeX table exports for your thesis.
+              <strong>Ablation Benchmarks (`/dashboard/benchmarks`):</strong> Displays offline historical quantitative evaluation tables for RQ1/RQ2/RQ3, false alarm reductions, and an interactive sensitivity slider with one-click LaTeX table exports for your thesis.
             </li>
             <li>
-              <strong>Hardware Co-Processor (`/dashboard/hardware`):</strong> Shows live 8-byte packed binary UART frames, DRV2605L haptic actuator tests, SSD1306 OLED HUD emulator, and INA219 real-time power dissipation (V_bus, mA, mW).
+              <strong>Synthetic Testbench (`/dashboard/synthetic-testbench`):</strong> Isolated in-memory fault-injection sandbox for previewing mirror glance, sluggish reopen, glare defocus, and watchdog scenarios without touching live sessions or the database.
+            </li>
+            <li>
+              <strong>Simulated Hardware Co-Processor (`/dashboard/hardware`):</strong> Browser-simulated protocol console demonstrating 8-byte packed binary UART frames, DRV2605L haptic actuator pulses, SSD1306 OLED HUD emulation, and INA219 power profiles (no physical MCU required).
             </li>
             <li>
               <strong>Defense Companion (`/dashboard/defense-guide`):</strong> Provides detailed academic answers to the 5 classic examiner questions (why not 3D CNNs, handling narrow eye shapes, dataset leakage prevention).
@@ -185,31 +188,31 @@ export default function HelpPage() {
     {
       id: "ai-cascade-modes",
       category: "ai-cascade",
-      title: "Confidence-Gated Cascade (Exp A, B, C)",
-      summary: "Understand the three experimental cascade modes evaluated in the research study.",
-      badge: "Inference Modes",
+      title: "Offline Research Cascade Modes (Exp A, B, C)",
+      summary: "Understand the three experimental ablation modes evaluated in the thesis research study.",
+      badge: "Research Ablations",
       content: (
         <div className="space-y-3 text-sm text-muted-foreground leading-relaxed">
           <p>
-            DriveGuard implements three distinct arbitration modes to balance CPU power efficiency and detection accuracy:
+            In our offline ablation study, we evaluated three experimental arbitration modes to measure CPU power efficiency versus detection accuracy. <strong>Live production monitoring uses Geometric Authoritative mode</strong> (4-zone PDBP + temporal kinematics, with passive shadow disabled):
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
-            <div className="p-3 rounded-lg border border-border bg-card">
-              <div className="font-semibold text-foreground text-xs">Exp A: Geometric Only</div>
-              <p className="text-[11px] text-muted-foreground mt-1">
-                Fast first stage using MediaPipe landmarks and EAR calculation. Lowest CPU footprint (~2.5ms).
-              </p>
-            </div>
-            <div className="p-3 rounded-lg border border-border bg-card">
-              <div className="font-semibold text-foreground text-xs">Exp B: CNN Always</div>
-              <p className="text-[11px] text-muted-foreground mt-1">
-                Runs MobileNetV3-Small ONNX on every frame. High accuracy under sunglasses/shadows, higher compute cost.
-              </p>
-            </div>
             <div className="p-3 rounded-lg border border-primary/30 bg-primary/5">
-              <div className="font-semibold text-primary text-xs">Exp C: Adaptive Cascade</div>
+              <div className="font-semibold text-primary text-xs">Exp A: Geometric Only (Production Basis)</div>
               <p className="text-[11px] text-muted-foreground mt-1">
-                Runs geometric analysis first; invokes MobileNetV3 only on low confidence or borderline closure. Saves ~67% CPU power!
+                Deterministic MediaPipe 478-landmark 3D geometry, 4-zone PDBP, and temporal kinematics. Lowest CPU footprint (~2.5 ms).
+              </p>
+            </div>
+            <div className="p-3 rounded-lg border border-border bg-card">
+              <div className="font-semibold text-foreground text-xs">Exp B: CNN Always (Offline Research)</div>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Runs MobileNetV3-Small on every frame during offline dataset evaluation. Higher compute cost on edge CPUs.
+              </p>
+            </div>
+            <div className="p-3 rounded-lg border border-border bg-card">
+              <div className="font-semibold text-foreground text-xs">Exp C: Adaptive Cascade (Offline Research)</div>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Evaluates geometric analysis first and gates MobileNetV3 on ambiguous frames, reducing neural invocations by 61.1% in offline benchmarks.
               </p>
             </div>
           </div>
@@ -250,16 +253,22 @@ export default function HelpPage() {
       content: (
         <div className="space-y-3 text-sm text-muted-foreground leading-relaxed">
           <p>
-            DriveGuard supports both <strong>Local</strong> and <strong>Cloud</strong> inference backends:
+            DriveGuard supports independent <strong>Browser AI (WASM)</strong>, <strong>Local Python AI (OpenCV/MediaPipe)</strong>, and <strong>Remote Cloud Python</strong> modes:
           </p>
           <ul className="list-disc pl-5 space-y-1.5 text-xs">
             <li>
-              <strong>Local Engine (Recommended for Low-Latency Evaluation):</strong> Start the backend locally with:
-              <pre className="mt-1 p-2 rounded bg-muted font-mono text-xs">python run.py --port 8000</pre>
-              Select <strong>Local</strong> in the Live Monitor top toolbar.
+              <strong>Browser AI (Default, Zero-Backend Required):</strong> Runs MediaPipe Tasks WASM directly in your browser—works even completely offline without starting Python.
             </li>
             <li>
-              <strong>Cloud Engine (Render + LiveKit Cloud SFU):</strong> Render free-tier instances spin down after 15 minutes of inactivity. When connecting for the first time, allow 30–60 seconds for the cloud worker to wake up, or use the built-in Connection Recovery Assistant.
+              <strong>Local Python Engine (Recommended for Native OpenCV Evaluation):</strong> Start the FastAPI engine locally from the repository root with local camera access enabled:
+              <pre className="mt-1 p-2 rounded bg-muted font-mono text-xs overflow-x-auto">LOCAL_CAMERA_API_ENABLED=true python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000</pre>
+              <span className="block mt-1 text-[11px]">
+                On Windows PowerShell: <code className="font-mono">$env:LOCAL_CAMERA_API_ENABLED=&quot;true&quot;; python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000</code>
+              </span>
+              Then select <strong>Python AI (Local)</strong> in the Live Monitor engine selector.
+            </li>
+            <li>
+              <strong>Cloud Engine (Render + LiveKit Cloud SFU):</strong> Render free-tier instances spin down after 15 minutes of inactivity. When connecting remotely for the first time, allow 30–60 seconds for the cloud worker to wake up, or stay on Browser AI for instant local monitoring.
             </li>
           </ul>
         </div>

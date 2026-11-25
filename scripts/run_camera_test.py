@@ -1014,14 +1014,15 @@ def run_benchmark(
         if latest_features.blink.recent_blink_rcr is not None:
             print(f"Recent Blink Kinematics: Duration={latest_features.blink.recent_blink_duration_ms:.1f}ms, RCR={latest_features.blink.recent_blink_rcr:.2f}")
         print(f"Head Pose Orientation : Zone={latest_features.head_pose.zone.value} (Pitch={latest_features.head_pose.pitch_deg:+.1f}\xb0, Yaw={latest_features.head_pose.yaw_deg:+.1f}\xb0, Roll={latest_features.head_pose.roll_deg:+.1f}\xb0)")
-    if "shadow_worker" in locals() and shadow_worker is not None and shadow_worker._total_inferences_count > 0:
+    sw = getattr(monitoring_service, "shadow_worker", None)
+    if sw is not None and sw._total_inferences_count > 0:
         print("-" * 60)
         print("      EYE CNN SHADOW OBSERVER (PHASE B1)")
         print("-" * 60)
-        print(f"Shadow Worker Status  : {'AVAILABLE' if shadow_worker.is_available else 'UNAVAILABLE'}")
-        print(f"Total Inferences Run  : {shadow_worker._total_inferences_count}")
-        print(f"Dropped Frames        : {shadow_worker._dropped_jobs_count}")
-        print(f"Inference Errors      : {shadow_worker._error_count}")
+        print(f"Shadow Worker Status  : {'AVAILABLE' if sw.is_available else 'UNAVAILABLE'}")
+        print(f"Total Inferences Run  : {sw._total_inferences_count}")
+        print(f"Dropped Frames        : {sw._dropped_jobs_count}")
+        print(f"Inference Errors      : {sw._error_count}")
     print("=" * 60 + "\n")
 
     if total_frames_displayed == 0:

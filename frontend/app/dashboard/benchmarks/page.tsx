@@ -26,6 +26,7 @@ import {
   Clock,
   ArrowRight,
   Sliders,
+  Info,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -113,6 +114,14 @@ Experiment C (DriveGuard Cascade),537,0,55.4,67.2,100.0,80.4,38.9% CNN (2.23 ms)
             Export Benchmark CSV
           </Button>
         </div>
+      </div>
+
+      {/* Research vs Production Distinction Banner */}
+      <div className="rounded-xl border border-sky-500/30 bg-sky-500/5 p-3.5 flex items-start gap-3">
+        <Info className="size-4 text-sky-500 shrink-0 mt-0.5" />
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          <strong className="text-foreground">Offline Historical Research Benchmarks:</strong> The ablation metrics below document offline thesis experiments (including the MobileNetV3-Small MRL ocular cascade study). Live production monitoring in DriveGuard runs strictly <span className="font-mono text-foreground">GEOMETRIC_AUTHORITATIVE</span> (MediaPipe 478-landmark 3D geometry + 4-Zone PDBP + temporal kinematics) with the diagnostic neural shadow observer disabled by default.
+        </p>
       </div>
 
       {/* Highlights Strip */}
@@ -269,7 +278,7 @@ Experiment C (DriveGuard Cascade),537,0,55.4,67.2,100.0,80.4,38.9% CNN (2.23 ms)
               <div className="flex items-center gap-2">
                 <Sliders className="size-4 text-primary" />
                 <CardTitle className="text-sm font-bold text-foreground">
-                  Interactive Sensitivity Parameter Tuning ($k \\in [2.0, 3.0]$)
+                  Interactive Sensitivity Parameter Tuning (k ∈ [2.0, 3.0])
                 </CardTitle>
               </div>
               <CardDescription className="text-xs">
@@ -279,7 +288,7 @@ Experiment C (DriveGuard Cascade),537,0,55.4,67.2,100.0,80.4,38.9% CNN (2.23 ms)
             <CardContent className="p-4 sm:p-5 space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 font-mono">
                 <div className="flex items-center gap-3">
-                  <span className="text-xs text-muted-foreground">Sensitivity Coefficient ($k$):</span>
+                  <span className="text-xs text-muted-foreground">Sensitivity Coefficient (k):</span>
                   <span className="text-base font-bold text-primary">{sensitivityK.toFixed(1)}</span>
                 </div>
                 <input

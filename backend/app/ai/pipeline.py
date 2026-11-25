@@ -48,9 +48,11 @@ from backend.app.schemas.telemetry import (
     AlertStateEnum,
     CascadeStatusDTO,
     ConventionalFixedComparisonDTO,
+    EngineTypeEnum,
     EyeMetricsDTO,
     FrameTelemetryDTO,
     HeadPoseDTO,
+    OperationalStateEnum,
     PoseZoneEnum,
 )
 from backend.app.services.frame_adapters import (
@@ -116,7 +118,7 @@ class SessionAIEngine:
         landmarker: Optional[DriveGuardFaceLandmarker] = None,
         face_loss_grace_ms: float = 450.0,
         owner_id: Optional[str] = None,
-        is_mirrored: bool = True,
+        is_mirrored: bool = False,
         store: Optional[ProfileStore] = None,
     ) -> None:
         self.session_id = session_id
@@ -738,11 +740,21 @@ class SessionAIEngine:
         self._has_seen_face = True
 
         # 6. Project authoritative DrowsinessEngine & AlertStateManager outputs to FrameTelemetryDTO
+        op_state = OperationalStateEnum(assessment.operational_state.value)
+        is_operational_gated = op_state in (
+            OperationalStateEnum.CALIBRATION_REQUIRED,
+            OperationalStateEnum.CALIBRATING,
+        )
         wire_state, risk_score = _map_authoritative_state_to_wire(
             alert_state=frame_res.alert_state,
             drowsiness_state=assessment.state,
             alert_active=assessment.alert_active,
         )
+        if is_operational_gated:
+            wire_state = AlertStateEnum.MONITORING_UNAVAILABLE
+            risk_score = 0.0
+            self._monitoring_status = "MONITORING_UNAVAILABLE"
+
         self._last_valid_risk_score = risk_score
         self._last_valid_alert_state = wire_state
 
@@ -779,9 +791,11 @@ class SessionAIEngine:
             tracking_mode=getattr(self.landmarker, "active_implementation", "MEDIAPIPE_TASKS"),
             state=wire_state,
             drowsiness_state=assessment.state.value,
-            alert_state=frame_res.alert_state.value,
+            alert_state=None if is_operational_gated else frame_res.alert_state.value,
             is_recovering=frame_res.is_recovering,
             authoritative_engine="DrowsinessEngine",
+            operational_state=op_state,
+            engine_type=EngineTypeEnum.PYTHON,
             monitoring_status=self._monitoring_status,
             risk_score=round(risk_score, 3),
             pose_zone=pose_zone_dto,
@@ -803,6 +817,7 @@ class SessionAIEngine:
                 blink_duration_ms=round(float(completed_blink.duration_ms), 1) if completed_blink else None,
                 blink_rcr=round(float(completed_blink.rcr), 2) if completed_blink else None,
                 blink_rate_per_min=round(float(assessment.temporal_metrics.blink_count_60s), 1),
+                total_blink_count=int(features.blink.total_blink_count),
                 mar_yawn=round(max(0.0, float(features.mar.mar)), 3),
                 blink_state=features.blink.state.value,
                 blink_classification=(
@@ -824,12 +839,12 @@ class SessionAIEngine:
                 geom_reliability=round(max(0.0, min(1.0, float(assessment.confidence.overall_confidence))), 3),
                 cnn_open_prob=None,
                 cnn_reliability=None,
-                arbitration_winner="AUTHORITATIVE_ENGINE",
+                arbitration_winner="GEOMETRIC_AUTHORITATIVE",
                 disagreement_flag=False,
                 cnn_latency_ms=0.0,
-                cnn_execution_mode="UNAVAILABLE",
+                cnn_execution_mode="SHADOW_DISABLED",
                 verifier_invoked=False,
-                gate_trigger_reason="AUTHORITATIVE_DROWSINESS_ENGINE",
+                gate_trigger_reason="GEOMETRIC_AUTHORITATIVE_PIPELINE",
                 onnx_inference_executed=False,
                 cnn_inference_duration_ms=None,
             ),
@@ -955,8 +970,23 @@ class SessionAIEngine:
         tracking_mode: Optional[str] = None,
         drowsiness_state: Optional[str] = None,
         alert_state: Optional[str] = None,
+        operational_state: Optional[OperationalStateEnum] = None,
     ) -> FrameTelemetryDTO:
         """Construct fallback telemetry when face tracking or video decoding drops."""
+        resolved_op_state = operational_state
+        if resolved_op_state is None:
+            if reason.startswith("LANDMARKER_EXCEPTION"):
+                resolved_op_state = OperationalStateEnum.ERROR
+            elif self.is_calibrating:
+                resolved_op_state = OperationalStateEnum.CALIBRATING
+            elif not self.feature_extractor.is_profile_feasible and reason not in (
+                "IMAGE_DECODE_FAILED",
+                "SESSION_CLOSED",
+            ):
+                resolved_op_state = OperationalStateEnum.CALIBRATION_REQUIRED
+            else:
+                resolved_op_state = OperationalStateEnum.DEGRADED
+
         return FrameTelemetryDTO(
             session_id=self.session_id,
             driver_id=self.driver_id,
@@ -973,6 +1003,8 @@ class SessionAIEngine:
             alert_state=alert_state or self.alert_manager.current_state.value,
             is_recovering=self.alert_manager.is_recovering,
             authoritative_engine="DrowsinessEngine",
+            operational_state=resolved_op_state,
+            engine_type=EngineTypeEnum.PYTHON,
             monitoring_status=monitoring_status,
             risk_score=risk_score,
             pose_zone=PoseZoneEnum.UNKNOWN,
@@ -990,6 +1022,13 @@ class SessionAIEngine:
                 blink_duration_ms=None,
                 blink_rcr=None,
                 blink_rate_per_min=0.0,
+                total_blink_count=int(
+                    getattr(
+                        self.feature_extractor.blink_detector,
+                        "total_blink_count",
+                        getattr(self.feature_extractor.blink_detector, "_total_blink_count", 0),
+                    )
+                ),
                 mar_yawn=0.0,
                 blink_state="UNCERTAIN_GAP",
                 blink_classification="UNCERTAIN",
@@ -1005,10 +1044,10 @@ class SessionAIEngine:
                 geom_reliability=0.0,
                 cnn_open_prob=None,
                 cnn_reliability=None,
-                arbitration_winner="NONE",
+                arbitration_winner="GEOMETRIC_AUTHORITATIVE",
                 disagreement_flag=False,
                 cnn_latency_ms=0.0,
-                cnn_execution_mode="UNAVAILABLE",
+                cnn_execution_mode="SHADOW_DISABLED",
                 verifier_invoked=False,
                 gate_trigger_reason=reason,
                 onnx_inference_executed=False,
