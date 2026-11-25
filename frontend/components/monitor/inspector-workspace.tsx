@@ -13,6 +13,7 @@ import {
   Sparkles,
   Volume2,
   Activity,
+  Download,
   FlaskConical,
   LayoutGrid,
   ArrowRight,
@@ -74,6 +75,8 @@ export interface InspectorWorkspaceProps {
   viewOrientation: "portrait" | "landscape";
   onOrientationChange: (orientation: "portrait" | "landscape") => void;
   hasActiveSession: boolean;
+  browserRecordedFrames?: number;
+  onExportBrowserTelemetry?: () => void;
 }
 
 export function InspectorWorkspace({
@@ -105,6 +108,8 @@ export function InspectorWorkspace({
   viewOrientation,
   onOrientationChange,
   hasActiveSession,
+  browserRecordedFrames = 0,
+  onExportBrowserTelemetry,
 }: InspectorWorkspaceProps) {
   const [pendingSwitch, setPendingSwitch] = useState<
     | { type: "runtime"; target: "browser" | "python-local" | "remote" }
@@ -246,6 +251,36 @@ export function InspectorWorkspace({
             zone={telemetry?.comparison?.personalised_zone ?? telemetry?.pose_zone ?? "CENTER"}
             hasTelemetry={Boolean(telemetry)}
           />
+
+          {runtimeMode === "browser" && onExportBrowserTelemetry && (
+            <Card className="border-border/80 bg-muted/20">
+              <CardContent className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                <div className="space-y-0.5">
+                  <div className="font-semibold text-foreground flex items-center gap-1.5">
+                    <Download className="size-3.5 text-primary shrink-0" aria-hidden="true" />
+                    <span>Browser AI Telemetry Recording</span>
+                    <Badge variant="outline" className="font-mono text-[10px]">
+                      {browserRecordedFrames.toLocaleString()} frames
+                    </Badge>
+                  </div>
+                  <p className="text-muted-foreground">
+                    Export captured Browser AI frames as canonical JSONL to audit with{" "}
+                    <code className="font-mono text-[11px]">npm run analyze:frontend</code>.
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={onExportBrowserTelemetry}
+                  disabled={browserRecordedFrames === 0}
+                  className="h-8 text-xs gap-1.5 shrink-0"
+                >
+                  <Download className="size-3.5" aria-hidden="true" />
+                  Export .jsonl
+                </Button>
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
         {/* Tab 3: Testbench (Live PDBP Comparison, Audio Tier Test & Link to Isolated Synthetic Testbench) */}

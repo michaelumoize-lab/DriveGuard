@@ -80,6 +80,50 @@ export interface DetectionEngineConfig {
   onError?: (err: Error) => void;
 }
 
+export interface BrowserTelemetryRecordingRow {
+  frame_id: number;
+  timestamp_ms: number;
+  face_detected: boolean;
+  face_status: string;
+  presence_confidence: number;
+  pose_zone: string;
+  pitch_deg: number;
+  yaw_deg: number;
+  roll_deg: number;
+  rel_pitch_deg: number;
+  rel_yaw_deg: number;
+  rel_roll_deg: number;
+  ear_left: number;
+  ear_right: number;
+  ear_weighted: number;
+  ear_compensated: number;
+  ear_closure_threshold: number;
+  is_eye_closed: boolean;
+  is_geometric_valid: boolean;
+  mar: number;
+  is_yawning: boolean;
+  total_blinks: number;
+  total_yawns: number;
+  perclos_pct: number;
+  perclos_is_reliable: boolean;
+  perclos_coverage_pct: number;
+  drowsiness_state: string;
+  drowsiness_severity: number;
+  primary_reason: string;
+  alert_state: string;
+  alert_severity: number;
+  is_recovering: boolean;
+  luminance: number | null;
+  blur_variance: number | null;
+  optical_status: string;
+  inference_latency_ms: number;
+  calibrated_profile_id: string | null;
+  operational_state: string;
+  engine_type: "BROWSER";
+}
+
+const MAX_RECORDED_FRAMES = 18000;
+
 export type EngineStatus = "idle" | "initializing" | "running" | "paused" | "stopped" | "error";
 
 export class BrowserDetectionEngine {
@@ -112,6 +156,9 @@ export class BrowserDetectionEngine {
   private _lastLatencyMs: number = 0;
   private _droppedFrames: number = 0;
   private _totalFrames: number = 0;
+
+  // Bounded in-memory telemetry recorder (matches Python telemetry.jsonl schema)
+  private _recordedFrames: BrowserTelemetryRecordingRow[] = [];
 
   // Last telemetry snapshot
   private _latestTelemetry: DetectionTelemetry | null = null;
@@ -213,6 +260,22 @@ export class BrowserDetectionEngine {
     return this._offlineQueue;
   }
 
+  public getRecordedFrameCount(): number {
+    return this._recordedFrames.length;
+  }
+
+  public getRecordedFrames(): readonly BrowserTelemetryRecordingRow[] {
+    return this._recordedFrames;
+  }
+
+  public exportRecordedTelemetryJsonl(): string {
+    return this._recordedFrames.map((row) => JSON.stringify(row)).join("\n") + (this._recordedFrames.length ? "\n" : "");
+  }
+
+  public clearRecordedFrames(): void {
+    this._recordedFrames = [];
+  }
+
   public setSessionCode(code: string | null, clientSessionId?: string | null): void {
     this._sessionCode = code;
     if (clientSessionId !== undefined) {
@@ -296,6 +359,7 @@ export class BrowserDetectionEngine {
       this._sessionStartWallMs = Date.now();
     }
     this._fpsCounter = 0;
+    this._recordedFrames = [];
     this._resetSessionStats();
     this._scheduleNextLoop();
   }
@@ -591,6 +655,66 @@ export class BrowserDetectionEngine {
     };
 
     this._latestTelemetry = telemetry;
+
+    // Append canonical JSONL telemetry record (ring-buffered at MAX_RECORDED_FRAMES)
+    const primaryReasonFormatted = decision.primaryReason
+      ? `[${decision.primaryReason.code}] ${decision.primaryReason.message}`
+      : `[${telemetry.primaryReason}]`;
+    const alertStateEnum = this._alertStateManager.currentState;
+    const opticalStatusLabel = !effectiveQuality
+      ? "UNKNOWN"
+      : effectiveQuality.blurCondition === "BLURRY"
+        ? "BLURRY"
+        : effectiveQuality.lightingCondition === "UNDEREXPOSED"
+          ? "LOW_LIGHT"
+          : effectiveQuality.lightingCondition === "OVEREXPOSED"
+            ? "OVEREXPOSED"
+            : "EXCELLENT";
+
+    this._recordedFrames.push({
+      frame_id: this._frameId,
+      timestamp_ms: timestampMs,
+      face_detected: hasFace,
+      face_status: hasFace ? "TRACKING" : "LOST",
+      presence_confidence: Number(confidence.overallConfidence.toFixed(3)),
+      pose_zone: String(features.headPose.zone),
+      pitch_deg: Number(features.headPose.pitchDeg.toFixed(3)),
+      yaw_deg: Number(features.headPose.yawDeg.toFixed(3)),
+      roll_deg: Number(features.headPose.rollDeg.toFixed(3)),
+      rel_pitch_deg: Number(features.headPose.relPitchDeg.toFixed(3)),
+      rel_yaw_deg: Number(features.headPose.relYawDeg.toFixed(3)),
+      rel_roll_deg: Number(features.headPose.relRollDeg.toFixed(3)),
+      ear_left: Number(features.ear.leftEar.toFixed(5)),
+      ear_right: Number(features.ear.rightEar.toFixed(5)),
+      ear_weighted: Number(features.ear.weightedEar.toFixed(5)),
+      ear_compensated: Number(features.ear.compensatedEar.toFixed(5)),
+      ear_closure_threshold: Number(features.ear.closureThreshold.toFixed(5)),
+      is_eye_closed: Boolean(features.blink.isEyeClosed),
+      is_geometric_valid: Boolean(features.ear.isGeometricValid ?? features.ear.isValid),
+      mar: Number(features.mar.mar.toFixed(5)),
+      is_yawning: Boolean(features.mar.isAuthenticYawn || features.mar.isYawnInProgress),
+      total_blinks: features.blink.totalBlinkCount,
+      total_yawns: features.mar.totalYawnCount,
+      perclos_pct: Number(features.perclos.perclosPct.toFixed(3)),
+      perclos_is_reliable: Boolean(features.perclos.isReliable),
+      perclos_coverage_pct: Number(features.perclos.coveragePct.toFixed(2)),
+      drowsiness_state: String(decision.state),
+      drowsiness_severity: decision.severity,
+      primary_reason: primaryReasonFormatted,
+      alert_state: String(alertStateEnum),
+      alert_severity: this._alertStateManager.severity,
+      is_recovering: Boolean(decision.isAlertRecovering),
+      luminance: effectiveQuality ? Number(effectiveQuality.meanLuminance.toFixed(2)) : null,
+      blur_variance: effectiveQuality ? Number(effectiveQuality.blurVarianceScore.toFixed(2)) : null,
+      optical_status: opticalStatusLabel,
+      inference_latency_ms: Number(inferenceLatencyMs.toFixed(2)),
+      calibrated_profile_id: isCalibrated ? (this._config.driverId ?? "driver_default") : null,
+      operational_state: String(operationalState),
+      engine_type: "BROWSER",
+    });
+    if (this._recordedFrames.length > MAX_RECORDED_FRAMES) {
+      this._recordedFrames.shift();
+    }
 
     // Update session statistics accurately
     this._sessionStats.totalFrames++;

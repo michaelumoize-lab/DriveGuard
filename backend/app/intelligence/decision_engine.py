@@ -802,13 +802,19 @@ class DecisionEngine:
             self._last_elevated_reason = None
 
         primary_reason = reasons[0] if reasons else None
+        nominal_or_context_codes = (
+            ReasonCode.ALERT_NORMAL,
+            ReasonCode.MIRROR_CHECK_CONTEXT,
+            ReasonCode.DASHBOARD_CHECK_CONTEXT,
+        )
         if (
             self.SEVERITY_MAP[self.current_state] > candidate_sev
-            and (primary_reason is None or primary_reason.code == ReasonCode.ALERT_NORMAL)
+            and (primary_reason is None or primary_reason.code in nominal_or_context_codes)
         ):
-            # During hysteresis cooldown hold, retain the active elevated/historical reason
-            # rather than emitting a contradictory ALERT_NORMAL reason for an elevated state.
-            held_reason = self._historical_reason or self._last_elevated_reason
+            # During hysteresis cooldown hold, retain the most recent elevated reason
+            # (falling back to historical alert reason) rather than emitting a nominal or
+            # contextual glance reason for an elevated drowsiness state.
+            held_reason = self._last_elevated_reason or self._historical_reason
             if held_reason is not None:
                 primary_reason = held_reason
 
