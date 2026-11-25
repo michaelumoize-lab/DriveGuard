@@ -45,7 +45,11 @@ export default async function LiveMonitorPage({ searchParams }: LiveMonitorPageP
       : undefined;
 
   const initialRuntimeMode =
-    runtimeParam === "browser" || runtimeParam === "remote" ? runtimeParam : undefined;
+    runtimeParam === "browser" ||
+    runtimeParam === "python-local" ||
+    runtimeParam === "remote"
+      ? runtimeParam
+      : undefined;
 
   const initialOrientation =
     viewParam === "portrait" || viewParam === "landscape" ? viewParam : undefined;
@@ -53,7 +57,10 @@ export default async function LiveMonitorPage({ searchParams }: LiveMonitorPageP
   const session = await getServerSession();
   const userId = session?.user?.id;
 
-  const targetEngineType = initialRuntimeMode === "remote" ? "PYTHON" : "BROWSER";
+  const targetEngineType =
+    initialRuntimeMode === "remote" || initialRuntimeMode === "python-local"
+      ? "PYTHON"
+      : "BROWSER";
 
   const [userProfile, driverProfiles] = await Promise.all([
     userId ? getOrCreateUserProfile(userId) : null,

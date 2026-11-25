@@ -6,6 +6,11 @@ import { toast } from "sonner";
 import { useCamera } from "@/hooks/use-camera";
 import { useLivekitTelemetryStream } from "@/hooks/use-livekit-telemetry-stream";
 import { useBrowserDetection } from "@/hooks/use-browser-detection";
+import { usePythonLocalEngine } from "@/hooks/use-python-local-engine";
+import {
+  executeTwoPhaseCameraHandoff,
+  stopAndVerifyBrowserMediaStream,
+} from "@/lib/monitor/engine-adapter";
 import {
   AlertTransition,
   convertBrowserTelemetryToFrameTelemetry,
@@ -85,7 +90,7 @@ export interface UnifiedLiveMonitorProps {
   initialPreferences?: InitialUserPreferencesData;
   initialConsoleMode?: "cockpit" | "diagnostics";
   initialInspectorTab?: InspectorTab;
-  initialRuntimeMode?: "browser" | "remote";
+  initialRuntimeMode?: "browser" | "python-local" | "remote";
   initialOrientation?: "portrait" | "landscape";
 }
 
@@ -113,9 +118,10 @@ export function UnifiedLiveMonitor({
   }, [setSidebarOpen]);
 
   // Layout & UI States (Default to calm Driver Mode for first-time understandability)
-  const [runtimeMode, setRuntimeMode] = useState<"browser" | "remote">(
+  const [runtimeMode, setRuntimeMode] = useState<"browser" | "python-local" | "remote">(
     initialRuntimeMode ?? "browser"
   );
+  const [isSwitchingEngine, setIsSwitchingEngine] = useState(false);
   const [viewOrientation, setViewOrientation] = useState<"portrait" | "landscape">(
     initialOrientation ?? "landscape"
   );
@@ -144,7 +150,7 @@ export function UnifiedLiveMonitor({
       try {
         if (!initialRuntimeMode) {
           const savedMode = localStorage.getItem("driveguard_runtime_mode");
-          if (savedMode === "browser" || savedMode === "remote") {
+          if (savedMode === "browser" || savedMode === "python-local" || savedMode === "remote") {
             setRuntimeMode(savedMode);
           }
         }
@@ -581,6 +587,28 @@ export function UnifiedLiveMonitor({
     },
   });
 
+  // 2C. Local Python AI Hook (Direct Loopback OpenCV Camera + SQLite — zero getUserMedia/LiveKit)
+  const pythonLocal = usePythonLocalEngine({
+    driverId,
+    enabled: runtimeMode === "python-local",
+    onSafetyEvent: handleSafetyEvent,
+    onCalibration: (cal) => {
+      if (cal.is_completed && !cal.rejection_reason && cal.profile) {
+        setPythonIsCalibrated(true);
+        if (typeof cal.profile.center_ear_median === "number") {
+          setPythonCenterEarBaseline(cal.profile.center_ear_median);
+        }
+        toast.success("Local Python AI 4-Zone Calibration saved to local ProfileStore.", {
+          id: "python-local-calibration-completed-toast",
+        });
+      } else if (cal.is_completed && cal.rejection_reason) {
+        toast.error(`Calibration rejected: ${cal.rejection_reason}`, {
+          id: "python-local-calibration-rejected-toast",
+        });
+      }
+    },
+  });
+
   // Forward live optical quality assessments to BrowserDetectionEngine SignalConfidenceEvaluator
   useEffect(() => {
     setBrowserOpticalQuality(opticalQuality ?? null);
@@ -588,11 +616,19 @@ export function UnifiedLiveMonitor({
 
   // Engine-scoped calibration truth: Browser and Python calibrations never bleed into each other
   const isCalibrated =
-    runtimeMode === "browser" ? browserIsCalibrated : pythonIsCalibrated;
+    runtimeMode === "browser"
+      ? browserIsCalibrated
+      : runtimeMode === "python-local"
+        ? pythonLocal.isCalibrated || pythonIsCalibrated
+        : pythonIsCalibrated;
   const centerEarBaseline =
     runtimeMode === "browser"
       ? (browserActiveProfile?.centerEarMedian ?? initialBrowserProfile?.centerEarMedian ?? 0.285)
-      : pythonCenterEarBaseline;
+      : runtimeMode === "python-local"
+        ? (typeof pythonLocal.activeProfile?.center_ear_median === "number"
+            ? pythonLocal.activeProfile.center_ear_median
+            : pythonCenterEarBaseline)
+        : pythonCenterEarBaseline;
 
   // Convert browser telemetry to FrameTelemetry for existing HUD components
   const convertedBrowserTelemetry = useMemo(() => {
@@ -600,12 +636,26 @@ export function UnifiedLiveMonitor({
     return convertBrowserTelemetryToFrameTelemetry(browserTelemetry);
   }, [browserTelemetry]);
 
-  // Unified telemetry & processing state (always cleared once camera session is stopped/idle)
-  const isSessionLive = cameraState === "active" || cameraState === "paused";
+  // Unified camera, telemetry & processing state (always cleared once session is stopped/idle)
+  const effectiveCameraState =
+    runtimeMode === "python-local"
+      ? pythonLocal.isStarting
+        ? "permission-granted"
+        : pythonLocal.isRunning
+          ? "active"
+          : "stopped"
+      : cameraState;
+
+  const isSessionLive =
+    runtimeMode === "python-local"
+      ? pythonLocal.isRunning
+      : cameraState === "active" || cameraState === "paused";
   const effectiveTelemetry = isSessionLive
     ? runtimeMode === "browser"
       ? convertedBrowserTelemetry
-      : telemetry
+      : runtimeMode === "python-local"
+        ? pythonLocal.telemetry
+        : telemetry
     : null;
   const effectiveLatencyDiagnostics =
     isSessionLive && runtimeMode === "remote" ? latencyDiagnostics : null;
@@ -613,7 +663,9 @@ export function UnifiedLiveMonitor({
     ? "idle"
     : runtimeMode === "browser"
       ? (browserEngineStatus === "running" ? "processing" : browserEngineStatus === "initializing" ? "connecting" : "idle")
-      : backendProcessingStatus;
+      : runtimeMode === "python-local"
+        ? pythonLocal.backendProcessingStatus
+        : backendProcessingStatus;
 
   // Sync browser session code
   useEffect(() => {
@@ -648,8 +700,12 @@ export function UnifiedLiveMonitor({
     }
   }, [backendType, driverId, initialDriverProfile, initialPythonProfile, runtimeMode]);
 
-  // Reactive Stream Trigger: automatically start/stop inference loop when camera becomes active
+  // Reactive Stream Trigger: automatically start/stop browser/remote inference loop when browser camera activates.
+  // Strictly inactive in "python-local" mode (Python owns OpenCV camera directly — zero getUserMedia).
   useEffect(() => {
+    if (runtimeMode === "python-local") {
+      return;
+    }
     if (cameraState === "active" && videoRef.current) {
       if (runtimeMode === "browser") {
         startBrowserMonitoring(videoRef.current);
@@ -870,41 +926,125 @@ export function UnifiedLiveMonitor({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [consoleMode, handleConsoleModeChange, toggleFullscreen, toggleMute]);
 
-  // Switch between Browser AI and Remote AI runtime modes
+  // Switch between Browser AI, Local Python AI, and Remote LiveKit AI with strict
+  // Two-Phase Exclusive Camera Handoff (release camera + verify ended/released + 200ms OS settle).
   const handleSwitchRuntimeMode = useCallback(
-    async (targetMode: "browser" | "remote") => {
-      if (targetMode === runtimeMode) return;
-      if (cameraState === "active" && videoRef.current) {
-        if (runtimeMode === "browser") {
-          stopBrowserMonitoring();
-        } else {
-          stopStreamingLoop();
-        }
-      }
-      setRuntimeMode(targetMode);
+    async (targetMode: "browser" | "python-local" | "remote") => {
+      if (isSwitchingEngine || targetMode === runtimeMode) return;
+      setIsSwitchingEngine(true);
+
+      const toAdapterId = (m: "browser" | "python-local" | "remote") =>
+        m === "browser" ? "BROWSER" : m === "python-local" ? "PYTHON_LOCAL" : "PYTHON_REMOTE";
+
       try {
-        localStorage.setItem("driveguard_runtime_mode", targetMode);
-      } catch {}
-      toast.info(
-        targetMode === "browser"
-          ? "Switched to Browser AI (Edge MediaPipe — zero server video streaming)."
-          : "Switched to Remote AI (LiveKit WebRTC + Python DrowsinessEngine)."
-      );
+        audioEngine?.stopCurrentAlert();
+        audioEngine?.setRiskState("NORMAL");
+
+        const handoff = await executeTwoPhaseCameraHandoff(
+          {
+            engineId: toAdapterId(runtimeMode),
+            stop: async () => {
+              const code = activeSessionCodeRef.current;
+              activeSessionCodeRef.current = null;
+              setHasActiveSession(false);
+
+              if (runtimeMode === "browser") {
+                if (code) queueBrowserSessionEnd(streamDurationSec);
+                stopBrowserMonitoring();
+              } else if (runtimeMode === "python-local") {
+                await pythonLocal.stop();
+              } else {
+                stopStreamingLoop();
+              }
+              return true;
+            },
+            releaseCamera: async () => {
+              if (runtimeMode === "python-local") {
+                return await pythonLocal.stop();
+              }
+              const currentStream = (videoRef.current?.srcObject as MediaStream | null) ?? null;
+              stopCamera();
+              return stopAndVerifyBrowserMediaStream(currentStream);
+            },
+          },
+          {
+            engineId: toAdapterId(targetMode),
+            start: async () => true,
+          },
+          { settleDelayMs: 200, autoStartTarget: false }
+        );
+
+        if (!handoff.previousReleased) {
+          toast.error(handoff.error || "Could not release current camera handle cleanly.");
+          return;
+        }
+
+        resetSessionStats();
+        setChartHistory([]);
+        setRuntimeMode(targetMode);
+        try {
+          localStorage.setItem("driveguard_runtime_mode", targetMode);
+        } catch {}
+
+        toast.info(
+          targetMode === "browser"
+            ? "Switched to Browser AI (On-device MediaPipe WASM — works offline)."
+            : targetMode === "python-local"
+              ? "Switched to Local Python AI (Direct OpenCV camera via 127.0.0.1:8000 — zero LiveKit)."
+              : "Switched to Remote LiveKit AI (WebRTC + Python DrowsinessEngine)."
+        );
+      } finally {
+        setIsSwitchingEngine(false);
+      }
     },
-    [runtimeMode, cameraState, stopBrowserMonitoring, stopStreamingLoop, videoRef]
+    [
+      isSwitchingEngine,
+      runtimeMode,
+      audioEngine,
+      queueBrowserSessionEnd,
+      streamDurationSec,
+      stopBrowserMonitoring,
+      pythonLocal,
+      stopStreamingLoop,
+      videoRef,
+      stopCamera,
+      resetSessionStats,
+    ]
   );
 
   const [isPreflightRunning, setIsPreflightRunning] = useState(false);
   const [activeFault, setActiveFault] = useState<string | null>(null);
 
-  // Start live monitoring (Automotive Pre-Flight Handshake + Database Driving Session)
+  // Start live monitoring (Browser AI / Local Python AI / Remote LiveKit AI)
   const handleStartMonitoring = useCallback(async () => {
+    if (isSwitchingEngine) return;
     unlockAudio();
     resetSessionStats();
     setChartHistory([]);
+
+    // Local Python AI acquires OpenCV/Phone camera directly on 127.0.0.1:8000 — NEVER invokes getUserMedia!
+    if (runtimeMode === "python-local") {
+      setIsPreflightRunning(true);
+      const started = await pythonLocal.start({
+        isMirrored: true,
+        enableAudio: false,
+      });
+      setIsPreflightRunning(false);
+      if (started) {
+        setHasActiveSession(true);
+        toast.success("Local Python AI started (direct OpenCV camera + SQLite persistence).");
+      } else {
+        toast.error(
+          pythonLocal.error ||
+            "Could not start Local Python AI. Ensure FastAPI is running on 127.0.0.1:8000 with LOCAL_CAMERA_API_ENABLED=true."
+        );
+      }
+      return;
+    }
+
     setIsPreflightRunning(true);
 
-    // 1. Ensure camera stream is initiated
+    // 1. Ensure browser camera stream is initiated (Browser AI & Remote LiveKit only)
     if (cameraState !== "active") {
       await startCamera();
     }
@@ -1002,6 +1142,8 @@ export function UnifiedLiveMonitor({
     resetSessionStats,
     setBrowserSessionCode,
     startOfflineSession,
+    isSwitchingEngine,
+    pythonLocal,
   ]);
 
   // Stop live monitoring, persist full session summary ONCE & completely clear the cockpit
@@ -1015,13 +1157,18 @@ export function UnifiedLiveMonitor({
       setHasActiveSession(false);
     }
 
-    if (runtimeMode === "browser") {
+    if (runtimeMode === "python-local") {
+      await pythonLocal.stop();
+      setHasActiveSession(false);
+      toast.success("Local Python AI stopped & hardware camera released.");
+    } else if (runtimeMode === "browser") {
       // Single idempotent session finalization via OfflineEventQueue BEFORE stopping/resetting engine stats
       if (code) {
         queueBrowserSessionEnd(streamDurationSec);
         toast.success(`Session ${code} ended & queued for persistence (${streamDurationSec}s).`);
       }
       stopBrowserMonitoring();
+      stopCamera();
     } else {
       stopStreamingLoop();
       if (code) {
@@ -1042,9 +1189,9 @@ export function UnifiedLiveMonitor({
           }
         } catch (_) {}
       }
+      stopCamera();
     }
 
-    stopCamera();
     resetSessionStats();
     setChartHistory([]);
     lastChartSampleMsRef.current = 0;
@@ -1056,7 +1203,7 @@ export function UnifiedLiveMonitor({
     lastAnnouncedStateRef.current = "NORMAL";
     lastAlertTimeRef.current = 0;
     handledEventIdsRef.current.clear();
-  }, [audioEngine, runtimeMode, stopBrowserMonitoring, stopStreamingLoop, stopCamera, buildSessionEndPayload, streamDurationSec, resetSessionStats, queueBrowserSessionEnd]);
+  }, [audioEngine, runtimeMode, pythonLocal, stopBrowserMonitoring, stopStreamingLoop, stopCamera, buildSessionEndPayload, streamDurationSec, resetSessionStats, queueBrowserSessionEnd]);
 
   // Switch between Cloud and Localhost engines: cleanly ends any active session, stops camera, and resets cockpit
   const handleSwitchBackend = useCallback(
@@ -1157,18 +1304,24 @@ export function UnifiedLiveMonitor({
     }
 
     const effectiveState = resolveEffectiveDisplayState(
-      runtimeMode === "browser" ? effectiveTelemetry : telemetry,
+      runtimeMode === "remote" ? telemetry : effectiveTelemetry,
       runtimeMode === "browser"
         ? {
             isConnected: browserEngineStatus === "running",
             isStale: false,
             backendStatus: effectiveProcessingStatus,
           }
-        : {
-            isConnected: isWsConnected,
-            isStale,
-            backendStatus: backendProcessingStatus,
-          }
+        : runtimeMode === "python-local"
+          ? {
+              isConnected: pythonLocal.connectionStatus === "connected",
+              isStale: false,
+              backendStatus: effectiveProcessingStatus,
+            }
+          : {
+              isConnected: isWsConnected,
+              isStale,
+              backendStatus: backendProcessingStatus,
+            }
     );
 
     if (effectiveState === "ERROR") {
@@ -1302,17 +1455,23 @@ export function UnifiedLiveMonitor({
           consoleMode={consoleMode}
           onConsoleModeChange={handleConsoleModeChange}
           runtimeMode={runtimeMode}
-          cameraActive={cameraState === "active"}
+          cameraActive={effectiveCameraState === "active"}
           cameraResolutionLabel={
             resolution ? `${resolution.width}×${resolution.height}` : "640×480"
           }
           faceDetected={Boolean(effectiveTelemetry?.face_detected)}
           isCalibrated={isCalibrated}
           centerEarBaseline={centerEarBaseline}
-          livekitStatus={runtimeMode === "browser" ? "connected" : wsStatus}
+          livekitStatus={
+            runtimeMode === "browser"
+              ? "connected"
+              : runtimeMode === "python-local"
+                ? pythonLocal.connectionStatus
+                : wsStatus
+          }
           backendProcessingStatus={effectiveProcessingStatus}
-          isStale={runtimeMode === "browser" ? false : isStale}
-          rttMs={runtimeMode === "browser" ? 0 : roundtripLatencyMs}
+          isStale={runtimeMode === "remote" ? isStale : false}
+          rttMs={runtimeMode === "remote" ? roundtripLatencyMs : 0}
           audioStatus={audioStatus}
           audioMuted={audioMuted}
           browserSyncStatus={browserSyncStatus}
@@ -1413,17 +1572,21 @@ export function UnifiedLiveMonitor({
                       target_samples_count: 100,
                     }
                   : null
-                : calibration;
+                : runtimeMode === "python-local"
+                  ? pythonLocal.calibration
+                  : calibration;
 
             const triggerFullCalibration = () => {
               const run = () => {
                 if (runtimeMode === "browser") {
                   startBrowserCalibration();
+                } else if (runtimeMode === "python-local") {
+                  void pythonLocal.startCalibration(true, 4.0);
                 } else {
                   startCalibration(true, 4.0);
                 }
               };
-              if (cameraState !== "active") {
+              if (effectiveCameraState !== "active") {
                 handleStartMonitoring().then(run);
               } else {
                 run();
@@ -1433,6 +1596,8 @@ export function UnifiedLiveMonitor({
             const triggerSkip = () => {
               if (runtimeMode === "browser") {
                 skipBrowserCalibrationStep();
+              } else if (runtimeMode === "python-local") {
+                void pythonLocal.skipCalibrationStep();
               } else {
                 skipCalibrationStep();
               }
@@ -1441,6 +1606,8 @@ export function UnifiedLiveMonitor({
             const triggerCancel = () => {
               if (runtimeMode === "browser") {
                 cancelBrowserCalibration();
+              } else if (runtimeMode === "python-local") {
+                void pythonLocal.cancelCalibration();
               } else {
                 cancelCalibration();
               }
@@ -1450,11 +1617,13 @@ export function UnifiedLiveMonitor({
               const run = () => {
                 if (runtimeMode === "browser") {
                   recalibrateBrowserZone(z as PoseZone);
+                } else if (runtimeMode === "python-local") {
+                  void pythonLocal.recalibrateZone(z, 4.0);
                 } else {
                   recalibrateZone(z, 4.0);
                 }
               };
-              if (cameraState !== "active") {
+              if (effectiveCameraState !== "active") {
                 handleStartMonitoring().then(run);
               } else {
                 run();
@@ -1467,7 +1636,7 @@ export function UnifiedLiveMonitor({
                 <div className="flex items-center gap-2">
                   <Compass className="size-4 text-primary" aria-hidden="true" />
                   <span className="text-xs font-semibold text-foreground">
-                    4-Zone Eye Calibration ({runtimeMode === "browser" ? "Browser AI" : "Python AI"})
+                    4-Zone Eye Calibration ({runtimeMode === "browser" ? "Browser AI" : runtimeMode === "python-local" ? "Python Local AI" : "Python Remote AI"})
                   </span>
                   {activeCal && !activeCal.is_completed && (
                     <Badge className="text-[11px] font-mono tabular-nums bg-primary text-primary-foreground">
@@ -1545,9 +1714,11 @@ export function UnifiedLiveMonitor({
           {/* Camera Viewport */}
           <CameraView
             videoRef={videoRef}
-            cameraState={cameraState}
+            cameraState={effectiveCameraState}
+            previewMode={runtimeMode === "python-local" ? "mjpeg" : "video"}
+            mjpegUrl={runtimeMode === "python-local" ? pythonLocal.mjpegPreviewUrl : null}
             alertState={effectiveTelemetry?.state ?? "MONITORING_UNAVAILABLE"}
-            isStale={runtimeMode === "browser" ? false : isStale}
+            isStale={runtimeMode === "remote" ? isStale : false}
             isMirrored={isMirrored}
             framingMode={framingMode}
             viewOrientation={viewOrientation}
@@ -1556,7 +1727,7 @@ export function UnifiedLiveMonitor({
             onStartClick={handleStartMonitoring}
           >
             {/* In-viewport Floating Cockpit HUD Overlays */}
-            {cameraState === "active" && (
+            {effectiveCameraState === "active" && (
               <>
                 {/* Top Floating Status Strip */}
                 <div className="absolute top-3 left-3 right-3 flex items-start justify-between pointer-events-none z-10 gap-2">
@@ -1671,7 +1842,7 @@ export function UnifiedLiveMonitor({
           {!isFullscreen && (
             <>
               <CameraControls
-                cameraState={cameraState}
+                cameraState={effectiveCameraState}
                 isMirrored={isMirrored}
                 framingMode={framingMode}
                 isFullscreen={isFullscreen}
@@ -1697,12 +1868,16 @@ export function UnifiedLiveMonitor({
               />
 
               <CameraStatus
-                cameraState={cameraState}
+                cameraState={effectiveCameraState}
                 resolution={resolution}
                 facingMode={facingMode}
                 durationSec={streamDurationSec}
                 runtimeLabel={
-                  runtimeMode === "browser" ? "On-Device Privacy AI" : "Remote LiveKit AI"
+                  runtimeMode === "browser"
+                    ? "On-Device Privacy AI"
+                    : runtimeMode === "python-local"
+                      ? "Local Python OpenCV AI"
+                      : "Remote LiveKit AI"
                 }
               />
             </>
@@ -1719,8 +1894,8 @@ export function UnifiedLiveMonitor({
             {consoleMode === "cockpit" ? (
               <DriverCockpitHUD
                 telemetry={effectiveTelemetry}
-                cameraState={cameraState}
-                isStale={runtimeMode === "browser" ? false : isStale}
+                cameraState={effectiveCameraState}
+                isStale={runtimeMode === "remote" ? isStale : false}
                 isCalibrated={isCalibrated}
                 runtimeMode={runtimeMode}
                 sessionDurationSec={streamDurationSec}
@@ -1740,9 +1915,10 @@ export function UnifiedLiveMonitor({
                 activeTab={inspectorTab}
                 onTabChange={setInspectorTab}
                 telemetry={effectiveTelemetry}
-                cameraState={cameraState}
+                cameraState={effectiveCameraState}
                 runtimeMode={runtimeMode}
                 onSwitchRuntimeMode={handleSwitchRuntimeMode}
+                isSwitchingEngine={isSwitchingEngine}
                 backendType={backendType}
                 onSwitchBackend={handleSwitchBackend}
                 latencyDiagnostics={effectiveLatencyDiagnostics}

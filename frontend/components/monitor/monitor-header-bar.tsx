@@ -26,7 +26,7 @@ import type { BackendProcessingStatus } from "@/types/telemetry";
 export interface MonitorHeaderBarProps {
   consoleMode: "cockpit" | "diagnostics";
   onConsoleModeChange: (mode: "cockpit" | "diagnostics") => void;
-  runtimeMode: "browser" | "remote";
+  runtimeMode: "browser" | "python-local" | "remote";
   cameraActive: boolean;
   cameraResolutionLabel?: string;
   faceDetected: boolean;
@@ -94,7 +94,13 @@ export function MonitorHeaderBar({
                       : "bg-muted-foreground/60"
                 }`}
               />
-              <span>{runtimeMode === "browser" ? "On-device AI" : "Remote server AI"}</span>
+              <span>
+                {runtimeMode === "browser"
+                  ? "On-device AI"
+                  : runtimeMode === "python-local"
+                    ? "Local Python AI"
+                    : "Remote server AI"}
+              </span>
               {runtimeMode === "browser" && browserSyncStatus === "offline-buffer" && (
                 <span className="text-amber-500">· Offline buffer</span>
               )}

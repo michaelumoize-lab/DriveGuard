@@ -36,6 +36,8 @@ import { formatZoneLabel, getZoneMeta } from "./calibration-zones";
 interface CalibrationViewportProps {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   cameraState: CameraState;
+  previewMode?: "video" | "mjpeg";
+  mjpegUrl?: string | null;
   cameraError: CameraError | null;
   devices: CameraDevice[];
   selectedDeviceId: string;
@@ -71,6 +73,8 @@ interface CalibrationViewportProps {
 export function CalibrationViewport({
   videoRef,
   cameraState,
+  previewMode = "video",
+  mjpegUrl = null,
   cameraError,
   devices,
   selectedDeviceId,
@@ -252,6 +256,8 @@ export function CalibrationViewport({
           <CameraView
             videoRef={videoRef}
             cameraState={cameraState}
+            previewMode={previewMode}
+            mjpegUrl={mjpegUrl}
             isMirrored={isMirrored}
             framingMode="cover"
             viewOrientation="landscape"

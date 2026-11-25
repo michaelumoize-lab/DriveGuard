@@ -51,8 +51,9 @@ export interface InspectorWorkspaceProps {
   onTabChange: (tab: InspectorTab) => void;
   telemetry: FrameTelemetry | null;
   cameraState: CameraState;
-  runtimeMode: "browser" | "remote";
-  onSwitchRuntimeMode: (mode: "browser" | "remote") => void;
+  runtimeMode: "browser" | "python-local" | "remote";
+  onSwitchRuntimeMode: (mode: "browser" | "python-local" | "remote") => void;
+  isSwitchingEngine?: boolean;
   backendType: "cloud" | "local";
   onSwitchBackend: (backend: "cloud" | "local") => void;
   latencyDiagnostics: LatencyDiagnostics | null;
@@ -91,6 +92,7 @@ export function InspectorWorkspace({
   cameraState,
   runtimeMode,
   onSwitchRuntimeMode,
+  isSwitchingEngine = false,
   backendType,
   onSwitchBackend,
   latencyDiagnostics,
@@ -122,13 +124,13 @@ export function InspectorWorkspace({
   hasActiveSession,
 }: InspectorWorkspaceProps) {
   const [pendingSwitch, setPendingSwitch] = useState<
-    | { type: "runtime"; target: "browser" | "remote" }
+    | { type: "runtime"; target: "browser" | "python-local" | "remote" }
     | { type: "backend"; target: "cloud" | "local" }
     | null
   >(null);
 
-  const requestRuntimeSwitch = (target: "browser" | "remote") => {
-    if (target === runtimeMode) return;
+  const requestRuntimeSwitch = (target: "browser" | "python-local" | "remote") => {
+    if (isSwitchingEngine || target === runtimeMode) return;
     if (hasActiveSession || cameraState === "active") {
       setPendingSwitch({ type: "runtime", target });
     } else {
@@ -382,33 +384,51 @@ export function InspectorWorkspace({
               </CardTitle>
             </CardHeader>
             <CardContent className="p-3.5 space-y-2.5">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 gap-2">
                 <Button
                   type="button"
+                  disabled={isSwitchingEngine}
                   variant={runtimeMode === "browser" ? "default" : "outline"}
                   onClick={() => requestRuntimeSwitch("browser")}
                   className="h-auto py-2.5 px-3 rounded-xl justify-start text-left gap-2.5"
                 >
                   <Sparkles className="size-4 shrink-0" aria-hidden="true" />
                   <div className="min-w-0">
-                    <div className="text-xs font-semibold">On-Device Browser AI</div>
+                    <div className="text-xs font-semibold">On-Device Browser AI (Default)</div>
                     <div className="text-[11px] opacity-80 truncate">
-                      Private MediaPipe Edge · Zero video upload
+                      MediaPipe WASM · Works offline · Zero backend required
                     </div>
                   </div>
                 </Button>
 
                 <Button
                   type="button"
+                  disabled={isSwitchingEngine}
+                  variant={runtimeMode === "python-local" ? "default" : "outline"}
+                  onClick={() => requestRuntimeSwitch("python-local")}
+                  className="h-auto py-2.5 px-3 rounded-xl justify-start text-left gap-2.5"
+                >
+                  <Cpu className="size-4 shrink-0" aria-hidden="true" />
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold">Local Python AI (Direct Camera)</div>
+                    <div className="text-[11px] opacity-80 truncate">
+                      127.0.0.1:8000 OpenCV + SQLite · Zero LiveKit or cloud
+                    </div>
+                  </div>
+                </Button>
+
+                <Button
+                  type="button"
+                  disabled={isSwitchingEngine}
                   variant={runtimeMode === "remote" ? "default" : "outline"}
                   onClick={() => requestRuntimeSwitch("remote")}
                   className="h-auto py-2.5 px-3 rounded-xl justify-start text-left gap-2.5"
                 >
                   <Radio className="size-4 shrink-0" aria-hidden="true" />
                   <div className="min-w-0">
-                    <div className="text-xs font-semibold">Remote Server AI</div>
+                    <div className="text-xs font-semibold">Remote LiveKit AI (Cloud)</div>
                     <div className="text-[11px] opacity-80 truncate">
-                      LiveKit WebRTC + Python FastAPI
+                      LiveKit WebRTC + Remote Python FastAPI
                     </div>
                   </div>
                 </Button>
