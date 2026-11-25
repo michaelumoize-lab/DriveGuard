@@ -299,10 +299,29 @@ def test_high7_neutral_rot_mat_mirror_conjugation_and_persistence(tmp_path: Path
 # ---------------------------------------------------------------------------
 
 def test_medium2_yawn_detector_gap_cap_dropout_and_decision_gate() -> None:
-    assert DEFAULT_MAX_SAMPLING_GAP_MS == 250.0
+    assert DEFAULT_MAX_SAMPLING_GAP_MS == 400.0
 
     open_lms = _make_mouth_landmarks(0.65)
     closed_lms = _make_mouth_landmarks(0.08)
+
+    # 0. Brief ~10 FPS jitter (284ms <= 400ms) preserves in-progress yawn; >400ms (450ms) aborts it
+    det_gap = YawnDetector(min_yawn_duration_ms=1500.0, max_yawn_duration_ms=8000.0)
+    for t in range(1000, 2701, 100):
+        det_gap.update(open_lms, timestamp_ms=float(t), aspect_ratio=1.0, is_normalized=True)
+    # 284ms jitter frame while still yawning -> must NOT abort
+    det_gap.update(open_lms, timestamp_ms=2984.0, aspect_ratio=1.0, is_normalized=True)
+    res_completed = det_gap.update(closed_lms, timestamp_ms=3084.0, aspect_ratio=1.0, is_normalized=True)
+    assert res_completed.total_yawn_count == 1
+    assert res_completed.completed_yawn is not None
+
+    det_gap.reset()
+    for t in range(1000, 2701, 100):
+        det_gap.update(open_lms, timestamp_ms=float(t), aspect_ratio=1.0, is_normalized=True)
+    # 450ms camera freeze > 400ms -> must abort cleanly
+    det_gap.update(open_lms, timestamp_ms=3150.0, aspect_ratio=1.0, is_normalized=True)
+    res_aborted = det_gap.update(closed_lms, timestamp_ms=3250.0, aspect_ratio=1.0, is_normalized=True)
+    assert res_aborted.total_yawn_count == 0
+    assert res_aborted.completed_yawn is None
 
     # 1. Dropout-grace frame must never emit is_yawn_in_progress=True or is_authentic_yawn=True
     det = YawnDetector(min_yawn_duration_ms=1500.0, max_yawn_duration_ms=8000.0, dropout_grace_ms=200.0)

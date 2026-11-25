@@ -1,8 +1,8 @@
 import React from "react";
 import { getServerSession } from "@/lib/get-session";
 import { prisma } from "@/lib/prisma";
+import { mapDriverProfileData } from "@/lib/api/driver-profile-mapper";
 import { GuidedCalibrationWizard } from "@/components/calibration/guided-calibration-wizard";
-import { InitialDriverProfileData } from "@/components/monitor/unified-live-monitor";
 
 export const metadata = {
   title: "Driver Calibration | DriveGuard",
@@ -22,35 +22,10 @@ export default async function CalibrationPage() {
       })
     : [];
 
-  const mapProfile = (
-    p: (typeof driverProfiles)[number] | undefined
-  ): InitialDriverProfileData | null =>
-    p
-      ? {
-          engineType: p.engineType,
-          isCalibrated: p.isCalibrated,
-          calibrationMode: p.calibrationMode,
-          centerEarMedian: p.centerEarMedian,
-          centerEarMadScaled: p.centerEarMadScaled,
-          blinkDurationMedianMs: p.blinkDurationMedianMs,
-          blinkDurationMadMs: p.blinkDurationMadMs,
-          blinkRcrMedian: p.blinkRcrMedian,
-          blinkRcrMad: p.blinkRcrMad,
-          neutralPitchDeg: p.neutralPitchDeg,
-          neutralYawDeg: p.neutralYawDeg,
-          neutralRotMat: (p.neutralRotMat as number[][] | null) ?? null,
-          calibrationIsMirrored: p.calibrationIsMirrored ?? null,
-          calibrationReliability: p.calibrationReliability,
-          profileVersion: p.profileVersion,
-          profileHash: p.contentHash ?? null,
-          zoneBaselines: (p.zoneBaselines as Record<string, unknown> | null) ?? null,
-        }
-      : null;
-
-  const initialBrowserProfile = mapProfile(
+  const initialBrowserProfile = mapDriverProfileData(
     driverProfiles.find((p) => p.engineType === "BROWSER")
   );
-  const initialPythonProfile = mapProfile(
+  const initialPythonProfile = mapDriverProfileData(
     driverProfiles.find((p) => p.engineType === "PYTHON")
   );
 

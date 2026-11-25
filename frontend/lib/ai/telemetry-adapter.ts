@@ -108,6 +108,8 @@ export function convertBrowserTelemetryToFrameTelemetry(
       blink_rate_per_min: blinkRatePerMin,
       total_blink_count: totalBlinkCount,
       mar_yawn: t.mar,
+      total_yawn_count: t.yawnCount,
+      is_yawning: t.isYawning,
       eye_closure_duration_ms: t.closureDurationMs,
       perclos_coverage_pct: perclosCoveragePct,
       perclos_reliable: perclosReliable,

@@ -39,7 +39,7 @@ interface CameraControlsProps {
   onUnlockAudio?: () => void;
 }
 
-export function CameraControls({
+export const CameraControls = React.memo(function CameraControls({
   cameraState,
   isMirrored,
   framingMode,
@@ -66,20 +66,20 @@ export function CameraControls({
     cameraState === "requesting-permission" || cameraState === "permission-granted";
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-2.5 p-3 rounded-2xl bg-card border border-border/80 shadow-xs">
+    <div className="flex flex-wrap items-center justify-between gap-2.5 p-2.5 sm:p-3 rounded-2xl bg-card border border-border/80 shadow-xs">
       {/* Primary Action Controls (Start/Stop, Pause, Audio Mute) */}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         {!isRunning ? (
           <Button
             type="button"
             size="default"
             onClick={onStart}
             disabled={isLoading}
-            className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold px-5 rounded-xl min-h-[44px] shadow-xs flex items-center gap-2"
+            className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold px-4 sm:px-5 rounded-xl min-h-11 shadow-xs flex items-center gap-2"
           >
             {isLoading ? (
               <>
-                <RefreshCw className="size-4 animate-spin" aria-hidden="true" />
+                <RefreshCw className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
                 <span>Connecting…</span>
               </>
             ) : (
@@ -95,7 +95,7 @@ export function CameraControls({
             size="default"
             variant="destructive"
             onClick={onStop}
-            className="font-semibold px-5 rounded-xl min-h-[44px] shadow-xs flex items-center gap-2"
+            className="font-semibold px-4 sm:px-5 rounded-xl min-h-11 shadow-xs flex items-center gap-2"
           >
             <Square className="size-4 fill-current" aria-hidden="true" />
             <span>Stop</span>
@@ -109,7 +109,7 @@ export function CameraControls({
             size="icon"
             variant="outline"
             onClick={isPaused ? onResume : onPause}
-            className="min-h-[44px] min-w-[44px] rounded-xl border-border"
+            className="size-11 rounded-xl border-border"
             title={isPaused ? "Resume video feed" : "Pause video feed"}
             aria-label={isPaused ? "Resume camera stream" : "Pause camera stream"}
           >
@@ -134,7 +134,7 @@ export function CameraControls({
                 onToggleMute();
               }
             }}
-            className={`min-h-[44px] min-w-[44px] rounded-xl border-border ${
+            className={`size-11 rounded-xl border-border ${
               audioStatus === "blocked"
                 ? "border-amber-500/40 bg-amber-500/10 text-amber-500"
                 : isMuted
@@ -166,19 +166,19 @@ export function CameraControls({
       </div>
 
       {/* Auxiliary Camera Utilities */}
-      <div className="flex items-center gap-1.5 sm:gap-2">
+      <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
         <Button
           type="button"
           size="icon"
           variant="secondary"
           onClick={onCaptureSnapshot}
           disabled={!isActive || isCapturing}
-          className="min-h-[44px] min-w-[44px] rounded-xl border border-border bg-secondary/80 hover:bg-secondary"
+          className="size-11 rounded-xl border border-border bg-secondary/80 hover:bg-secondary"
           title="Capture frame snapshot (JPEG)"
           aria-label="Capture current frame snapshot"
         >
           {isCapturing ? (
-            <RefreshCw className="size-4 animate-spin text-primary" aria-hidden="true" />
+            <RefreshCw className="size-4 animate-spin motion-reduce:animate-none text-primary" aria-hidden="true" />
           ) : (
             <Camera className="size-4 text-foreground" aria-hidden="true" />
           )}
@@ -189,7 +189,7 @@ export function CameraControls({
           size="icon"
           variant="outline"
           onClick={onSwitchFacing}
-          className="min-h-[44px] min-w-[44px] rounded-xl border-border"
+          className="size-11 rounded-xl border-border"
           title="Switch front or rear camera"
           aria-label="Switch between front and rear facing camera"
         >
@@ -202,7 +202,7 @@ export function CameraControls({
           variant="outline"
           onClick={onToggleMirror}
           aria-pressed={isMirrored}
-          className={`min-h-[44px] min-w-[44px] rounded-xl border-border ${
+          className={`size-11 rounded-xl border-border ${
             isMirrored ? "bg-primary/10 border-primary/40 text-primary" : ""
           }`}
           title={isMirrored ? "Disable mirror view" : "Enable mirror view"}
@@ -217,7 +217,7 @@ export function CameraControls({
           variant="outline"
           onClick={onToggleFraming}
           aria-pressed={framingMode === "cover"}
-          className={`min-h-[44px] min-w-[44px] rounded-xl border-border ${
+          className={`size-11 rounded-xl border-border ${
             framingMode === "cover" ? "bg-primary/10 border-primary/40 text-primary" : ""
           }`}
           title={framingMode === "cover" ? "Switch to uncropped fit" : "Switch to fill viewport"}
@@ -231,7 +231,7 @@ export function CameraControls({
           size="icon"
           variant="outline"
           onClick={onToggleFullscreen}
-          className="min-h-[44px] min-w-[44px] rounded-xl border-border"
+          className="size-11 rounded-xl border-border"
           title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
           aria-label={isFullscreen ? "Exit fullscreen monitor" : "Enter fullscreen monitor"}
         >
@@ -244,4 +244,4 @@ export function CameraControls({
       </div>
     </div>
   );
-}
+});

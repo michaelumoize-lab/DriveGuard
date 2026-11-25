@@ -13,6 +13,8 @@ import { themePlugin } from "@/lib/auth/theme-plugin"
 import { getQueryClient } from "@/lib/query-client"
 import { AuthProvider } from "./auth/auth-provider"
 import { Toaster } from "./ui/sonner"
+import { SwRegister } from "./pwa/sw-register"
+import { PwaPrompts } from "./pwa/pwa-prompts"
 
 import { TooltipProvider } from "./ui/tooltip"
 
@@ -42,6 +44,8 @@ export function Providers({ children }: { children: ReactNode }) {
           {children}
         </TooltipProvider>
 
+        <SwRegister />
+        <PwaPrompts />
         <Toaster />
       </AuthProvider>
     </QueryClientProvider>

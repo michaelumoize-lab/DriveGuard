@@ -39,14 +39,14 @@ export default async function SettingsLayout({
   return (
     <TooltipProvider>
       <SidebarProvider defaultOpen={true}>
-        <div className="flex min-h-screen w-full bg-background text-foreground">
+        <div className="flex h-svh w-full bg-background text-foreground overflow-hidden">
           <Sidebar user={user} />
 
-          <SidebarInset className="flex flex-col flex-1 bg-background min-w-0">
+          <SidebarInset className="flex flex-col flex-1 bg-background min-w-0 h-full overflow-hidden">
             {/* Top Navbar Header aligned seamlessly with Sidebar */}
-            <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-background/80 px-2 sm:px-4 md:px-6 backdrop-blur-md">
+            <header className="shrink-0 z-30 flex min-h-14 pt-safe items-center justify-between gap-2 border-b border-border bg-background/95 pl-[max(0.5rem,env(safe-area-inset-left,0px))] pr-[max(0.5rem,env(safe-area-inset-right,0px))] sm:pl-[max(1rem,env(safe-area-inset-left,0px))] sm:pr-[max(1rem,env(safe-area-inset-right,0px))] md:pl-[max(1.5rem,env(safe-area-inset-left,0px))] md:pr-[max(1.5rem,env(safe-area-inset-right,0px))] backdrop-blur-md">
               <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
-                <SidebarTrigger className="text-muted-foreground hover:text-foreground cursor-pointer h-9 w-9 shrink-0" aria-label="Toggle Navigation Sidebar" />
+                <SidebarTrigger className="text-muted-foreground hover:text-foreground cursor-pointer size-11 md:size-9 shrink-0" aria-label="Toggle Navigation Sidebar" />
                 <WorkspaceBreadcrumb />
               </div>
 
@@ -57,7 +57,7 @@ export default async function SettingsLayout({
               <DashboardHeaderActions criticalAlertsCount={criticalAlertsCount} />
             </header>
 
-            <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto outline-none">
+            <main id="main-content" tabIndex={-1} className="flex-1 overflow-y-auto min-h-0 pb-safe px-safe bg-background outline-none">
               {children}
             </main>
 

@@ -102,6 +102,9 @@ export function FinalCtaFooter({ isAuthenticated }: FinalCtaFooterProps) {
               >
                 Technology
               </a>
+              <Link href="/local-monitor" className="hover:text-foreground transition-colors">
+                Offline Monitor
+              </Link>
               <Link href="/help" className="hover:text-foreground transition-colors">
                 Documentation
               </Link>

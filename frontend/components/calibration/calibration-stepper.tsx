@@ -64,7 +64,7 @@ export function CalibrationStepper({
       {/* 3-Step Journey Header */}
       <ol
         aria-label="Calibration workflow steps"
-        className="grid grid-cols-3 gap-2"
+        className="grid grid-cols-1 sm:grid-cols-3 gap-2"
       >
         {highLevelSteps.map((step) => {
           const Icon = step.icon;

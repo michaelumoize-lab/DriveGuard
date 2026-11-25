@@ -24,6 +24,7 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
+  applicationName: "DriveGuard",
   other: {
     "color-scheme": "light dark",
   },
@@ -33,6 +34,14 @@ export const metadata: Metadata = {
   },
   description:
     "Personalised Adaptive AI Driver Drowsiness Detection & Early Warning System using Computer Vision, 4-Zone Pose-Conditioned Calibration, and Confidence-Gated Cascades.",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "DriveGuard",
+  },
+  formatDetection: {
+    telephone: false,
+  },
   keywords: [
     "DriveGuard",
     "Driver Safety",

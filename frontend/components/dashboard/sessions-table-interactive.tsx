@@ -83,19 +83,19 @@ export function SessionsTableInteractive({ sessions }: SessionsTableInteractiveP
     <div className="space-y-4">
       {/* Filter & Search Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="relative max-w-xs w-full">
-          <Search className="size-3.5 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+        <div className="relative sm:max-w-xs w-full">
+          <Search className="size-3.5 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" aria-hidden="true" />
           <Input
             type="search"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Filter by session code…"
             aria-label="Filter sessions by session code"
-            className="pl-8 h-8 text-xs font-mono"
+            className="pl-8 min-h-11 sm:h-8 sm:min-h-0 text-xs font-mono"
           />
         </div>
 
-        <div className="flex items-center gap-1.5" role="group" aria-label="Filter sessions by alert status">
+        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter sessions by alert status">
           {[
             { id: "ALL" as const, label: `All (${sessions.length})` },
             {
@@ -113,7 +113,7 @@ export function SessionsTableInteractive({ sessions }: SessionsTableInteractiveP
               variant={statusFilter === tab.id ? "default" : "outline"}
               size="sm"
               onClick={() => setStatusFilter(tab.id)}
-              className="h-7 text-[11px] px-2.5"
+              className="min-h-11 sm:h-7 sm:min-h-0 text-[11px] px-3 sm:px-2.5"
             >
               {tab.label}
             </Button>
@@ -207,14 +207,14 @@ export function SessionsTableInteractive({ sessions }: SessionsTableInteractiveP
                         variant="ghost"
                         size="sm"
                         onClick={() => setSelectedSession(s)}
-                        className="h-7 px-2 text-xs"
+                        className="min-h-10 sm:h-7 sm:min-h-0 px-2.5 sm:px-2 text-xs"
                       >
-                        <Eye className="size-3.5 mr-1" />
+                        <Eye className="size-3.5 mr-1" aria-hidden="true" />
                         Inspect
                       </Button>
-                      <Button asChild variant="outline" size="sm" className="h-7 px-2 text-xs">
+                      <Button asChild variant="outline" size="sm" className="min-h-10 sm:h-7 sm:min-h-0 px-2.5 sm:px-2 text-xs">
                         <Link href={`/dashboard/sessions/${s.id}`}>
-                          <Play className="size-3 mr-1" />
+                          <Play className="size-3 mr-1" aria-hidden="true" />
                           Replay
                         </Link>
                       </Button>
@@ -229,7 +229,7 @@ export function SessionsTableInteractive({ sessions }: SessionsTableInteractiveP
 
       {/* Session Detail Modal / Drawer */}
       <Dialog open={Boolean(selectedSession)} onOpenChange={(open) => !open && setSelectedSession(null)}>
-        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto overscroll-contain">
+        <DialogContent className="w-[calc(100vw-1.5rem)] max-w-2xl max-h-[85dvh] overflow-y-auto overscroll-contain">
           {selectedSession && (
             <>
               <DialogHeader>

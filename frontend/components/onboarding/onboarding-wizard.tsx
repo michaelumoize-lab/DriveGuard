@@ -213,11 +213,15 @@ export function OnboardingWizard({
       <CardHeader className="pb-4">
         {/* Progress Tracker */}
         <div className="space-y-3">
-          <div className="flex items-center justify-between text-xs font-medium text-muted-foreground">
-            <span>
+          <div className="flex items-center justify-between gap-2 text-xs font-medium text-muted-foreground">
+            <span className="truncate">
               Step {currentStep} of {stepsList.length}
+              <span className="sm:hidden text-foreground font-semibold">
+                {" · "}
+                {stepsList[currentStep - 1]?.title}
+              </span>
             </span>
-            <span>{Math.round(progressPercentage)}% completed</span>
+            <span className="shrink-0 tabular-nums">{Math.round(progressPercentage)}% completed</span>
           </div>
           <Progress value={progressPercentage} className="h-1.5" />
 
@@ -231,7 +235,10 @@ export function OnboardingWizard({
               return (
                 <div
                   key={s.number}
-                  className={`flex items-center gap-1.5 p-2 rounded-lg border text-xs transition-colors ${
+                  aria-current={isActive ? "step" : undefined}
+                  aria-label={`Step ${s.number}: ${s.title}`}
+                  title={s.title}
+                  className={`flex items-center justify-center sm:justify-start gap-1.5 p-2 rounded-lg border text-xs transition-colors ${
                     isActive
                       ? "border-primary bg-primary/10 text-primary font-medium"
                       : isDone
@@ -239,7 +246,7 @@ export function OnboardingWizard({
                       : "border-transparent text-muted-foreground/60"
                   }`}
                 >
-                  <Icon className="size-3.5 shrink-0" />
+                  <Icon className="size-3.5 shrink-0" aria-hidden="true" />
                   <span className="truncate hidden sm:inline">{s.title}</span>
                 </div>
               );
@@ -650,15 +657,16 @@ export function OnboardingWizard({
       </CardContent>
 
       <CardFooter className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-4">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {currentStep > 1 && (
             <Button
               variant="outline"
               size="sm"
               onClick={() => setCurrentStep((prev) => Math.max(1, prev - 1))}
               disabled={isSubmitting}
+              className="min-h-11 sm:h-8 sm:min-h-0"
             >
-              <ArrowLeft className="size-4 mr-1.5" />
+              <ArrowLeft className="size-4 mr-1.5" aria-hidden="true" />
               Previous
             </Button>
           )}
@@ -670,7 +678,7 @@ export function OnboardingWizard({
                 currentStep === 4 ? saveStepData(4, false) : saveStepData(5, true)
               }
               disabled={isSubmitting}
-              className="text-xs text-muted-foreground hover:text-foreground"
+              className="min-h-11 sm:h-8 sm:min-h-0 text-xs text-muted-foreground hover:text-foreground"
             >
               {currentStep === 4
                 ? "Skip calibration for now (calibrate later)"
@@ -684,10 +692,11 @@ export function OnboardingWizard({
             size="sm"
             onClick={() => saveStepData(currentStep, false)}
             disabled={isSubmitting}
+            className="min-h-11 sm:h-8 sm:min-h-0 w-full sm:w-auto"
           >
             {isSubmitting ? (
               <>
-                <Loader2 className="size-4 mr-1.5 animate-spin" />
+                <Loader2 className="size-4 mr-1.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
                 Saving...
               </>
             ) : (
@@ -697,7 +706,7 @@ export function OnboardingWizard({
                     ? "Continue to Review"
                     : "Continue Without Calibrating"
                   : "Next Step"}
-                <ArrowRight className="size-4 ml-1.5" />
+                <ArrowRight className="size-4 ml-1.5" aria-hidden="true" />
               </>
             )}
           </Button>
@@ -706,16 +715,16 @@ export function OnboardingWizard({
             size="sm"
             onClick={() => saveStepData(5, true)}
             disabled={isSubmitting}
-            className="bg-primary text-primary-foreground hover:bg-primary/90 font-medium"
+            className="min-h-11 sm:h-8 sm:min-h-0 w-full sm:w-auto bg-primary text-primary-foreground hover:bg-primary/90 font-medium"
           >
             {isSubmitting ? (
               <>
-                <Loader2 className="size-4 mr-1.5 animate-spin" />
+                <Loader2 className="size-4 mr-1.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />
                 Activating...
               </>
             ) : (
               <>
-                <CheckCircle2 className="size-4 mr-1.5" />
+                <CheckCircle2 className="size-4 mr-1.5" aria-hidden="true" />
                 Complete Onboarding & Enter Dashboard
               </>
             )}

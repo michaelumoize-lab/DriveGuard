@@ -37,16 +37,19 @@ export function ThemeToggle({
     setMounted(true);
   }, []);
 
+  const responsiveTouchSize =
+    size === "icon" && !showLabel ? "size-11 md:size-8" : "";
+
   if (!mounted) {
     return (
       <Button
         variant="ghost"
         size={size}
-        className={cn("text-muted-foreground shrink-0", className)}
+        className={cn("text-muted-foreground shrink-0", responsiveTouchSize, className)}
         aria-label="Toggle theme"
         disabled
       >
-        <Sun className="h-4 w-4 opacity-40" />
+        <Sun className="size-4 opacity-40" aria-hidden="true" />
         <span className="sr-only">Toggle theme</span>
         {showLabel && <span className="ml-2 text-xs">Theme</span>}
       </Button>
@@ -67,15 +70,16 @@ export function ThemeToggle({
             size={size}
             onClick={handleCycle}
             className={cn(
-              "cursor-pointer text-muted-foreground hover:text-foreground relative shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-primary",
+              "cursor-pointer text-muted-foreground hover:text-foreground relative shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              responsiveTouchSize,
               className
             )}
             aria-label={`Current theme is ${theme}. Click to switch to ${
               resolvedTheme === "dark" ? "light" : "dark"
             } mode.`}
           >
-            <Sun className="h-4 w-4 rotate-0 scale-100 transition-all duration-200 dark:-rotate-90 dark:scale-0 text-amber-500" />
-            <Moon className="absolute h-4 w-4 rotate-90 scale-0 transition-all duration-200 dark:rotate-0 dark:scale-100 text-blue-400" />
+            <Sun className="size-4 rotate-0 scale-100 transition-[transform,opacity] duration-200 dark:-rotate-90 dark:scale-0 text-amber-500" aria-hidden="true" />
+            <Moon className="absolute size-4 rotate-90 scale-0 transition-[transform,opacity] duration-200 dark:rotate-0 dark:scale-100 text-blue-400" aria-hidden="true" />
             <span className="sr-only">Toggle theme</span>
             {showLabel && (
               <span className="ml-2 text-xs capitalize text-foreground">{theme}</span>
@@ -99,13 +103,14 @@ export function ThemeToggle({
               variant="ghost"
               size={size}
               className={cn(
-                "cursor-pointer text-muted-foreground hover:text-foreground relative shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-primary",
+                "cursor-pointer text-muted-foreground hover:text-foreground relative shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                responsiveTouchSize,
                 className
               )}
               aria-label="Select color theme (Light, Dark, System)"
             >
-              <Sun className="h-4 w-4 rotate-0 scale-100 transition-all duration-200 dark:-rotate-90 dark:scale-0 text-amber-500" />
-              <Moon className="absolute h-4 w-4 rotate-90 scale-0 transition-all duration-200 dark:rotate-0 dark:scale-100 text-blue-400" />
+              <Sun className="size-4 rotate-0 scale-100 transition-[transform,opacity] duration-200 dark:-rotate-90 dark:scale-0 text-amber-500" aria-hidden="true" />
+              <Moon className="absolute size-4 rotate-90 scale-0 transition-[transform,opacity] duration-200 dark:rotate-0 dark:scale-100 text-blue-400" aria-hidden="true" />
               <span className="sr-only">Toggle theme</span>
               {showLabel && (
                 <span className="ml-2 text-xs capitalize text-foreground">{theme}</span>
@@ -124,10 +129,10 @@ export function ThemeToggle({
           )}
         >
           <div className="flex items-center gap-2">
-            <Sun className="h-3.5 w-3.5 text-amber-500" />
+            <Sun className="size-3.5 text-amber-500" aria-hidden="true" />
             <span>Light</span>
           </div>
-          {theme === "light" && <Check className="h-3.5 w-3.5 text-primary" />}
+          {theme === "light" && <Check className="size-3.5 text-primary" aria-hidden="true" />}
         </DropdownMenuItem>
 
         <DropdownMenuItem
@@ -138,10 +143,10 @@ export function ThemeToggle({
           )}
         >
           <div className="flex items-center gap-2">
-            <Moon className="h-3.5 w-3.5 text-blue-400" />
+            <Moon className="size-3.5 text-blue-400" aria-hidden="true" />
             <span>Dark</span>
           </div>
-          {theme === "dark" && <Check className="h-3.5 w-3.5 text-primary" />}
+          {theme === "dark" && <Check className="size-3.5 text-primary" aria-hidden="true" />}
         </DropdownMenuItem>
 
         <DropdownMenuItem
@@ -152,10 +157,10 @@ export function ThemeToggle({
           )}
         >
           <div className="flex items-center gap-2">
-            <Monitor className="h-3.5 w-3.5 text-muted-foreground" />
+            <Monitor className="size-3.5 text-muted-foreground" aria-hidden="true" />
             <span>System</span>
           </div>
-          {theme === "system" && <Check className="h-3.5 w-3.5 text-primary" />}
+          {theme === "system" && <Check className="size-3.5 text-primary" aria-hidden="true" />}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

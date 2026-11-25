@@ -187,7 +187,7 @@ export function CalibrationGuidancePanel({
                   size="sm"
                   variant="outline"
                   onClick={onSwitchToCloud}
-                  className="h-8 text-xs border-destructive/40 hover:bg-destructive/10"
+                  className="min-h-11 sm:h-8 sm:min-h-0 text-xs border-destructive/40 hover:bg-destructive/10"
                 >
                   Switch to LiveKit Cloud
                 </Button>
@@ -197,7 +197,7 @@ export function CalibrationGuidancePanel({
                 size="sm"
                 variant="outline"
                 onClick={isCameraActive ? onBeginCalibration : onStartCameraCheck}
-                className="h-8 text-xs border-destructive/40 hover:bg-destructive/10"
+                className="min-h-11 sm:h-8 sm:min-h-0 text-xs border-destructive/40 hover:bg-destructive/10"
               >
                 <RotateCcw className="size-3.5 mr-1" aria-hidden="true" />
                 Retry
@@ -226,7 +226,7 @@ export function CalibrationGuidancePanel({
                   size="sm"
                   onClick={onRetrySave}
                   disabled={isSavingProfile}
-                  className="h-8 text-xs"
+                  className="min-h-11 sm:h-8 sm:min-h-0 text-xs"
                 >
                   {isSavingProfile ? "Saving…" : "Retry Saving Profile"}
                 </Button>
@@ -237,7 +237,7 @@ export function CalibrationGuidancePanel({
                 variant="outline"
                 onClick={onBeginCalibration}
                 disabled={isSavingProfile}
-                className="h-8 text-xs border-destructive/40"
+                className="min-h-11 sm:h-8 sm:min-h-0 text-xs border-destructive/40"
               >
                 <RotateCcw className="size-3.5 mr-1" aria-hidden="true" />
                 Recalibrate
@@ -266,7 +266,7 @@ export function CalibrationGuidancePanel({
               size="sm"
               variant="outline"
               onClick={onBeginCalibration}
-              className="h-8 text-xs border-destructive/40 text-destructive hover:bg-destructive/10"
+              className="min-h-11 sm:h-8 sm:min-h-0 text-xs border-destructive/40 text-destructive hover:bg-destructive/10"
             >
               <RotateCcw className="size-3.5 mr-1.5" aria-hidden="true" />
               Try Again
@@ -314,7 +314,7 @@ export function CalibrationGuidancePanel({
             >
               {isCameraLoading ? (
                 <>
-                  <Loader2 className="size-4 mr-2 animate-spin" aria-hidden="true" />
+                  <Loader2 className="size-4 mr-2 animate-spin motion-reduce:animate-none" aria-hidden="true" />
                   Starting Camera…
                 </>
               ) : (
@@ -508,7 +508,7 @@ export function CalibrationGuidancePanel({
                 size="sm"
                 variant="destructive"
                 onClick={onCancelCalibration}
-                className="flex-1 min-h-[40px]"
+                className="flex-1 min-h-11 sm:min-h-[40px]"
               >
                 <Square className="size-3.5 mr-1.5" aria-hidden="true" />
                 Cancel
@@ -519,7 +519,7 @@ export function CalibrationGuidancePanel({
                 variant="outline"
                 onClick={onSkipZone}
                 disabled={isSavingProfile}
-                className="flex-1 min-h-[40px]"
+                className="flex-1 min-h-11 sm:min-h-[40px]"
               >
                 <FastForward className="size-3.5 mr-1.5 text-primary" aria-hidden="true" />
                 Skip Zone
@@ -531,7 +531,7 @@ export function CalibrationGuidancePanel({
         {/* STATE C2: Saving Profile */}
         {isSavingProfile && (
           <div className="p-4 rounded-xl border border-primary/30 bg-primary/5 flex items-center gap-3">
-            <Loader2 className="size-5 text-primary animate-spin shrink-0" aria-hidden="true" />
+            <Loader2 className="size-5 text-primary animate-spin motion-reduce:animate-none shrink-0" aria-hidden="true" />
             <div>
               <p className="font-semibold text-foreground">Saving your personal baseline…</p>
               <p className="text-muted-foreground">
@@ -545,7 +545,7 @@ export function CalibrationGuidancePanel({
         {isSuccess && !isSavingProfile && (
           <div className="space-y-4">
             <div className="p-4 rounded-xl border border-emerald-500/35 bg-emerald-500/10 space-y-2">
-              <div className="flex items-center justify-between gap-2 text-emerald-600 dark:text-emerald-400 font-semibold text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-emerald-600 dark:text-emerald-400 font-semibold text-sm">
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="size-5 shrink-0" aria-hidden="true" />
                   <span>
@@ -596,7 +596,7 @@ export function CalibrationGuidancePanel({
                 size="sm"
                 variant="outline"
                 onClick={onBeginCalibration}
-                className="w-full min-h-[40px]"
+                className="w-full min-h-11 sm:min-h-[40px]"
               >
                 <RotateCcw className="size-3.5 mr-1.5" aria-hidden="true" />
                 Recalibrate All 4 Zones

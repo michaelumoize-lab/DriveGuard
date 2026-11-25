@@ -9,6 +9,7 @@ import {
 } from "@/types/telemetry";
 import { CameraState } from "@/types/camera";
 import { Button } from "@/components/ui/button";
+import { Slider } from "@/components/ui/slider";
 import {
   ShieldCheck,
   AlertTriangle,
@@ -145,7 +146,7 @@ export function DriverCockpitHUD({
                   size="sm"
                   variant={isCalibrated ? "ghost" : "outline"}
                   onClick={onCalibrateClick}
-                  className="h-7 text-xs shrink-0"
+                  className="min-h-11 sm:h-8 sm:min-h-0 px-3 text-xs shrink-0"
                 >
                   {isCalibrated ? "Redo" : "Calibrate"}
                 </Button>
@@ -176,7 +177,7 @@ export function DriverCockpitHUD({
                   size="sm"
                   variant="outline"
                   onClick={onUnlockAudio}
-                  className="h-7 text-xs shrink-0 border-amber-500/40 text-amber-600 dark:text-amber-400"
+                  className="min-h-11 sm:h-8 sm:min-h-0 px-3 text-xs shrink-0 border-amber-500/40 text-amber-600 dark:text-amber-400"
                 >
                   Enable
                 </Button>
@@ -186,7 +187,7 @@ export function DriverCockpitHUD({
                   size="sm"
                   variant="ghost"
                   onClick={onToggleMute}
-                  className="h-7 text-xs shrink-0"
+                  className="min-h-11 sm:h-8 sm:min-h-0 px-3 text-xs shrink-0"
                 >
                   {isMuted ? "Unmute" : "Mute"}
                 </Button>
@@ -196,18 +197,18 @@ export function DriverCockpitHUD({
         </div>
 
         {/* Navigation & Mode Switcher */}
-        <div className="px-5 py-3.5 flex items-center justify-between gap-2 flex-wrap bg-muted/20 rounded-b-2xl">
+        <div className="px-5 py-2.5 sm:py-3.5 flex items-center justify-between gap-2 flex-wrap bg-muted/20 rounded-b-2xl">
           <div className="flex items-center gap-3 text-xs">
             <Link
               href="/dashboard/sessions"
-              className="inline-flex items-center gap-1 font-medium text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+              className="min-h-11 sm:min-h-0 px-1 inline-flex items-center gap-1 font-medium text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
             >
               <Clock className="size-3.5" aria-hidden="true" />
               <span>Sessions</span>
             </Link>
             <Link
               href="/dashboard/alerts"
-              className="inline-flex items-center gap-1 font-medium text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+              className="min-h-11 sm:min-h-0 px-1 inline-flex items-center gap-1 font-medium text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
             >
               <ShieldAlert className="size-3.5" aria-hidden="true" />
               <span>Alerts</span>
@@ -220,7 +221,7 @@ export function DriverCockpitHUD({
               variant="ghost"
               size="sm"
               onClick={onSwitchToDiagnostics}
-              className="text-xs text-muted-foreground hover:text-foreground gap-1.5 h-8"
+              className="text-xs text-muted-foreground hover:text-foreground gap-1.5 min-h-11 sm:h-8 sm:min-h-0"
             >
               <SlidersHorizontal className="size-3.5" aria-hidden="true" />
               <span>Open Inspector</span>
@@ -398,8 +399,8 @@ export function DriverCockpitHUD({
           aria-valuemax={100}
         >
           <div
-            className={`h-full transition-transform duration-300 origin-left rounded-full ${banner.progressColor}`}
-            style={{ width: `${isTrackingValid ? alertnessPct : 0}%` }}
+            className={`h-full w-full transition-transform duration-300 origin-left rounded-full motion-reduce:transition-none ${banner.progressColor}`}
+            style={{ transform: `scaleX(${(isTrackingValid ? alertnessPct : 0) / 100})` }}
           />
         </div>
 
@@ -411,7 +412,7 @@ export function DriverCockpitHUD({
 
         {/* Calibration Reminder only when uncalibrated */}
         {!isCalibrated && onCalibrateClick && (
-          <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/35 flex items-center justify-between gap-2 text-xs">
+          <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/35 flex flex-wrap items-center justify-between gap-2 text-xs">
             <span className="text-foreground">
               Calibrate your eyes for personalized fatigue thresholds.
             </span>
@@ -420,7 +421,7 @@ export function DriverCockpitHUD({
               size="sm"
               variant="outline"
               onClick={onCalibrateClick}
-              className="h-7 text-xs shrink-0 border-amber-500/40"
+              className="min-h-11 sm:h-8 sm:min-h-0 px-3 text-xs shrink-0 border-amber-500/40"
             >
               Calibrate Now
             </Button>
@@ -429,7 +430,7 @@ export function DriverCockpitHUD({
       </div>
 
       {/* 2. Gaze Target & Audio Controls */}
-      <div className="p-5 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+      <div className="p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
         <div className="p-3 rounded-xl bg-muted/30 border border-border/60 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2.5 min-w-0">
             <Compass className="size-4 text-primary shrink-0" aria-hidden="true" />
@@ -471,7 +472,7 @@ export function DriverCockpitHUD({
                 size="sm"
                 variant="outline"
                 onClick={onUnlockAudio}
-                className="h-7 text-xs border-amber-500/40 text-amber-600 dark:text-amber-400"
+                className="min-h-11 sm:h-8 sm:min-h-0 px-3 text-xs border-amber-500/40 text-amber-600 dark:text-amber-400"
               >
                 Enable
               </Button>
@@ -481,7 +482,7 @@ export function DriverCockpitHUD({
                 size="sm"
                 variant={isMuted ? "default" : "outline"}
                 onClick={onToggleMute}
-                className="h-7 text-xs"
+                className="min-h-11 sm:h-8 sm:min-h-0 px-3 text-xs"
               >
                 {isMuted ? "Unmute" : "Mute"}
               </Button>
@@ -490,20 +491,20 @@ export function DriverCockpitHUD({
         </div>
 
         {onSetVolume && !isMuted && audioStatus === "ready" && (
-          <div className="sm:col-span-2 flex items-center justify-between gap-3 px-1">
+          <div className="sm:col-span-2 flex flex-wrap items-center justify-between gap-3 px-1 min-h-11 sm:min-h-8">
             <label htmlFor="driver-alert-volume" className="text-[11px] text-muted-foreground">
               Alert chime volume
             </label>
-            <div className="flex items-center gap-2">
-              <input
+            <div className="flex items-center gap-3">
+              <Slider
                 id="driver-alert-volume"
-                type="range"
                 min={0}
                 max={1}
                 step={0.05}
-                value={volume}
-                onChange={(e) => onSetVolume(parseFloat(e.target.value))}
-                className="w-28 accent-primary cursor-pointer"
+                value={[volume]}
+                onValueChange={(vals) => onSetVolume(vals[0] ?? volume)}
+                aria-label="Alert chime volume"
+                className="w-32 sm:w-28 cursor-pointer py-2"
               />
               <span className="text-[11px] font-mono tabular-nums text-muted-foreground w-8 text-right">
                 {Math.round(volume * 100)}%
@@ -514,19 +515,19 @@ export function DriverCockpitHUD({
       </div>
 
       {/* 3. Quiet Session Meta & Inspector Jump */}
-      <div className="px-5 py-3 flex items-center justify-between gap-2 flex-wrap bg-muted/20 rounded-b-2xl text-xs">
+      <div className="px-4 sm:px-5 py-2.5 sm:py-3 flex items-center justify-between gap-2 flex-wrap bg-muted/20 rounded-b-2xl text-xs">
         <div className="flex items-center gap-3 text-muted-foreground font-mono tabular-nums">
           <span>{formatDuration(sessionDurationSec)}</span>
           <span aria-hidden="true">·</span>
           <span className="font-sans">
-            {runtimeMode === "browser" ? "On-device AI" : "Remote AI"}
+            {runtimeMode === "browser" ? "On-device AI" : runtimeMode === "python-local" ? "Local Python AI" : "Remote AI"}
           </span>
         </div>
 
         <div className="flex items-center gap-3">
           <Link
             href="/dashboard/sessions"
-            className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+            className="min-h-11 sm:min-h-0 px-1 inline-flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
           >
             <span>Sessions</span>
             <ArrowRight className="size-3" aria-hidden="true" />
@@ -537,7 +538,7 @@ export function DriverCockpitHUD({
               variant="ghost"
               size="sm"
               onClick={onSwitchToDiagnostics}
-              className="text-xs text-primary hover:text-primary/90 gap-1.5 h-7 px-2"
+              className="text-xs text-primary hover:text-primary/90 gap-1.5 min-h-11 sm:h-8 sm:min-h-0 px-2.5"
             >
               <SlidersHorizontal className="size-3.5" aria-hidden="true" />
               <span>Inspector</span>

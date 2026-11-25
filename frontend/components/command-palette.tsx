@@ -226,10 +226,10 @@ export function CommandPaletteTrigger() {
     <button
       onClick={handleClick}
       type="button"
-      className="hidden md:flex items-center gap-2 h-8 px-3 rounded-xl border border-input bg-muted/40 hover:bg-muted text-muted-foreground hover:text-foreground text-xs transition-colors shadow-2xs cursor-pointer"
+      className="hidden md:flex items-center gap-2 h-8 px-3 rounded-xl border border-input bg-muted/40 hover:bg-muted text-muted-foreground hover:text-foreground text-xs transition-colors shadow-2xs cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      <Search className="w-3.5 h-3.5 text-muted-foreground" />
-      <span className="font-normal">Search or Jump to...</span>
+      <Search className="size-3.5 text-muted-foreground" aria-hidden="true" />
+      <span className="font-normal">Search or Jump to…</span>
       <kbd className="pointer-events-none inline-flex h-4 select-none items-center gap-0.5 rounded border border-border bg-background px-1.5 font-mono text-[10px] font-medium text-muted-foreground ml-2">
         {mounted && isMac ? "⌘K" : "Ctrl+K"}
       </kbd>

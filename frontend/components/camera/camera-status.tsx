@@ -14,7 +14,7 @@ interface CameraStatusProps {
   runtimeLabel?: string;
 }
 
-export function CameraStatus({
+export const CameraStatus = React.memo(function CameraStatus({
   cameraState,
   resolution,
   facingMode,
@@ -108,17 +108,17 @@ export function CameraStatus({
         </Badge>
       </div>
 
-      <div className="flex items-center gap-3 text-xs text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs text-muted-foreground">
         <div className="flex items-center gap-1.5 font-mono tabular-nums">
           <Clock className="size-3.5 text-primary" aria-hidden="true" />
           <span>{formatDuration(durationSec)}</span>
         </div>
 
-        <div className="hidden sm:flex items-center gap-1 text-[11px] border-l border-border pl-3">
-          <ShieldCheck className="size-3.5 text-emerald-500" aria-hidden="true" />
+        <div className="flex items-center gap-1 text-[11px] sm:border-l sm:border-border sm:pl-3">
+          <ShieldCheck className="size-3.5 text-emerald-500 shrink-0" aria-hidden="true" />
           <span>{runtimeLabel}</span>
         </div>
       </div>
     </div>
   );
-}
+});
