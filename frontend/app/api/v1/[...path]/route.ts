@@ -4,6 +4,10 @@ import { getServerSession } from "@/lib/get-session";
 import { createBackendAccessToken, verifyBackendAccessToken } from "@/lib/backend-auth";
 import { prisma } from "@/lib/prisma";
 import { syncAuthoritativePythonProfileBeforeForward } from "@/lib/api/bff-profile-sync";
+import {
+  isPublicHealthSubPath,
+  resolveFastApiUpstreamPath,
+} from "@/lib/api/proxy-target";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +20,7 @@ async function proxyToFastApi(
   const search = req.nextUrl.search || "";
 
   // Public operational paths that do not require driver session
-  const isPublicHealth = subPath === "health" || subPath === "" || subPath === "health/liveness";
+  const isPublicHealth = isPublicHealthSubPath(subPath);
 
   let backendToken: string | null = null;
   const primaryBase = resolveCloudFastApiUrl();
@@ -70,7 +74,8 @@ async function proxyToFastApi(
     });
   }
 
-  const targetUrl = `${primaryBase}/api/v1/${subPath}${search}`;
+  const upstreamPath = resolveFastApiUpstreamPath(subPath);
+  const targetUrl = `${primaryBase}${upstreamPath}${search}`;
 
   const headers = new Headers();
   const contentType = req.headers.get("content-type");
@@ -104,7 +109,7 @@ async function proxyToFastApi(
       upstreamRes.headers.get("x-render-routing") === "no-server" &&
       primaryBase !== PRODUCTION_FASTAPI_URL
     ) {
-      const fallbackUrl = `${PRODUCTION_FASTAPI_URL}/api/v1/${subPath}${search}`;
+      const fallbackUrl = `${PRODUCTION_FASTAPI_URL}${upstreamPath}${search}`;
       upstreamRes = await executeUpstream(fallbackUrl);
     }
 

@@ -228,12 +228,12 @@ export function InspectorWorkspace({
 
           <KinematicsOscilloscope
             currentEar={telemetry ? (telemetry.eye_metrics?.ear_raw ?? null) : null}
+            sampleTimestampMs={telemetry?.timestamp_ms ?? null}
             closureThreshold={
               telemetry?.comparison?.personalised_threshold ??
               telemetry?.eye_metrics?.ear_closure_threshold ??
               0.2
             }
-            dEarDt={telemetry?.eye_metrics?.blink_rcr ? -0.15 : 0}
             rcr={telemetry?.eye_metrics?.blink_rcr ?? undefined}
             isActive={cameraState === "active" && activeTab === "signals"}
           />

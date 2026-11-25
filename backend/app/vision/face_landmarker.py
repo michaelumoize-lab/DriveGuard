@@ -372,13 +372,20 @@ class DriveGuardFaceLandmarker:
         )
         return float(np.clip(bounds_score * scale_score * native_factor, 0.0, 1.0))
 
-    def detect(self, input_data: Union[FramePacket, np.ndarray], timestamp_ms: Optional[int] = None) -> FaceLandmarkResult:
+    def detect(
+        self,
+        input_data: Union[FramePacket, np.ndarray],
+        timestamp_ms: Optional[int] = None,
+        *,
+        color_format: str = "BGR",
+    ) -> FaceLandmarkResult:
         """
         Execute facial landmark localization on a frame.
         
         Args:
-            input_data: A FramePacket object or raw BGR NumPy image array.
+            input_data: A FramePacket object or raw BGR/RGB NumPy image array.
             timestamp_ms: Optional millisecond timestamp (extracted automatically if FramePacket is provided).
+            color_format: Channel order ('BGR' default; 'RGB' bypasses BGR->RGB cv2.cvtColor).
             
         Returns:
             FaceLandmarkResult containing 478 3D landmarks, confidence, and status.
@@ -423,8 +430,11 @@ class DriveGuardFaceLandmarker:
             t_start = time.perf_counter()
 
             try:
-                # MediaPipe Tasks expects RGB format
-                rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+                # MediaPipe Tasks expects C-contiguous SRGB format; skip cv2.cvtColor when already RGB
+                if color_format.upper() == "RGB":
+                    rgb_frame = np.ascontiguousarray(bgr_frame)
+                else:
+                    rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
                 mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb_frame)
                 detection_result = self._landmarker.detect_for_video(mp_image, inferred_ms)
             except Exception as exc:

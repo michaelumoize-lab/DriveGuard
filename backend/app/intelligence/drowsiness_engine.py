@@ -81,19 +81,21 @@ class DrowsinessEngine:
 
     def __init__(
         self,
-        sustained_closure_threshold_ms: float = 1500.0,
-        extended_closure_threshold_ms: float = 500.0,
-        perclos_warning_threshold_pct: float = 15.0,
-        perclos_attention_threshold_pct: float = 8.0,
-        severe_perclos_threshold_pct: float = 30.0,
-        prolonged_blink_threshold_ms: float = 500.0,
-        off_road_distraction_limit_ms: float = 3500.0,
-        recovery_critical_ms: float = 2000.0,
-        recovery_warning_ms: float = 1500.0,
-        recovery_attention_ms: float = 1000.0,
+        sustained_closure_threshold_ms: Optional[float] = None,
+        extended_closure_threshold_ms: Optional[float] = None,
+        perclos_warning_threshold_pct: Optional[float] = None,
+        perclos_attention_threshold_pct: Optional[float] = None,
+        severe_perclos_threshold_pct: Optional[float] = None,
+        prolonged_blink_threshold_ms: Optional[float] = None,
+        off_road_distraction_limit_ms: Optional[float] = None,
+        recovery_critical_ms: Optional[float] = None,
+        recovery_warning_ms: Optional[float] = None,
+        recovery_attention_ms: Optional[float] = None,
         face_loss_grace_ms: float = 1000.0,
         sensor_unreliable_grace_ms: float = 1000.0,
         max_sampling_gap_ms: float = 250.0,
+        sensitivity_level: str = "STANDARD",
+        mirror_suppression_enabled: bool = True,
     ) -> None:
         self.temporal_analyzer = TemporalAnalyzer(max_sampling_gap_ms=max_sampling_gap_ms)
         self.confidence_evaluator = SignalConfidenceEvaluator()
@@ -111,7 +113,17 @@ class DrowsinessEngine:
             face_loss_grace_ms=face_loss_grace_ms,
             sensor_unreliable_grace_ms=sensor_unreliable_grace_ms,
             max_sampling_gap_ms=max_sampling_gap_ms,
+            sensitivity_level=sensitivity_level,
+            mirror_suppression_enabled=mirror_suppression_enabled,
         )
+
+    def apply_sensitivity_preset(self, sensitivity_level: str) -> str:
+        """Apply a canonical HIGH | STANDARD | RELAXED sensitivity preset to the DecisionEngine."""
+        return self.decision_engine.apply_sensitivity_preset(sensitivity_level)
+
+    def set_mirror_suppression(self, enabled: bool) -> None:
+        """Enable or disable context-aware mirror check suppression."""
+        self.decision_engine.set_mirror_suppression(enabled)
 
     def evaluate(
         self,

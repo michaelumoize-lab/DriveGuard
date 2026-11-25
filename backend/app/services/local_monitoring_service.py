@@ -543,7 +543,7 @@ class LocalMonitoringService:
     ) -> LocalMonitoringFrameResult:
         """Process a canonical `AdaptedFrame` produced by any input adapter."""
         return self.process_frame(
-            frame_bgr=adapted.frame_bgr,
+            frame_bgr=adapted.frame,
             timestamp_ms=adapted.timestamp_ms,
             frame_index=adapted.frame_index,
             is_mirrored=adapted.is_mirrored,
@@ -551,6 +551,7 @@ class LocalMonitoringService:
             frame_height=adapted.frame_height,
             packet=adapted.packet,
             landmark_result_override=landmark_result_override,
+            color_format=adapted.color_format,
         )
 
     def process_frame(
@@ -563,6 +564,7 @@ class LocalMonitoringService:
         frame_height: Optional[int] = None,
         packet: Optional[FramePacket] = None,
         landmark_result_override: Optional[FaceLandmarkResult] = None,
+        color_format: str = "BGR",
     ) -> LocalMonitoringFrameResult:
         """
         Execute one full authoritative local pipeline step on a single camera frame.
@@ -571,15 +573,27 @@ class LocalMonitoringService:
         mir = self.config.is_mirrored if is_mirrored is None else is_mirrored
         f_h = frame_height if (frame_height and frame_height > 0) else int(frame_bgr.shape[0])
         f_w = frame_width if (frame_width and frame_width > 0) else int(frame_bgr.shape[1])
+        fmt = color_format.upper()
 
-        # 1. Optical frame quality analysis
-        quality = self.quality_analyzer.analyze(frame_bgr)
+        # 1. Optical frame quality analysis (supports native BGR or RGB directly)
+        try:
+            quality = self.quality_analyzer.analyze(frame_bgr, color_format=fmt)
+        except TypeError:
+            quality = self.quality_analyzer.analyze(frame_bgr)
 
-        # 2. Facial landmark localization
+        # 2. Facial landmark localization (bypasses BGR->RGB conversion when fmt == 'RGB')
         if landmark_result_override is not None:
             landmark = landmark_result_override
         elif self.landmarker is not None:
-            landmark = self.landmarker.detect(packet if packet is not None else frame_bgr, timestamp_ms=int(timestamp_ms))
+            detect_input = packet if packet is not None else frame_bgr
+            try:
+                landmark = self.landmarker.detect(
+                    detect_input,
+                    timestamp_ms=int(timestamp_ms),
+                    color_format=fmt,
+                )
+            except TypeError:
+                landmark = self.landmarker.detect(detect_input, timestamp_ms=int(timestamp_ms))
         else:
             raise RuntimeError("No FaceLandmarker configured and no landmark_result_override supplied.")
 
@@ -601,12 +615,18 @@ class LocalMonitoringService:
                     ear_valid=features.ear.is_geometric_valid,
                 )
                 if should_shadow and landmark.has_face:
+                    import cv2
+                    shadow_bgr = (
+                        cv2.cvtColor(frame_bgr, cv2.COLOR_RGB2BGR)
+                        if fmt == "RGB"
+                        else frame_bgr
+                    )
                     lms_xyz = np.array(
                         [[lm.x * f_w, lm.y * f_h, lm.z * f_w] for lm in landmark.landmarks],
                         dtype=np.float64,
                     )
                     self.shadow_worker.submit_frame(
-                        frame_bgr=frame_bgr,
+                        frame_bgr=shadow_bgr,
                         landmarks_pixel_xyz=lms_xyz,
                         timestamp_ms=timestamp_ms,
                         frame_id=frame_index or self._frames_processed,

@@ -153,14 +153,18 @@ async function runTestSuite() {
 
     // Frame 3: Opening mouth to span = 0.26 -> MAR = 0.65 (above onset 0.55)
     res = detector.update(createMouth(0.26), 1350, 1.0, true, false);
-    assert(res.isYawnInProgress, "MAR >= 0.55 latches yawn in-progress state");
+    assert(res.isMouthOpen, "MAR >= 0.55 latches mouth-open state");
+    assert(!res.isYawnInProgress, "750 ms onset gate prevents speech burst at 0 ms from flagging isYawnInProgress");
 
-    // Frame 4: Drops to span = 0.20 -> MAR = 0.50 (still above release 0.45)
-    res = detector.update(createMouth(0.20), 1500, 1.0, true, false);
-    assert(res.isYawnInProgress, "MAR remaining above release 0.45 stays in-progress (hysteresis hold)");
+    // Hold MAR >= 0.45 across 800 ms (5 steps of 160ms = 800ms >= 750ms onset gate)
+    for (let t = 1510; t <= 2150; t += 160) {
+      res = detector.update(createMouth(0.20), t, 1.0, true, false);
+    }
+    assert(res.isMouthOpen, "MAR remaining above release 0.45 stays open (hysteresis hold)");
+    assert(res.isYawnInProgress, "Sustained opening >= 750 ms engages isYawnInProgress (matching Python mar.py)");
 
     // Frame 5: Drops below release 0.45 (span = 0.12 -> MAR = 0.30)
-    res = detector.update(createMouth(0.12), 1650, 1.0, true, false);
+    res = detector.update(createMouth(0.12), 2300, 1.0, true, false);
     assert(!res.isYawnInProgress, "MAR below 0.45 cleanly releases yawn");
   }
 

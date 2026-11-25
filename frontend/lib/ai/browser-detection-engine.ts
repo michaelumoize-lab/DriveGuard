@@ -24,7 +24,7 @@ import {
   ProfileSyncOutcome,
 } from "./browser-profile-store";
 import { SignalConfidenceEvaluator } from "./confidence";
-import { DecisionEngine } from "./decision-engine";
+import { DecisionEngine, SensitivityLevel } from "./decision-engine";
 import { DriverFeatureExtractor } from "./feature-extractor";
 import { MediaPipeService } from "./mediapipe-service";
 import {
@@ -59,6 +59,8 @@ export interface DetectionEngineConfig {
    * Defaults to false (raw browser webcam frames are unmirrored; CSS preview mirroring does not flip pixels).
    */
   isMirrored?: boolean;
+  sensitivityLevel?: SensitivityLevel | string | null;
+  mirrorSuppression?: boolean;
   onTelemetry?: (telemetry: DetectionTelemetry) => void;
   onSafetyAlert?: (
     decision: DecisionResult,
@@ -153,7 +155,10 @@ export class BrowserDetectionEngine {
     });
     this._confidenceEvaluator = new SignalConfidenceEvaluator();
     this._temporalAnalyzer = new TemporalAnalyzer();
-    this._decisionEngine = new DecisionEngine();
+    this._decisionEngine = new DecisionEngine({
+      sensitivityLevel: this._config.sensitivityLevel,
+      mirrorSuppressionEnabled: this._config.mirrorSuppression ?? true,
+    });
     this._alertStateManager = new AlertStateManager();
     this._offlineQueue = new OfflineEventQueue();
     this._profileStore = config.profileStore ?? browserProfileStore;
@@ -250,6 +255,17 @@ export class BrowserDetectionEngine {
   public setIsMirrored(mirrored: boolean): void {
     this._config.isMirrored = mirrored;
     this._featureExtractor.setIsMirrored(mirrored);
+  }
+
+  public setSensitivityLevel(level?: SensitivityLevel | string | null): SensitivityLevel {
+    const normalized = this._decisionEngine.applySensitivityPreset(level);
+    this._config.sensitivityLevel = normalized;
+    return normalized;
+  }
+
+  public setMirrorSuppression(enabled: boolean): void {
+    this._config.mirrorSuppression = Boolean(enabled);
+    this._decisionEngine.setMirrorSuppression(Boolean(enabled));
   }
 
   public async initialize(): Promise<void> {
@@ -490,8 +506,21 @@ export class BrowserDetectionEngine {
       isCalibrating,
     });
 
-    // 3. Temporal Analysis Pass
-    const temporal = this._temporalAnalyzer.update(features);
+    // 3. Temporal Analysis Pass (decoupled ocular viability matching Python DrowsinessEngine)
+    const isOpticalViable =
+      hasFace &&
+      (!effectiveQuality || effectiveQuality.overallQuality !== "SEVERELY_DEGRADED");
+    const ocularTrackingViable =
+      isCalibrated &&
+      (confidence.ocularViable ||
+        (isOpticalViable &&
+          !features.blink.samplingGapDetected &&
+          features.blink.state !== "UNCERTAIN_GAP"));
+    const temporal = this._temporalAnalyzer.update(
+      features,
+      confidence.isReliable && isCalibrated,
+      ocularTrackingViable
+    );
 
     // 4. Decision Engine Pass with strict OperationalState calibration & confidence gate
     const decision = this._decisionEngine.evaluate(temporal, confidence);

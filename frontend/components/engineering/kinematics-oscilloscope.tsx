@@ -6,6 +6,7 @@ import { Activity } from "lucide-react";
 
 interface KinematicsOscilloscopeProps {
   currentEar: number | null;
+  sampleTimestampMs?: number | null;
   closureThreshold?: number;
   dEarDt?: number;
   rcr?: number;
@@ -13,10 +14,39 @@ interface KinematicsOscilloscopeProps {
   className?: string;
 }
 
+/**
+ * Genuine finite-difference derivative ΔEAR / Δt (in EAR units per second)
+ * over consecutive timestamped samples. Returns 0 on missing history, duplicate
+ * timestamps, or sampling gaps exceeding 1000 ms.
+ */
+export function computeEarDerivative(
+  prevEar: number | null,
+  prevTimestampMs: number | null,
+  currEar: number | null,
+  currTimestampMs: number | null
+): number {
+  if (
+    prevEar === null ||
+    prevTimestampMs === null ||
+    currEar === null ||
+    currTimestampMs === null
+  ) {
+    return 0;
+  }
+  const dtMs = currTimestampMs - prevTimestampMs;
+  if (!Number.isFinite(dtMs) || dtMs <= 5 || dtMs > 1000) {
+    return 0;
+  }
+  const rawDeriv = (currEar - prevEar) / (dtMs / 1000);
+  if (!Number.isFinite(rawDeriv)) return 0;
+  return Math.max(-5, Math.min(5, rawDeriv));
+}
+
 export function KinematicsOscilloscope({
   currentEar,
+  sampleTimestampMs = null,
   closureThreshold = 0.20,
-  dEarDt = 0,
+  dEarDt,
   rcr,
   isActive = true,
   className = "",
@@ -24,6 +54,7 @@ export function KinematicsOscilloscope({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const earHistoryRef = useRef<number[]>([]);
   const derivHistoryRef = useRef<number[]>([]);
+  const lastSampleRef = useRef<{ ear: number; timestampMs: number } | null>(null);
   const maxPoints = 120;
 
   const drawFrame = useCallback(() => {
@@ -93,41 +124,51 @@ export function KinematicsOscilloscope({
     if (currentEar === null) {
       earHistoryRef.current = [];
       derivHistoryRef.current = [];
+      lastSampleRef.current = null;
       drawFrame();
       return;
     }
+
+    const tsMs =
+      typeof sampleTimestampMs === "number" && Number.isFinite(sampleTimestampMs)
+        ? sampleTimestampMs
+        : typeof performance !== "undefined"
+          ? performance.now()
+          : Date.now();
+
+    const prev = lastSampleRef.current;
+    const computedDeriv =
+      typeof dEarDt === "number" && Number.isFinite(dEarDt)
+        ? dEarDt
+        : computeEarDerivative(
+            prev ? prev.ear : null,
+            prev ? prev.timestampMs : null,
+            currentEar,
+            tsMs
+          );
+
+    lastSampleRef.current = { ear: currentEar, timestampMs: tsMs };
 
     earHistoryRef.current.push(currentEar);
     if (earHistoryRef.current.length > maxPoints) {
       earHistoryRef.current.shift();
     }
 
-    derivHistoryRef.current.push(dEarDt);
+    derivHistoryRef.current.push(computedDeriv);
     if (derivHistoryRef.current.length > maxPoints) {
       derivHistoryRef.current.shift();
     }
 
-    drawFrame();
-  }, [currentEar, dEarDt, drawFrame]);
-
-  useEffect(() => {
-    drawFrame();
-
-    const prefersReducedMotion =
-      typeof window !== "undefined" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-    if (!isActive || prefersReducedMotion) {
-      return;
-    }
-
-    let animId: number;
-    const loop = () => {
+    if (isActive) {
       drawFrame();
-      animId = requestAnimationFrame(loop);
-    };
-    animId = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(animId);
+    }
+  }, [currentEar, sampleTimestampMs, dEarDt, isActive, drawFrame]);
+
+  // Redraw immediately when becoming active or threshold changes (no idle 60 FPS rAF loop)
+  useEffect(() => {
+    if (isActive) {
+      drawFrame();
+    }
   }, [drawFrame, isActive]);
 
   return (

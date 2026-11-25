@@ -297,30 +297,45 @@ export class YawnDetector {
     currentTs: number,
     completedYawn: YawnEvent | null
   ): MouthAspectRatioResult {
-    let currentYawnDuration = 0.0;
+    let wallClockDuration = 0.0;
     let observedDuration = 0.0;
-    let isAuthentic = false;
 
-    if (this._isOpening && this._openingStartTs !== null) {
-      currentYawnDuration = Math.max(0.0, currentTs - this._openingStartTs);
+    if (
+      isValid &&
+      this._isOpening &&
+      !this._openingExceededMax &&
+      this._openingStartTs !== null
+    ) {
+      wallClockDuration = Math.max(0.0, currentTs - this._openingStartTs);
       observedDuration = this._observedOpenMs;
-      isAuthentic = observedDuration >= this.minYawnDurationMs && !this._openingExceededMax;
     }
+
+    const activeWithinBounds =
+      isValid &&
+      this._isOpening &&
+      !this._openingExceededMax &&
+      observedDuration <= this.maxYawnDurationMs;
+
+    // 750 ms onset gate (0.5 * minYawnDurationMs) matching Python mar.py
+    const isYawnInProgress =
+      activeWithinBounds && observedDuration >= this.minYawnDurationMs * 0.5;
+    const isAuthentic =
+      activeWithinBounds && observedDuration >= this.minYawnDurationMs;
 
     const openingRatio = mar / Math.max(this._baselineMar, 1e-6);
 
     return {
       mar,
       isMouthOpen,
-      isYawnInProgress: this._isOpening,
-      currentYawnDurationMs: currentYawnDuration,
+      isYawnInProgress,
+      currentYawnDurationMs: wallClockDuration,
       isAuthenticYawn: isAuthentic,
       completedYawn,
       totalYawnCount: this._totalYawns,
       isValid,
       baselineMar: this._baselineMar,
       openingRatio,
-      peakMar: this._peakMar,
+      peakMar: isValid && this._isOpening ? this._peakMar : mar,
       observedYawnDurationMs: observedDuration,
     };
   }

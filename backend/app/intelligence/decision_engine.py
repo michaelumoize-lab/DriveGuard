@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from backend.app.features.blink_detector import BlinkClassification
 from backend.app.intelligence.confidence import ConfidenceAssessment
@@ -22,6 +22,59 @@ from backend.app.intelligence.reason_codes import (
     ReasonCode,
 )
 from backend.app.intelligence.temporal_analyzer import TemporalMetrics
+
+
+# Canonical Sensitivity Presets (Decision C / Section 2.4).
+# Invariant: Sensitivity modifies ONLY DecisionEngine escalation thresholds;
+# raw physiological features (EAR, MAR, PERCLOS, Head Pose) are 100% invariant.
+SENSITIVITY_PRESETS: Dict[str, Dict[str, float]] = {
+    "HIGH": {
+        "sustained_closure_threshold_ms": 1200.0,
+        "extended_closure_threshold_ms": 400.0,
+        "perclos_attention_threshold_pct": 6.0,
+        "perclos_warning_threshold_pct": 12.0,
+        "severe_perclos_threshold_pct": 25.0,
+        "prolonged_blink_threshold_ms": 420.0,
+        "off_road_distraction_limit_ms": 2500.0,
+        "recovery_critical_ms": 2000.0,
+        "recovery_warning_ms": 1500.0,
+        "recovery_attention_ms": 1000.0,
+    },
+    "STANDARD": {
+        "sustained_closure_threshold_ms": 1500.0,
+        "extended_closure_threshold_ms": 500.0,
+        "perclos_attention_threshold_pct": 8.0,
+        "perclos_warning_threshold_pct": 15.0,
+        "severe_perclos_threshold_pct": 30.0,
+        "prolonged_blink_threshold_ms": 500.0,
+        "off_road_distraction_limit_ms": 3500.0,
+        "recovery_critical_ms": 2000.0,
+        "recovery_warning_ms": 1500.0,
+        "recovery_attention_ms": 1000.0,
+    },
+    "RELAXED": {
+        "sustained_closure_threshold_ms": 1800.0,
+        "extended_closure_threshold_ms": 600.0,
+        "perclos_attention_threshold_pct": 10.0,
+        "perclos_warning_threshold_pct": 20.0,
+        "severe_perclos_threshold_pct": 35.0,
+        "prolonged_blink_threshold_ms": 580.0,
+        "off_road_distraction_limit_ms": 4000.0,
+        "recovery_critical_ms": 2000.0,
+        "recovery_warning_ms": 1500.0,
+        "recovery_attention_ms": 1000.0,
+    },
+}
+
+
+def normalize_sensitivity_level(level: Optional[str]) -> str:
+    """Normalize sensitivity preset string to HIGH | STANDARD | RELAXED (legacy HIGHWAY -> STANDARD)."""
+    if not level:
+        return "STANDARD"
+    upper = str(level).strip().upper()
+    if upper in SENSITIVITY_PRESETS:
+        return upper
+    return "STANDARD"
 
 
 @dataclass(frozen=True)
@@ -72,31 +125,77 @@ class DecisionEngine:
 
     def __init__(
         self,
-        sustained_closure_threshold_ms: float = 1500.0,
-        extended_closure_threshold_ms: float = 500.0,
-        perclos_warning_threshold_pct: float = 15.0,
-        perclos_attention_threshold_pct: float = 8.0,
-        severe_perclos_threshold_pct: float = 30.0,
-        prolonged_blink_threshold_ms: float = 500.0,
-        off_road_distraction_limit_ms: float = 3500.0,
-        recovery_critical_ms: float = 2000.0,
-        recovery_warning_ms: float = 1500.0,
-        recovery_attention_ms: float = 1000.0,
+        sustained_closure_threshold_ms: Optional[float] = None,
+        extended_closure_threshold_ms: Optional[float] = None,
+        perclos_warning_threshold_pct: Optional[float] = None,
+        perclos_attention_threshold_pct: Optional[float] = None,
+        severe_perclos_threshold_pct: Optional[float] = None,
+        prolonged_blink_threshold_ms: Optional[float] = None,
+        off_road_distraction_limit_ms: Optional[float] = None,
+        recovery_critical_ms: Optional[float] = None,
+        recovery_warning_ms: Optional[float] = None,
+        recovery_attention_ms: Optional[float] = None,
         face_loss_grace_ms: float = 1000.0,
         sensor_unreliable_grace_ms: float = 1000.0,
         max_sampling_gap_ms: float = 250.0,
+        sensitivity_level: str = "STANDARD",
+        mirror_suppression_enabled: bool = True,
     ) -> None:
-        self.sustained_closure_threshold_ms = sustained_closure_threshold_ms
-        self.extended_closure_threshold_ms = extended_closure_threshold_ms
-        self.perclos_warning_threshold_pct = perclos_warning_threshold_pct
-        self.perclos_attention_threshold_pct = perclos_attention_threshold_pct
-        self.severe_perclos_threshold_pct = severe_perclos_threshold_pct
-        self.prolonged_blink_threshold_ms = prolonged_blink_threshold_ms
-        self.off_road_distraction_limit_ms = off_road_distraction_limit_ms
+        self.sensitivity_level: str = normalize_sensitivity_level(sensitivity_level)
+        self.mirror_suppression_enabled: bool = bool(mirror_suppression_enabled)
+        preset = SENSITIVITY_PRESETS[self.sensitivity_level]
 
-        self.recovery_critical_ms = recovery_critical_ms
-        self.recovery_warning_ms = recovery_warning_ms
-        self.recovery_attention_ms = recovery_attention_ms
+        self.sustained_closure_threshold_ms = (
+            float(sustained_closure_threshold_ms)
+            if sustained_closure_threshold_ms is not None
+            else preset["sustained_closure_threshold_ms"]
+        )
+        self.extended_closure_threshold_ms = (
+            float(extended_closure_threshold_ms)
+            if extended_closure_threshold_ms is not None
+            else preset["extended_closure_threshold_ms"]
+        )
+        self.perclos_warning_threshold_pct = (
+            float(perclos_warning_threshold_pct)
+            if perclos_warning_threshold_pct is not None
+            else preset["perclos_warning_threshold_pct"]
+        )
+        self.perclos_attention_threshold_pct = (
+            float(perclos_attention_threshold_pct)
+            if perclos_attention_threshold_pct is not None
+            else preset["perclos_attention_threshold_pct"]
+        )
+        self.severe_perclos_threshold_pct = (
+            float(severe_perclos_threshold_pct)
+            if severe_perclos_threshold_pct is not None
+            else preset["severe_perclos_threshold_pct"]
+        )
+        self.prolonged_blink_threshold_ms = (
+            float(prolonged_blink_threshold_ms)
+            if prolonged_blink_threshold_ms is not None
+            else preset["prolonged_blink_threshold_ms"]
+        )
+        self.off_road_distraction_limit_ms = (
+            float(off_road_distraction_limit_ms)
+            if off_road_distraction_limit_ms is not None
+            else preset["off_road_distraction_limit_ms"]
+        )
+
+        self.recovery_critical_ms = (
+            float(recovery_critical_ms)
+            if recovery_critical_ms is not None
+            else preset["recovery_critical_ms"]
+        )
+        self.recovery_warning_ms = (
+            float(recovery_warning_ms)
+            if recovery_warning_ms is not None
+            else preset["recovery_warning_ms"]
+        )
+        self.recovery_attention_ms = (
+            float(recovery_attention_ms)
+            if recovery_attention_ms is not None
+            else preset["recovery_attention_ms"]
+        )
         self.face_loss_grace_ms = face_loss_grace_ms
         self.sensor_unreliable_grace_ms = sensor_unreliable_grace_ms
         self.max_sampling_gap_ms = max_sampling_gap_ms
@@ -116,6 +215,27 @@ class DecisionEngine:
         self._last_elevated_reason: Optional[ExplainableReason] = None
         self._alert_recovery_start_ts_ms: Optional[float] = None
         self._ocular_elevated_active: bool = False
+
+    def apply_sensitivity_preset(self, sensitivity_level: str) -> str:
+        """Apply a canonical HIGH | STANDARD | RELAXED sensitivity preset cleanly."""
+        normalized = normalize_sensitivity_level(sensitivity_level)
+        preset = SENSITIVITY_PRESETS[normalized]
+        self.sensitivity_level = normalized
+        self.sustained_closure_threshold_ms = preset["sustained_closure_threshold_ms"]
+        self.extended_closure_threshold_ms = preset["extended_closure_threshold_ms"]
+        self.perclos_attention_threshold_pct = preset["perclos_attention_threshold_pct"]
+        self.perclos_warning_threshold_pct = preset["perclos_warning_threshold_pct"]
+        self.severe_perclos_threshold_pct = preset["severe_perclos_threshold_pct"]
+        self.prolonged_blink_threshold_ms = preset["prolonged_blink_threshold_ms"]
+        self.off_road_distraction_limit_ms = preset["off_road_distraction_limit_ms"]
+        self.recovery_critical_ms = preset["recovery_critical_ms"]
+        self.recovery_warning_ms = preset["recovery_warning_ms"]
+        self.recovery_attention_ms = preset["recovery_attention_ms"]
+        return normalized
+
+    def set_mirror_suppression(self, enabled: bool) -> None:
+        """Enable or disable context-aware mirror check suppression."""
+        self.mirror_suppression_enabled = bool(enabled)
 
     def evaluate(
         self,
@@ -421,9 +541,12 @@ class DecisionEngine:
                     )
                 )
 
+            effective_mirror_check = bool(
+                self.mirror_suppression_enabled and metrics.is_mirror_check_context
+            )
             if (
                 metrics.active_off_road_dwell_ms >= self.off_road_distraction_limit_ms
-                and not metrics.is_mirror_check_context
+                and not effective_mirror_check
             ):
                 candidate_state = DrowsinessState.DROWSINESS_WARNING
                 reasons.append(
@@ -497,7 +620,7 @@ class DecisionEngine:
                 )
 
             # Contextual Glances
-            if metrics.is_mirror_check_context:
+            if self.mirror_suppression_enabled and metrics.is_mirror_check_context:
                 reasons.append(
                     ExplainableReason(
                         code=ReasonCode.MIRROR_CHECK_CONTEXT,
@@ -697,7 +820,9 @@ class DecisionEngine:
             severity=self.SEVERITY_MAP[self.current_state],
             reasons=reasons,
             primary_reason=primary_reason,
-            is_mirror_check_context=metrics.is_mirror_check_context,
+            is_mirror_check_context=bool(
+                self.mirror_suppression_enabled and metrics.is_mirror_check_context
+            ),
             alert_active=self.alert_active,
             unresolved_alert_state=self._unresolved_alert_state,
             historical_reason=self._historical_reason,

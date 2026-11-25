@@ -226,8 +226,8 @@ export function DriverPreferencesForm({
                 {
                   level: "RELAXED" as const,
                   title: "Relaxed",
-                  badge: "1.80s / 18% PERCLOS",
-                  desc: "Wider alert margins (≥ 1.80 s closure, 18% PERCLOS warning) to reduce false warnings on bright routes.",
+                  badge: "1.80s / 20% PERCLOS",
+                  desc: "Wider alert margins (≥ 1.80 s closure, 20% PERCLOS warning) to reduce false warnings on bright routes.",
                 },
                 {
                   level: "STANDARD" as const,
